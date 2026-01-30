@@ -103,9 +103,21 @@ jobs:
           echo "== src-tauri/target/release/bundle =="
           ls -la src-tauri/target/release/bundle || true
 
+      - name: Collect bundles
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          if [ -d "src-tauri/target" ]; then
+            find src-tauri/target -type f \( -name "*.msi" -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) -print -exec cp -v "{}" artifacts/ \;
+          fi
+          if [ -z "$(ls -A artifacts 2>/dev/null)" ]; then
+            echo "No bundle files found (.msi/.dmg/.deb/.AppImage)."
+            exit 1
+          fi
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: tauri-bundles-${{ matrix.os }}
-          path: src-tauri/target/release/bundle/**
+          path: artifacts/**
           if-no-files-found: error
