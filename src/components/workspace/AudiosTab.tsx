@@ -1,0 +1,906 @@
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { X, RefreshCw, FolderOpen, ChevronUp, ChevronDown, Plus, Trash2, Copy, AudioLines, Pencil, GripVertical } from "lucide-react";
+import { toast } from "@/hooks/use-toast";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { AlertDialogAction, AlertDialogCancel } from "@/components/ui/alert-dialog";
+import { BaseModal } from "@/components/shared/BaseModal";
+import { LanguageSelect } from "@/components/LanguageSelect";
+import { cn } from "@/lib/utils";
+import type { VideoFile, ExternalFile, Preset } from "@/types";
+import { pickDirectory, scanMedia } from "@/lib/backend";
+import { useTabState } from "@/stores/useTabState";
+import { AUDIO_EXTENSIONS } from "@/lib/extensions";
+import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/data/languages-iso6393";
+
+interface AudiosTabProps {
+  audioFiles: ExternalFile[];
+  videoFiles: VideoFile[];
+  onAudioFilesChange: (files: ExternalFile[]) => void;
+  onVideoFilesChange?: (files: VideoFile[]) => void;
+  onAddTrack?: () => void;
+  preset?: Preset | null;
+}
+
+interface TrackConfig {
+  sourceFolder: string;
+  extension: string;
+  language: string;
+  trackName: string;
+  delay: string;
+  isDefault: boolean;
+  isForced: boolean;
+  muxAfter: string;
+}
+
+const defaultTrackConfig: TrackConfig = {
+  sourceFolder: '',
+  extension: 'all',
+  language: 'hin',
+  trackName: '',
+  delay: '0.000',
+  isDefault: false,
+  isForced: false,
+  muxAfter: 'video',
+};
+
+const normalizeLanguage = (value: string) => {
+  if (!value) return "und";
+  const trimmed = value.trim();
+  if (CODE_TO_LABEL[trimmed]) return trimmed;
+  return LABEL_TO_CODE[trimmed] || LABEL_TO_CODE[trimmed.toLowerCase()] || trimmed.toLowerCase();
+};
+
+const audioExtensions = [...AUDIO_EXTENSIONS];
+
+
+export function AudiosTab({
+  audioFiles,
+  videoFiles,
+  onAudioFilesChange,
+  onVideoFilesChange,
+  onAddTrack,
+  preset,
+}: AudiosTabProps) {
+  const syncAudioLinks = useCallback(
+    (files: ExternalFile[]) =>
+      files.map((file, index) => ({
+        ...file,
+        matchedVideoId: videoFiles[index]?.id,
+      })),
+    [videoFiles]
+  );
+
+  const {
+    audioTracks,
+    activeAudioTrack,
+    audioTrackConfigs,
+    audioPresetApplied,
+    setAudioTracks,
+    setActiveAudioTrack,
+    updateAudioTrackConfig,
+    removeAudioTrackConfig,
+    setAudioPresetApplied,
+  } = useTabState((state) => ({
+    audioTracks: state.audioTracks,
+    activeAudioTrack: state.activeAudioTrack,
+    audioTrackConfigs: state.audioTrackConfigs,
+    audioPresetApplied: state.audioPresetApplied,
+    setAudioTracks: state.setAudioTracks,
+    setActiveAudioTrack: state.setActiveAudioTrack,
+    updateAudioTrackConfig: state.updateAudioTrackConfig,
+    removeAudioTrackConfig: state.removeAudioTrackConfig,
+    setAudioPresetApplied: state.setAudioPresetApplied,
+  }));
+  const [selectedVideoIndex, setSelectedVideoIndex] = useState<number | null>(null);
+  const [selectedAudioIndex, setSelectedAudioIndex] = useState<number | null>(null);
+  const canLinkSelection = selectedVideoIndex !== null && selectedAudioIndex !== null;
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [trackToDelete, setTrackToDelete] = useState<string | null>(null);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingFileId, setEditingFileId] = useState<string | null>(null);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const dragItem = useRef<number | null>(null);
+  const dragOverItem = useRef<number | null>(null);
+  const [editForm, setEditForm] = useState({
+    trackName: "",
+    language: "und",
+    delay: "0.000",
+    isDefault: false,
+    isForced: false,
+    muxAfter: "video",
+    applyDelayToAll: false,
+  });
+
+  const currentConfig = audioTrackConfigs[activeAudioTrack] || defaultTrackConfig;
+  const editingFile = audioFiles.find((file) => file.id === editingFileId) || null;
+
+  const muxAfterOptions = useMemo(() => {
+    const primaryTracks = videoFiles[0]?.tracks || [];
+    const trackCount =
+      primaryTracks.length || Math.max(0, ...videoFiles.map((video) => video.tracks?.length || 0));
+    const options = [{ value: "video", label: "Video" }];
+    for (let i = 1; i <= trackCount; i += 1) {
+      const track = primaryTracks[i - 1];
+      const trackLabel = track
+        ? `Track ${i} - ${track.type}${track.language ? ` (${track.language})` : ""}`
+        : `Track ${i}`;
+      options.push({ value: `track-${i}`, label: trackLabel });
+    }
+    options.push({ value: "end", label: "End" });
+    return options;
+  }, [videoFiles]);
+
+  const updateCurrentConfig = (updates: Partial<TrackConfig>) => {
+    updateAudioTrackConfig(activeAudioTrack, updates);
+  };
+
+  const applyCurrentConfigToFiles = () => {
+    if (audioFiles.length === 0) {
+      toast({
+        title: "No audio files",
+        description: "Add audio files to apply settings.",
+      });
+      return;
+    }
+    const delayValue = Number(currentConfig.delay) || 0;
+    const updatedFiles = audioFiles.map((file) => ({
+      ...file,
+      language: currentConfig.language,
+      trackName: currentConfig.trackName,
+      delay: delayValue,
+      isDefault: currentConfig.isDefault,
+      isForced: currentConfig.isForced,
+      muxAfter: currentConfig.muxAfter,
+    }));
+    onAudioFilesChange(updatedFiles);
+    toast({
+      title: "Audio settings applied",
+      description: "Track settings applied to all audio files.",
+    });
+  };
+
+  const addNewTrack = useCallback(() => {
+    const newTrackNumber = (audioTracks.length + 1).toString();
+    setAudioTracks([...audioTracks, newTrackNumber]);
+    updateAudioTrackConfig(newTrackNumber, { ...defaultTrackConfig });
+    setActiveAudioTrack(newTrackNumber);
+    onAudioFilesChange([]);
+    setSelectedAudioIndex(null);
+    setSelectedVideoIndex(null);
+    toast({
+      title: "Track Added",
+      description: `Audio #${newTrackNumber} has been created.`,
+    });
+  }, [audioTracks.length]);
+
+  const duplicateTrack = () => {
+    const newTrackNumber = (audioTracks.length + 1).toString();
+    const currentSettings = audioTrackConfigs[activeAudioTrack] || defaultTrackConfig;
+    setAudioTracks([...audioTracks, newTrackNumber]);
+    updateAudioTrackConfig(newTrackNumber, { ...currentSettings });
+    setActiveAudioTrack(newTrackNumber);
+    toast({
+      title: "Track Duplicated",
+      description: `Audio #${activeAudioTrack} settings copied to Audio #${newTrackNumber}.`,
+    });
+  };
+
+  const reorderAudioFile = (fromIndex: number, toIndex: number) => {
+    if (toIndex < 0 || toIndex >= audioFiles.length) return;
+    const updated = [...audioFiles];
+    const [moved] = updated.splice(fromIndex, 1);
+    updated.splice(toIndex, 0, moved);
+    onAudioFilesChange(syncAudioLinks(updated));
+    setSelectedAudioIndex(toIndex);
+  };
+
+  const handleDragStart = (index: number) => {
+    dragItem.current = index;
+    setDraggedIndex(index);
+  };
+
+  const handleDragEnter = (index: number) => {
+    dragOverItem.current = index;
+  };
+
+  const handleDragEnd = () => {
+    if (dragItem.current !== null && dragOverItem.current !== null && dragItem.current !== dragOverItem.current) {
+      reorderAudioFile(dragItem.current, dragOverItem.current);
+    }
+    dragItem.current = null;
+    dragOverItem.current = null;
+    setDraggedIndex(null);
+  };
+
+  const removeAudioFile = (index: number) => {
+    const updated = syncAudioLinks(audioFiles.filter((_, currentIndex) => currentIndex !== index));
+    onAudioFilesChange(updated);
+    setSelectedAudioIndex(null);
+  };
+
+  const duplicateAudioFile = (index: number) => {
+    const original = audioFiles[index];
+    if (!original) return;
+    if (videoFiles.length === 0) {
+      toast({
+        title: "Cannot Duplicate Audio",
+        description: "Add video files before duplicating audio.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (audioFiles.length >= videoFiles.length) {
+      toast({
+        title: "Cannot Duplicate Audio",
+        description: "Audio count cannot exceed video count.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const newFile: ExternalFile = {
+      ...original,
+      id: `audio-dup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    };
+    const updated = [...audioFiles];
+    updated.splice(index + 1, 0, newFile);
+    onAudioFilesChange(syncAudioLinks(updated));
+    setSelectedAudioIndex(index + 1);
+    toast({
+      title: "Audio Duplicated",
+      description: `${original.name} duplicated.`,
+    });
+  };
+
+  const openEditDialog = (fileId: string) => {
+    const file = audioFiles.find((entry) => entry.id === fileId);
+    if (!file) return;
+    setEditingFileId(fileId);
+    setEditForm({
+      trackName: file.trackName || "",
+      language: file.language || "und",
+      delay: (file.delay ?? 0).toFixed(3),
+      isDefault: file.isDefault || false,
+      isForced: file.isForced || false,
+      muxAfter: file.muxAfter || "video",
+      applyDelayToAll: false,
+    });
+    setEditDialogOpen(true);
+  };
+
+  const applyEditChanges = () => {
+    if (!editingFileId) return;
+    const delayValue = Number(editForm.delay) || 0;
+    const updated = audioFiles.map((file) => {
+      if (file.id === editingFileId) {
+        return {
+          ...file,
+          trackName: editForm.trackName,
+          language: editForm.language,
+          delay: delayValue,
+          isDefault: editForm.isDefault,
+          isForced: editForm.isForced,
+          muxAfter: editForm.muxAfter,
+        };
+      }
+      if (editForm.applyDelayToAll) {
+        return { ...file, delay: delayValue };
+      }
+      return file;
+    });
+    onAudioFilesChange(updated);
+    setEditDialogOpen(false);
+    setEditingFileId(null);
+  };
+
+  const linkAudioToVideo = () => {
+    if (selectedVideoIndex === null || selectedAudioIndex === null) return;
+    reorderAudioFile(selectedAudioIndex, selectedVideoIndex);
+  };
+
+  useEffect(() => {
+    if (onAddTrack) {
+      (window as any).__audiosAddTrack = addNewTrack;
+    }
+    return () => {
+      delete (window as any).__audiosAddTrack;
+    };
+  }, [onAddTrack, addNewTrack]);
+
+  useEffect(() => {
+    if (!preset || audioPresetApplied) return;
+    audioTracks.forEach((trackId) => {
+      updateAudioTrackConfig(trackId, {
+        sourceFolder: preset.Default_Audio_Directory || "",
+        extension: "all",
+        language: preset.Default_Audio_Language
+          ? normalizeLanguage(preset.Default_Audio_Language)
+          : "und",
+      });
+    });
+    setAudioPresetApplied(true);
+  }, [preset, audioPresetApplied, audioTracks, updateAudioTrackConfig, setAudioPresetApplied]);
+
+  const scanAudios = useCallback(async (folderPath: string) => {
+    if (!folderPath) {
+      onAudioFilesChange([]);
+      return;
+    }
+    const extensions =
+      currentConfig.extension === 'all' ? audioExtensions : [currentConfig.extension];
+    const results = await scanMedia({
+      folder: folderPath,
+      extensions,
+      recursive: true,
+      type: 'audio',
+      include_tracks: false,
+    });
+    const normalized = (results as ExternalFile[]).map((file, index) => ({
+      ...file,
+      type: 'audio' as const,
+      language: currentConfig.language,
+      trackName: currentConfig.trackName,
+      delay: Number(currentConfig.delay) || 0,
+      isDefault: currentConfig.isDefault,
+      isForced: currentConfig.isForced,
+      muxAfter: currentConfig.muxAfter,
+    }));
+    onAudioFilesChange(syncAudioLinks(normalized));
+  }, [currentConfig, onAudioFilesChange, syncAudioLinks]);
+
+  useEffect(() => {
+    if (audioFiles.length === 0) return;
+    const isSynced = audioFiles.every((file, index) => file.matchedVideoId === videoFiles[index]?.id);
+    if (!isSynced) {
+      onAudioFilesChange(syncAudioLinks(audioFiles));
+    }
+  }, [audioFiles, onAudioFilesChange, syncAudioLinks, videoFiles]);
+
+  const confirmDeleteTrack = (trackId: string) => {
+    if (audioTracks.length <= 1) return;
+    setTrackToDelete(trackId);
+    setDeleteDialogOpen(true);
+  };
+
+  const deleteTrack = () => {
+    if (!trackToDelete || audioTracks.length <= 1) return;
+    
+    const deletedNumber = trackToDelete;
+    setAudioTracks(audioTracks.filter((track) => track !== trackToDelete));
+    removeAudioTrackConfig(trackToDelete);
+    
+    if (activeAudioTrack === trackToDelete) {
+      const remainingTracks = audioTracks.filter(t => t !== trackToDelete);
+      setActiveAudioTrack(remainingTracks[0] || '1');
+    }
+    
+    setDeleteDialogOpen(false);
+    setTrackToDelete(null);
+    
+    toast({
+      title: "Track Deleted",
+      description: `Audio #${deletedNumber} has been removed.`,
+      variant: "destructive",
+    });
+  };
+
+  return (
+    <div className="flex flex-col h-full p-5 gap-4">
+      {/* Track Selector Card */}
+      <div className="fluent-surface p-4 min-h-[56px]">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Select value={activeAudioTrack} onValueChange={setActiveAudioTrack}>
+              <SelectTrigger className="w-32 h-9 bg-secondary text-secondary-foreground border border-panel-border font-medium">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {audioTracks.map((track) => (
+                  <SelectItem key={track} value={track}>Audio #{track}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {audioTracks.length > 1 && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9 text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={() => confirmDeleteTrack(activeAudioTrack)}
+              >
+                <Trash2 className="w-4 h-4" />
+              </Button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 gap-2"
+              onClick={duplicateTrack}
+            >
+              <Copy className="w-4 h-4" />
+              Duplicate
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              className="h-9 gap-2"
+              onClick={addNewTrack}
+            >
+              <Plus className="w-4 h-4" />
+              Add Track
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Track Configuration Card */}
+      <div className="fluent-surface p-3 space-y-2.5 min-h-[188px]">
+        <h3 className="text-sm font-semibold text-foreground">Track Configuration</h3>
+        
+        {/* Source Folder */}
+        <div className="flex items-center gap-3">
+          <label className="text-[13px] text-muted-foreground w-28 shrink-0">Source Folder</label>
+          <div className="flex-1 flex items-center gap-2">
+            <Input
+              value={currentConfig.sourceFolder}
+              onChange={(e) => updateCurrentConfig({ sourceFolder: e.target.value })}
+              placeholder="Select audio folder path..."
+              className="h-9 flex-1"
+            />
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-9 w-9"
+              onClick={async () => {
+                const folder = await pickDirectory();
+                if (folder) {
+                  updateCurrentConfig({ sourceFolder: folder });
+                  scanAudios(folder);
+                }
+              }}
+            >
+              <FolderOpen className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 bg-primary/10 text-primary hover:bg-primary/20"
+              onClick={() => scanAudios(currentConfig.sourceFolder)}
+            >
+              <RefreshCw className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 bg-destructive/10 text-destructive hover:bg-destructive/20"
+              onClick={() => {
+                updateCurrentConfig({ sourceFolder: '' });
+                onAudioFilesChange([]);
+              }}
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Settings Grid */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="flex items-center gap-2">
+            <label className="text-[13px] text-muted-foreground">Extension</label>
+            <Select value={currentConfig.extension} onValueChange={(v) => updateCurrentConfig({ extension: v })}>
+              <SelectTrigger className="h-9 flex-1">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Formats</SelectItem>
+                {AUDIO_EXTENSIONS.map((ext) => (
+                  <SelectItem key={ext} value={ext}>
+                    {ext.toUpperCase()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-[13px] text-muted-foreground">Language</label>
+            <LanguageSelect
+              value={currentConfig.language}
+              onChange={(v) => updateCurrentConfig({ language: v })}
+              className="h-9 flex-1"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-[13px] text-muted-foreground">Track Name</label>
+            <Input
+              value={currentConfig.trackName}
+              onChange={(e) => updateCurrentConfig({ trackName: e.target.value })}
+              placeholder="Enter name"
+              className="h-9 flex-1"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-[13px] text-muted-foreground">Mux After</label>
+            <Select value={currentConfig.muxAfter} onValueChange={(v) => updateCurrentConfig({ muxAfter: v })}>
+              <SelectTrigger className="h-9 flex-1">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {muxAfterOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        {/* Flags Row */}
+        <div className="flex items-center justify-between gap-4 pt-1">
+          <div className="flex items-center gap-2">
+            <label className="text-[13px] text-muted-foreground">Delay</label>
+            <Input
+              value={currentConfig.delay}
+              onChange={(e) => updateCurrentConfig({ delay: e.target.value })}
+              className="h-9 w-24 text-center font-mono"
+            />
+            <span className="text-[13px] text-muted-foreground">sec</span>
+          </div>
+
+          <div className="h-5 w-px bg-border" />
+
+          <div className="flex items-center gap-2">
+            <Checkbox 
+              id="audio-default" 
+              checked={currentConfig.isDefault}
+              onCheckedChange={(checked) => updateCurrentConfig({ isDefault: checked as boolean })}
+            />
+            <label htmlFor="audio-default" className="text-[13px] cursor-pointer">Default</label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Checkbox 
+              id="audio-forced"
+              checked={currentConfig.isForced}
+              onCheckedChange={(checked) => updateCurrentConfig({ isForced: checked as boolean })}
+            />
+            <label htmlFor="audio-forced" className="text-[13px] cursor-pointer">Forced</label>
+          </div>
+
+          <Button
+            variant="default"
+            size="sm"
+            className="h-8 px-4 text-xs"
+            onClick={applyCurrentConfigToFiles}
+          >
+            Apply
+          </Button>
+        </div>
+      </div>
+
+      {/* Matching Panel */}
+      <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
+        {/* Video Files Card */}
+        <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
+          <div className="px-4 py-2.5 bg-panel-header/70 border-b border-panel-border/30">
+            <div className="flex items-center gap-2">
+              {canLinkSelection ? (
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={linkAudioToVideo}
+                >
+                  Link
+                </Button>
+              ) : null}
+              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Video Files</h4>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto scrollbar-thin">
+            {videoFiles.map((file, index) => (
+              <div
+                key={file.id}
+                onClick={() => setSelectedVideoIndex(index)}
+                className={cn(
+                  "px-4 h-11 text-sm border-b border-panel-border/25 cursor-pointer transition-colors font-mono flex items-center",
+                  selectedVideoIndex === index 
+                    ? "bg-selection border-l-2 border-l-selection-border" 
+                    : "hover:bg-accent/30"
+                )}
+              >
+                <span className="text-muted-foreground mr-2">{index + 1}</span>
+                <span className="text-foreground/80">{file.name}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Audio Files Card */}
+        <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
+          <div className="px-4 py-2.5 bg-panel-header/70 border-b border-panel-border/30">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Audio Files</h4>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() =>
+                    selectedAudioIndex !== null && reorderAudioFile(selectedAudioIndex, selectedAudioIndex - 1)
+                  }
+                  disabled={selectedAudioIndex === null || selectedAudioIndex === 0}
+                >
+                  <ChevronUp className="w-3.5 h-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() =>
+                    selectedAudioIndex !== null && reorderAudioFile(selectedAudioIndex, selectedAudioIndex + 1)
+                  }
+                  disabled={selectedAudioIndex === null || selectedAudioIndex === audioFiles.length - 1}
+                >
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => selectedAudioIndex !== null && duplicateAudioFile(selectedAudioIndex)}
+                  disabled={selectedAudioIndex === null}
+                >
+                  <Copy className="w-3 h-3 mr-1" />
+                  Duplicate
+                </Button>
+              </div>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto scrollbar-thin">
+            {audioFiles.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-center py-12">
+                <div className="w-12 h-12 rounded-xl bg-muted/50 flex items-center justify-center mb-3">
+                  <AudioLines className="w-6 h-6 text-muted-foreground/50" />
+                </div>
+                <p className="text-muted-foreground text-sm">No audio files</p>
+                <p className="text-muted-foreground/60 text-xs mt-1">Add source folder</p>
+              </div>
+            ) : (
+              audioFiles.map((file, index) => (
+                <div
+                  key={file.id}
+                  draggable
+                  onDragStart={() => handleDragStart(index)}
+                  onDragEnter={() => handleDragEnter(index)}
+                  onDragEnd={handleDragEnd}
+                  onDragOver={(e) => e.preventDefault()}
+                  onClick={() => setSelectedAudioIndex(index)}
+                  onDoubleClick={() => openEditDialog(file.id)}
+                  className={cn(
+                    "px-4 h-11 text-sm border-b border-panel-border/25 cursor-pointer transition-colors font-mono flex items-center justify-between gap-3",
+                    selectedAudioIndex === index 
+                      ? "bg-selection border-l-2 border-l-selection-border" 
+                      : "hover:bg-accent/30",
+                    draggedIndex === index && "opacity-60"
+                  )}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <GripVertical className="w-4 h-4 text-muted-foreground/50 hover:text-muted-foreground cursor-grab active:cursor-grabbing shrink-0" />
+                    <span className="text-muted-foreground">{index + 1}</span>
+                    <span className="text-foreground/80 truncate">{file.name}</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        removeAudioFile(index);
+                      }}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openEditDialog(file.id);
+                      }}
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        duplicateAudioFile(index);
+                      }}
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
+      <BaseModal
+        open={editDialogOpen}
+        onOpenChange={(open) => {
+          setEditDialogOpen(open);
+          if (!open) {
+            setEditingFileId(null);
+          }
+        }}
+        title="Edit Audio Track"
+        subtitle="Update audio track settings."
+        icon={<AudioLines className="w-5 h-5 text-primary" />}
+        className="max-w-lg"
+        footerRight={
+          <>
+            <Button
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setEditDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={applyEditChanges}>Save Changes</Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Source File</label>
+            <div
+              className="h-9 px-3 flex items-center rounded-md border border-panel-border/50 bg-panel-header/60 text-sm text-foreground truncate"
+              title={editingFile?.name || ""}
+            >
+              {editingFile?.name || "—"}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Language</label>
+              <LanguageSelect
+                value={editForm.language}
+                onChange={(value) => setEditForm((prev) => ({ ...prev, language: value }))}
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Track Name</label>
+              <Input
+                value={editForm.trackName}
+                onChange={(event) => setEditForm((prev) => ({ ...prev, trackName: event.target.value }))}
+                placeholder="Track name"
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Delay (sec)</label>
+              <Input
+                value={editForm.delay}
+                onChange={(event) => setEditForm((prev) => ({ ...prev, delay: event.target.value }))}
+                className="h-9 font-mono"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Track Order</label>
+              <Select
+                value={editForm.muxAfter}
+                onValueChange={(value) => setEditForm((prev) => ({ ...prev, muxAfter: value }))}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {muxAfterOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-[1fr_auto] gap-4">
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Track Flags</div>
+              <div className="flex items-center gap-5">
+                <div className="flex items-center gap-3">
+                  <Checkbox
+                    id="audio-edit-default"
+                    checked={editForm.isDefault}
+                    onCheckedChange={(checked) =>
+                      setEditForm((prev) => ({ ...prev, isDefault: checked as boolean }))
+                    }
+                  />
+                  <label htmlFor="audio-edit-default" className="text-sm">
+                    Default
+                  </label>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Checkbox
+                    id="audio-edit-forced"
+                    checked={editForm.isForced}
+                    onCheckedChange={(checked) =>
+                      setEditForm((prev) => ({ ...prev, isForced: checked as boolean }))
+                    }
+                  />
+                  <div className="flex flex-col">
+                    <label htmlFor="audio-edit-forced" className="text-sm">
+                      Forced
+                    </label>
+                    <span className="text-[11px] text-muted-foreground">
+                      Rare for audio; some players may ignore.
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/30 px-4 py-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Bulk Action</div>
+              <div className="flex items-center gap-3">
+                <Checkbox
+                  id="audio-edit-delay-all"
+                  checked={editForm.applyDelayToAll}
+                  onCheckedChange={(checked) =>
+                    setEditForm((prev) => ({ ...prev, applyDelayToAll: checked as boolean }))
+                  }
+                />
+                <label htmlFor="audio-edit-delay-all" className="text-sm">
+                  Apply delay to all
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </BaseModal>
+
+      {/* Delete Confirmation Dialog */}
+      <BaseModal
+        variant="alert"
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        title="Delete Audio Track"
+        icon={<Trash2 className="w-5 h-5 text-destructive" />}
+        className="max-w-md"
+        footerRight={
+          <>
+            <AlertDialogCancel className="mt-0">Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={deleteTrack} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </>
+        }
+      >
+        <p className="text-sm text-muted-foreground">
+          Are you sure you want to delete Audio #{trackToDelete}? This will remove all settings associated with this track.
+        </p>
+      </BaseModal>
+    </div>
+  );
+}

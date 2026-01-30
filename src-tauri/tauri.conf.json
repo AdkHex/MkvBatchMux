@@ -1,0 +1,45 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devPath": "http://localhost:8080",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "MKV Batch Muxing Tool",
+    "version": "1.0.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "open": true,
+        "save": true
+      },
+      "fs": {
+        "all": true
+      },
+      "path": {
+        "all": true
+      },
+      "shell": {
+        "open": true
+      }
+    },
+    "bundle": {
+      "identifier": "com.ionicboy.mkvbatchmuxingtool",
+      "icon": ["../mkv.png", "icons/icon.png", "icons/icon.ico"]
+    },
+    "windows": [
+      {
+        "title": "MKV Batch Muxing Tool",
+        "width": 1280,
+        "height": 800,
+        "fullscreen": true,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false
+      }
+    ]
+  }
+}
