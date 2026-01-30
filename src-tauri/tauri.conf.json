@@ -28,6 +28,7 @@
     },
     "bundle": {
       "identifier": "com.ionicboy.mkvbatchmuxingtool",
+      "targets": ["msi"],
       "icon": [
         "../mkv.png",
         "icons/icon.png",
@@ -39,7 +40,8 @@
         "title": "MKV Batch Muxing Tool",
         "width": 1280,
         "height": 800,
-        "fullscreen": true,
+        "fullscreen": false,
+        "maximized": false,
         "resizable": true,
         "decorations": true,
         "transparent": false

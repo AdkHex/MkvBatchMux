@@ -1,8 +1,7 @@
-name: Build and bump version
+name: Build installers
 
 on:
-  push:
-    branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: write

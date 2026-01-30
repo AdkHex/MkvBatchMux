@@ -8,12 +8,17 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::sync::{Arc, Mutex, mpsc};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
 use walkdir::WalkDir;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Preset {
@@ -312,8 +317,17 @@ fn should_include_file(path: &Path, allowed_extensions: &[String]) -> bool {
         .unwrap_or(false)
 }
 
+fn hidden_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 fn mediainfo_available() -> bool {
-    Command::new("mediainfo")
+    hidden_command("mediainfo")
         .arg("--Version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -323,7 +337,7 @@ fn mediainfo_available() -> bool {
 }
 
 fn tool_available(tool: &str, version_arg: &str) -> bool {
-    Command::new(tool)
+    hidden_command(tool)
         .arg(version_arg)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -336,7 +350,7 @@ fn get_mkvmerge_info(path: &Path) -> Option<serde_json::Value> {
     if !tool_available("mkvmerge", "-V") {
         return None;
     }
-    let output = Command::new("mkvmerge")
+    let output = hidden_command("mkvmerge")
         .arg("-J")
         .arg(path)
         .output()
@@ -490,7 +504,7 @@ fn get_mediainfo(path: &Path) -> Option<serde_json::Value> {
     if !mediainfo_available() {
         return None;
     }
-    let output = Command::new("mediainfo")
+    let output = hidden_command("mediainfo")
         .arg("--Output=JSON")
         .arg(path)
         .output()
@@ -1890,7 +1904,7 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
                 serde_json::json!({ "job_id": job.id, "line": full_command }),
             );
 
-            let mut cmd = Command::new("mkvpropedit");
+            let mut cmd = hidden_command("mkvpropedit");
             cmd.arg(&job.video.path);
             for arg in edit_args {
                 cmd.arg(arg);
@@ -1997,7 +2011,7 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
         return;
     }
 
-    let mut command = Command::new("mkvmerge");
+    let mut command = hidden_command("mkvmerge");
     let command_args = build_mkvmerge_command(&job, settings, &output_path, state);
     log_job_plan(state, &job, &output_path);
     let command_line = command_args

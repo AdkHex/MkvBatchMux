@@ -250,8 +250,9 @@ export function VideosTab({
             <div className="fluent-loading-body">
               <div className="fluent-spinner" />
               <div className="fluent-loading-text">
-                Scanning Video {Math.min(scanProgress.current + 1, scanProgress.total)}/
-                {scanProgress.total}
+                {scanProgress.total > 0
+                  ? `${Math.min(scanProgress.current, scanProgress.total)}/${scanProgress.total} files loaded`
+                  : "Scanning videos..."}
               </div>
             </div>
           </div>
@@ -367,14 +368,16 @@ export function VideosTab({
             {files.length === 0 ? (
               <EmptyState
                 icon={
-                  isScanning ? (
+                  isScanning && !showScanOverlay ? (
                     <div className="w-6 h-6 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground/70 animate-spin" />
                   ) : (
                     <Film className="w-6 h-6 text-muted-foreground/60" />
                   )
                 }
-                title={isScanning ? "Scanning videos..." : "No video files found"}
-                description={isScanning ? "Loading video metadata" : "Add a source folder to load videos"}
+                title={isScanning && !showScanOverlay ? "Scanning videos..." : "No video files found"}
+                description={
+                  isScanning && !showScanOverlay ? "Loading video metadata" : "Add a source folder to load videos"
+                }
               />
             ) : (
               files.map((file, index) => (
