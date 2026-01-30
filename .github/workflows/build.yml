@@ -8,9 +8,10 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    if: github.actor != 'github-actions[bot]'
+  bump:
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.setsha.outputs.sha }}
 
     steps:
       - name: Checkout
@@ -28,15 +29,61 @@ jobs:
         run: npm ci
 
       - name: Bump version
-        run: node scripts/bump-version.mjs
-
-      - name: Commit version bump
+        id: bump
+        if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip ci]')
         run: |
+          node scripts/bump-version.mjs
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
           git commit -m "chore: bump version [skip ci]"
           git push
+      - name: Set sha output
+        id: setsha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Build
-        run: npm run build
+  build:
+    needs: bump
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux deps
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.0-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install
+        run: npm ci
+
+      - name: Build Tauri
+        run: npm run tauri:build
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-bundles-${{ matrix.os }}
+          path: src-tauri/target/release/bundle/**
