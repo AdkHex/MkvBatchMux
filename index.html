@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- `dark` is set here, not in React: the document paints before React mounts,
+     so applying it later flashes a white window on launch. -->
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MKVBatchMux</title>
+    <meta name="description" content="MKVBatchMux by Ionicboy" />
+    <meta name="author" content="Ionicboy" />
+    <style>
+      /* Matches --background in the .dark theme so the very first frame is dark. */
+      html.dark,
+      html.dark body {
+        background: #1c1c1c;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/app/main.tsx"></script>
+  </body>
+</html>

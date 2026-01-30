@@ -1,0 +1,25 @@
+{
+  "controls": [
+    {
+      "id": "git",
+      "title": "Git",
+      "command": "$HOME/.local/bin/gitgui",
+      "cwd": ".",
+      "height": 420
+    },
+    {
+      "id": "tests",
+      "title": "Tests",
+      "command": "npm run test:watch",
+      "cwd": ".",
+      "height": 260
+    },
+    {
+      "id": "app",
+      "title": "App",
+      "type": "browser",
+      "url": "http://localhost:8080",
+      "chrome": false
+    }
+  ]
+}

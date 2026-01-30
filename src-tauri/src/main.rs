@@ -1,0 +1,4096 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod audiosync;
+
+use crc32fast::Hasher;
+use fs2::available_space;
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Manager, State};
+use walkdir::WalkDir;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+const MAX_PARALLEL_JOBS: usize = 16;
+
+static MEDIAINFO_AVAILABLE: OnceLock<bool> = OnceLock::new();
+static MKVMERGE_AVAILABLE: OnceLock<bool> = OnceLock::new();
+static FILE_INFO_CACHE: OnceLock<Mutex<HashMap<String, serde_json::Value>>> = OnceLock::new();
+/// Monotonic counter making temporary output filenames unique even when two
+/// parallel jobs read the same clock value.
+static TEMP_OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct Preset {
+    #[serde(rename = "Preset_Name")]
+    preset_name: String,
+    #[serde(rename = "Default_Video_Directory")]
+    default_video_directory: String,
+    #[serde(rename = "Default_Video_Extensions")]
+    default_video_extensions: Vec<String>,
+    #[serde(rename = "Default_Subtitle_Directory")]
+    default_subtitle_directory: String,
+    #[serde(rename = "Default_Subtitle_Extensions")]
+    default_subtitle_extensions: Vec<String>,
+    #[serde(rename = "Default_Subtitle_Language")]
+    default_subtitle_language: String,
+    #[serde(rename = "Default_Audio_Directory")]
+    default_audio_directory: String,
+    #[serde(rename = "Default_Audio_Extensions")]
+    default_audio_extensions: Vec<String>,
+    #[serde(rename = "Default_Audio_Language")]
+    default_audio_language: String,
+    #[serde(rename = "Default_Chapter_Directory")]
+    default_chapter_directory: String,
+    #[serde(rename = "Default_Chapter_Extensions")]
+    default_chapter_extensions: Vec<String>,
+    #[serde(rename = "Default_Attachment_Directory")]
+    default_attachment_directory: String,
+    #[serde(rename = "Default_Destination_Directory")]
+    default_destination_directory: String,
+    #[serde(rename = "Default_Favorite_Subtitle_Languages")]
+    default_favorite_subtitle_languages: Vec<String>,
+    #[serde(rename = "Default_Favorite_Audio_Languages")]
+    default_favorite_audio_languages: Vec<String>,
+}
+
+impl Default for Preset {
+    fn default() -> Self {
+        Self {
+            preset_name: "Preset #1".to_string(),
+            default_video_directory: String::new(),
+            default_video_extensions: vec!["MKV".to_string()],
+            default_subtitle_directory: String::new(),
+            default_subtitle_extensions: vec!["ASS".to_string()],
+            default_subtitle_language: "English".to_string(),
+            default_audio_directory: String::new(),
+            default_audio_extensions: vec!["AAC".to_string()],
+            default_audio_language: "English".to_string(),
+            default_chapter_directory: String::new(),
+            default_chapter_extensions: vec!["XML".to_string()],
+            default_attachment_directory: String::new(),
+            default_destination_directory: String::new(),
+            default_favorite_subtitle_languages: vec!["English".to_string(), "Arabic".to_string()],
+            default_favorite_audio_languages: vec!["English".to_string(), "Arabic".to_string()],
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct OptionsData {
+    #[serde(rename = "Presets")]
+    presets: Vec<Preset>,
+    #[serde(rename = "FavoritePresetId")]
+    favorite_preset_id: usize,
+    #[serde(rename = "Dark_Mode")]
+    dark_mode: bool,
+    #[serde(rename = "Attachment_Expert_Mode_Info_Message_Show")]
+    attachment_expert_mode_info_message_show: bool,
+    #[serde(rename = "Choose_Preset_On_Startup")]
+    choose_preset_on_startup: bool,
+}
+
+impl Default for OptionsData {
+    fn default() -> Self {
+        Self {
+            presets: vec![Preset::default()],
+            favorite_preset_id: 0,
+            dark_mode: false,
+            attachment_expert_mode_info_message_show: true,
+            choose_preset_on_startup: false,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct TrackInfo {
+    id: String,
+    #[serde(rename = "type")]
+    track_type: String,
+    codec: Option<String>,
+    language: Option<String>,
+    name: Option<String>,
+    #[serde(rename = "isDefault")]
+    is_default: Option<bool>,
+    #[serde(rename = "isForced")]
+    is_forced: Option<bool>,
+    bitrate: Option<u64>, // Bitrate in bits per second
+    action: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct VideoFileInfo {
+    id: String,
+    name: String,
+    path: String,
+    size: u64,
+    duration: Option<String>,
+    /// The same length as `duration`, unrounded. `duration` is a display string
+    /// rounded to whole seconds, which is far too coarse to divide one length
+    /// by another and read a frame-rate conversion out of the result.
+    #[serde(rename = "durationSeconds")]
+    duration_seconds: Option<f64>,
+    fps: Option<f64>,
+    status: String,
+    tracks: Vec<TrackInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ExternalFileInfo {
+    id: String,
+    name: String,
+    path: String,
+    #[serde(rename = "type")]
+    file_type: String,
+    #[serde(rename = "source")]
+    source: Option<String>,
+    language: Option<String>,
+    #[serde(rename = "trackName")]
+    track_name: Option<String>,
+    delay: Option<f64>,
+    #[serde(rename = "isDefault")]
+    is_default: Option<bool>,
+    #[serde(rename = "isForced")]
+    is_forced: Option<bool>,
+    #[serde(rename = "muxAfter")]
+    mux_after: Option<String>,
+    #[serde(rename = "matchedVideoId")]
+    matched_video_id: Option<String>,
+    size: Option<u64>,
+    bitrate: Option<u64>,
+    duration: Option<String>,
+    /// See `VideoFileInfo::duration_seconds` -- the unrounded length, kept so
+    /// an audio file's length can be divided by its video's.
+    #[serde(rename = "durationSeconds")]
+    duration_seconds: Option<f64>,
+    #[serde(rename = "trackId")]
+    track_id: Option<u64>,
+    #[serde(default)]
+    tracks: Vec<TrackInfo>,
+    #[serde(rename = "includedTrackIds", default)]
+    included_track_ids: Option<Vec<u64>>,
+    #[serde(rename = "includeSubtitles", default)]
+    include_subtitles: Option<bool>,
+    #[serde(rename = "includedSubtitleTrackIds", default)]
+    included_subtitle_track_ids: Option<Vec<u64>>,
+    #[serde(rename = "includedSubtitlesDefault", default)]
+    included_subtitles_default: Option<bool>,
+    #[serde(rename = "includedSubtitlesForced", default)]
+    included_subtitles_forced: Option<bool>,
+    #[serde(rename = "includedSubtitlesFirst", default)]
+    included_subtitles_first: Option<bool>,
+    #[serde(rename = "trackOverrides", default)]
+    track_overrides: HashMap<String, TrackOverride>,
+    #[serde(default)]
+    stretch: Option<StretchSetting>,
+    #[serde(skip)]
+    apply_language: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct TrackOverride {
+    language: Option<String>,
+    delay: Option<f64>,
+    #[serde(rename = "trackName")]
+    track_name: Option<String>,
+    #[serde(default)]
+    stretch: Option<StretchSetting>,
+}
+
+/// An opt-in linear stretch for a frame-rate-converted track, emitted as the
+/// extended `--sync <tid>:<offset>,<num>/<den>` form. Absent for every track
+/// the user has not explicitly opted in, so the plain offset stays the default.
+///
+/// mkvmerge multiplies every timestamp by `num/den`, so a ratio above 1 slows
+/// the track down: audio timed at 25fps against a 23.976fps video is short and
+/// takes 25025/24000. The frontend derives the ratio (see
+/// `rateConversionFor` in `delayConversion.ts`); this side only renders it.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+struct StretchSetting {
+    num: f64,
+    den: f64,
+}
+
+impl StretchSetting {
+    /// A ratio is only usable if both halves are finite and positive; a zero
+    /// denominator would make mkvmerge reject the whole command.
+    fn is_usable(&self) -> bool {
+        self.num.is_finite() && self.den.is_finite() && self.num > 0.0 && self.den > 0.0
+    }
+}
+
+/// The whole milliseconds mkvmerge's `--sync` takes, from the seconds the
+/// delay field holds.
+///
+/// Rounded, not cast. The field holds three decimals, i.e. whole milliseconds,
+/// but `1.001` is not representable in binary and reads as `1000.9999...` once
+/// multiplied out; `as i64` truncates that to 1000 and the mux lands 1 ms short
+/// of what the field shows. That happens for 190 of the 20 001 whole-millisecond
+/// values within ±10 s -- every odd millisecond from 1.001 to 1.023 s, every
+/// fourth from 2.002 to 2.046 s, and so on -- and never below 1 s, which is why
+/// the old tests, all under 2 s, passed.
+fn delay_to_sync_ms(delay_seconds: f64) -> i64 {
+    (delay_seconds * 1000.0).round() as i64
+}
+
+/// Render the `--sync` value for a track: a plain offset, or an offset with a
+/// linear stretch when one is set.
+///
+/// The offset and the stretch are independent -- the stretch is applied about
+/// t=0, so the offset remains the start-referenced delay either way.
+fn format_sync_value(track_id: u64, delay_seconds: f64, stretch: Option<StretchSetting>) -> String {
+    let offset_ms = delay_to_sync_ms(delay_seconds);
+    match stretch {
+        Some(ratio) if ratio.is_usable() => {
+            format!(
+                "{}:{},{}/{}",
+                track_id,
+                offset_ms,
+                format_ratio_part(ratio.num),
+                format_ratio_part(ratio.den)
+            )
+        }
+        _ => format!("{}:{}", track_id, offset_ms),
+    }
+}
+
+/// Ratios are whole numbers in every case this app generates (24000/25025 and
+/// friends), so they are printed without a trailing ".0" that would read as a
+/// float to anyone comparing the command against MKVToolNix documentation.
+fn format_ratio_part(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{}", value as i64)
+    } else {
+        format!("{}", value)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ScanRequest {
+    folder: String,
+    extensions: Vec<String>,
+    recursive: bool,
+    #[serde(default)]
+    include_patterns: Vec<String>,
+    #[serde(default)]
+    exclude_patterns: Vec<String>,
+    #[serde(default)]
+    ignore_patterns: Vec<String>,
+    #[serde(rename = "type")]
+    file_type: String,
+    include_tracks: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct InspectRequest {
+    paths: Vec<String>,
+    #[serde(rename = "type")]
+    file_type: String,
+    include_tracks: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct InspectStreamRequest {
+    scan_id: String,
+    paths: Vec<String>,
+    #[serde(rename = "type")]
+    file_type: String,
+    include_tracks: bool,
+    batch_size: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InspectStreamChunkEvent {
+    scan_id: String,
+    processed: usize,
+    total: usize,
+    items: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InspectStreamDoneEvent {
+    scan_id: String,
+    total: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InspectStreamErrorEvent {
+    scan_id: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MuxSettings {
+    destination_dir: String,
+    output_naming_pattern: Option<String>,
+    overwrite_source: bool,
+    add_crc: bool,
+    remove_old_crc: bool,
+    keep_log_file: bool,
+    abort_on_errors: bool,
+    max_parallel_jobs: Option<usize>,
+    only_keep_audios_enabled: bool,
+    only_keep_subtitles_enabled: bool,
+    only_keep_audio_languages: Vec<String>,
+    only_keep_subtitle_languages: Vec<String>,
+    discard_old_chapters: bool,
+    discard_old_attachments: bool,
+    allow_duplicate_attachments: bool,
+    attachments_expert_mode: bool,
+    remove_global_tags: bool,
+    make_audio_default_language: Option<String>,
+    make_subtitle_default_language: Option<String>,
+    use_mkvpropedit: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct MuxJobRequest {
+    id: String,
+    video: VideoFileInfo,
+    audios: Vec<ExternalFileInfo>,
+    subtitles: Vec<ExternalFileInfo>,
+    chapters: Vec<ExternalFileInfo>,
+    attachments: Vec<ExternalFileInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct MuxStartRequest {
+    settings: MuxSettings,
+    jobs: Vec<MuxJobRequest>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MuxPreviewPlan {
+    video: String,
+    output: String,
+    audios: Vec<ExternalFileInfo>,
+    subtitles: Vec<ExternalFileInfo>,
+    chapters: Vec<ExternalFileInfo>,
+    attachments: Vec<ExternalFileInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MuxPreviewResult {
+    job_id: String,
+    command: String,
+    warnings: Vec<String>,
+    plan: MuxPreviewPlan,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct MuxProgressEvent {
+    job_id: String,
+    status: String,
+    progress: u8,
+    message: Option<String>,
+    size_after: Option<u64>,
+    error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AppPaths {
+    app_data_dir: PathBuf,
+    options_path: PathBuf,
+    log_path: PathBuf,
+}
+
+#[derive(Debug)]
+struct MuxState {
+    running: bool,
+    pause: bool,
+    stop: bool,
+    queue: Vec<MuxJobRequest>,
+    settings: Option<MuxSettings>,
+    children: HashMap<String, Arc<Mutex<Child>>>,
+}
+
+#[derive(Clone)]
+struct AppState {
+    paths: AppPaths,
+    mux_state: Arc<Mutex<MuxState>>,
+    cancelled_scans: Arc<Mutex<HashSet<String>>>,
+}
+
+/// Lock a mutex, recovering the guard if a previous holder panicked.
+///
+/// The muxing state is plain data (flags, a queue, child handles); a panic
+/// elsewhere does not leave it logically corrupt. Previously every call site
+/// used `.lock().unwrap()`, so a single panic poisoned the mutex and made every
+/// later command -- including pause and stop -- panic too, permanently bricking
+/// the app. Recovering the guard degrades gracefully instead.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+impl AppState {
+    fn mux(&self) -> std::sync::MutexGuard<'_, MuxState> {
+        lock_or_recover(&self.mux_state)
+    }
+
+    fn scans(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        lock_or_recover(&self.cancelled_scans)
+    }
+
+    /// Read the stop flag without holding the lock afterwards.
+    fn stop_requested(&self) -> bool {
+        self.mux().stop
+    }
+}
+
+impl Default for MuxState {
+    fn default() -> Self {
+        Self {
+            running: false,
+            pause: false,
+            stop: false,
+            queue: Vec::new(),
+            settings: None,
+            children: HashMap::new(),
+        }
+    }
+}
+
+fn ensure_dir(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|e| format!("Failed to create directory: {e}"))
+}
+
+fn read_options(path: &Path) -> Result<OptionsData, String> {
+    if path.exists() {
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("Failed to read options: {e}"))?;
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse options JSON: {e}"))
+    } else {
+        Ok(OptionsData::default())
+    }
+}
+
+fn write_options(path: &Path, options: &OptionsData) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(options)
+        .map_err(|e| format!("Failed to encode options: {e}"))?;
+    fs::write(path, content).map_err(|e| format!("Failed to write options: {e}"))
+}
+
+fn normalize_extension_list(extensions: &[String]) -> HashSet<String> {
+    extensions
+        .iter()
+        .map(|ext| ext.trim_start_matches('.').to_ascii_lowercase())
+        .filter(|ext| !ext.is_empty())
+        .collect()
+}
+
+fn should_include_file(path: &Path, allowed_extensions: &HashSet<String>) -> bool {
+    if allowed_extensions.is_empty() || allowed_extensions.contains("all") {
+        return true;
+    }
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| allowed_extensions.contains(&ext.to_ascii_lowercase()))
+        .unwrap_or(false)
+}
+
+fn normalize_patterns(patterns: &[String]) -> Vec<String> {
+    patterns
+        .iter()
+        .flat_map(|value| value.split([',', ';', '\n']))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return value.contains(pattern);
+    }
+
+    let mut cursor = 0usize;
+    let anchored_start = !pattern.starts_with('*');
+    let anchored_end = !pattern.ends_with('*');
+
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        let Some(found) = value[cursor..].find(part) else {
+            return false;
+        };
+        if index == 0 && anchored_start && found != 0 {
+            return false;
+        }
+        cursor += found + part.len();
+    }
+
+    if anchored_end {
+        if let Some(last) = parts.iter().rev().find(|part| !part.is_empty()) {
+            return value.ends_with(last);
+        }
+    }
+    true
+}
+
+fn matches_any_pattern(path: &Path, root: &Path, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    patterns
+        .iter()
+        .any(|pattern| wildcard_match(pattern, &name) || wildcard_match(pattern, &relative))
+}
+
+pub(crate) fn hidden_command(program: &str) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new(program);
+        command.creation_flags(CREATE_NO_WINDOW);
+        return command;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new(program)
+    }
+}
+
+pub(crate) fn tool_available(tool: &str, version_arg: &str) -> bool {
+    hidden_command(tool)
+        .arg(version_arg)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn mediainfo_available() -> bool {
+    *MEDIAINFO_AVAILABLE.get_or_init(|| tool_available("mediainfo", "--Version"))
+}
+
+fn mkvmerge_available() -> bool {
+    *MKVMERGE_AVAILABLE.get_or_init(|| tool_available("mkvmerge", "-V"))
+}
+
+/// First line of a tool's version output, for display in Settings.
+fn tool_version(tool: &str, version_arg: &str) -> Option<String> {
+    let output = hidden_command(tool).arg(version_arg).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyStatus {
+    /// Stable key the UI matches on, e.g. "mkvtoolnix".
+    pub id: String,
+    pub name: String,
+    /// Why the app needs it, shown under the name.
+    pub purpose: String,
+    pub available: bool,
+    /// Version string when detected, else None.
+    pub version: Option<String>,
+    /// True when the app ships it, so the user has nothing to install.
+    pub bundled: bool,
+    /// Whether the app still works without it.
+    pub required: bool,
+    /// Official download page, opened by the Install button.
+    pub download_url: String,
+}
+
+/// Where a downloaded tool is unpacked, so it survives app updates.
+fn tools_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path_resolver()
+        .app_local_data_dir()
+        .ok_or_else(|| "Could not resolve the app data directory.".to_string())?
+        .join("tools");
+    fs::create_dir_all(&dir).map_err(|err| format!("Could not create {dir:?}: {err}"))?;
+    Ok(dir)
+}
+
+/// Prepend our tools directory to this process's PATH.
+///
+/// Called after an install so the new binary is usable immediately, and at
+/// startup so a previously installed tool is found without a reinstall.
+fn register_tools_on_path(app: &AppHandle) {
+    let Ok(dir) = tools_dir(app) else { return };
+    let mut entries: Vec<PathBuf> = vec![dir.clone()];
+    // Each tool unpacks into its own subdirectory.
+    if let Ok(children) = fs::read_dir(&dir) {
+        for child in children.flatten() {
+            if child.path().is_dir() {
+                entries.push(child.path());
+            }
+        }
+    }
+    if let Some(existing) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&existing));
+    }
+    if let Ok(joined) = std::env::join_paths(entries) {
+        std::env::set_var("PATH", joined);
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Download a dependency and make it runnable.
+///
+/// Windows-only in practice: it is the platform where these tools are not
+/// already a package-manager install away. Zips are unpacked into the app's
+/// data directory and added to this process's PATH; .exe installers are run
+/// with their silent flag.
+#[tauri::command]
+fn install_dependency(app: AppHandle, id: String) -> Result<String, String> {
+    #[derive(Clone, Copy)]
+    enum Kind {
+        Zip,
+        Installer,
+    }
+
+    // Each URL is pinned to a release and to that release's SHA-256, so what
+    // runs is exactly the file that was checked when the pin was made -- an
+    // installer runs elevated, and HTTPS alone says nothing about a mirror
+    // that was swapped out upstream. To move to a newer release, change the
+    // URL and the digest together; MKVToolNix publishes a `.sha256` next to
+    // every installer, MediaInfo's is taken from the download itself.
+    let (url, sha256, kind, probe) = match id.as_str() {
+        "mediainfo" => (
+            "https://mediaarea.net/download/binary/mediainfo/26.05/MediaInfo_CLI_26.05_Windows_x64.zip",
+            "f7f80620ce6d14f4995f0de6f98e3ef18ad29496db01899571152ee3311229f9",
+            Kind::Zip,
+            "mediainfo",
+        ),
+        "mkvtoolnix" => (
+            "https://mkvtoolnix.download/windows/releases/101.0/mkvtoolnix-64-bit-101.0-setup.exe",
+            "2a170a71da6d1aecaf513c88ca7da38f8c9877790674c4df667a7c28d52dd418",
+            Kind::Installer,
+            "mkvmerge",
+        ),
+        other => return Err(format!("No installer is configured for '{other}'.")),
+    };
+
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|err| format!("Could not start the download: {err}"))?
+        .get(url)
+        .send()
+        .map_err(|err| format!("Download failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Download failed with status {}.", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|err| format!("Download failed: {err}"))?;
+
+    let actual = sha256_hex(&bytes);
+    if actual != sha256 {
+        return Err(format!(
+            "The downloaded {id} did not match the expected checksum, so it was not \
+             installed. Expected {sha256}, got {actual}. Install it manually from \
+             the official site or try again later."
+        ));
+    }
+
+    match kind {
+        Kind::Zip => {
+            let target = tools_dir(&app)?.join(&id);
+            // Replace rather than merge, so a failed previous attempt cannot
+            // leave a half-populated directory behind.
+            let _ = fs::remove_dir_all(&target);
+            fs::create_dir_all(&target)
+                .map_err(|err| format!("Could not create {target:?}: {err}"))?;
+
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+                .map_err(|err| format!("The download was not a readable archive: {err}"))?;
+            archive
+                .extract(&target)
+                .map_err(|err| format!("Could not unpack the archive: {err}"))?;
+
+            register_tools_on_path(&app);
+            // The cached probe result predates this install.
+            if !tool_available(probe, "--Version") && !tool_available(probe, "-V") {
+                return Err(
+                    "The files were unpacked but the tool still does not run. \
+                     Try installing it manually."
+                        .to_string(),
+                );
+            }
+            Ok(format!("{id} installed."))
+        }
+        Kind::Installer => {
+            let dir = tempfile::tempdir()
+                .map_err(|err| format!("Could not create a temporary directory: {err}"))?;
+            let path = dir.path().join("setup.exe");
+            fs::write(&path, &bytes)
+                .map_err(|err| format!("Could not write the installer: {err}"))?;
+
+            // /S is the silent switch for both NSIS and Inno installers, which
+            // covers every tool listed above.
+            let status = hidden_command(&path.to_string_lossy())
+                .arg("/S")
+                .status()
+                .map_err(|err| format!("Could not run the installer: {err}"))?;
+            if !status.success() {
+                return Err(
+                    "The installer did not finish. It may need administrator rights."
+                        .to_string(),
+                );
+            }
+            Ok(format!(
+                "{id} installed. Restart the app if it is not detected."
+            ))
+        }
+    }
+}
+
+/// Live status of everything the app shells out to.
+///
+/// The Settings panel renders this directly rather than a static link list, so
+/// a user can see what is actually missing instead of guessing from an error.
+#[tauri::command]
+fn dependency_status(app: AppHandle) -> Vec<DependencyStatus> {
+    let ffmpeg_bundled = audiosync::ffmpeg_is_bundled(&app);
+    let engine = audiosync::audiosync_engine_status(app.clone(), app.state());
+
+    vec![
+        DependencyStatus {
+            id: "mkvtoolnix".into(),
+            name: "MKVToolNix".into(),
+            purpose: "Performs the actual muxing (mkvmerge, mkvpropedit).".into(),
+            // Probed live rather than through the cached mkvmerge_available():
+            // that value is a OnceLock set at first use, so after installing
+            // from Settings it would keep reporting the tool as missing.
+            available: tool_available("mkvmerge", "-V"),
+            version: tool_version("mkvmerge", "-V"),
+            bundled: false,
+            required: true,
+            download_url: "https://mkvtoolnix.download/downloads.html".into(),
+        },
+        DependencyStatus {
+            id: "mediainfo".into(),
+            name: "MediaInfo CLI".into(),
+            purpose: "Reads track details from your files.".into(),
+            available: tool_available("mediainfo", "--Version"),
+            version: tool_version("mediainfo", "--Version"),
+            bundled: false,
+            required: true,
+            download_url: "https://mediaarea.net/en/MediaInfo/Download/Windows".into(),
+        },
+        DependencyStatus {
+            id: "ffmpeg".into(),
+            name: "FFmpeg".into(),
+            purpose: "Decodes audio for delay measurement.".into(),
+            available: audiosync::ffmpeg_available_for(&app),
+            version: tool_version(&audiosync::ffmpeg_tool(&app, "ffmpeg"), "-version"),
+            bundled: ffmpeg_bundled,
+            required: false,
+            download_url: "https://www.gyan.dev/ffmpeg/builds/".into(),
+        },
+        DependencyStatus {
+            id: "audiosync".into(),
+            name: "Audio analysis engine".into(),
+            purpose: "Measures how far a dub drifts from the video.".into(),
+            available: engine.engine_available,
+            // The AudioSyncMaster release this engine was built from. Both
+            // apps must show the same one to be expected to agree.
+            version: engine.engine_version.clone(),
+            bundled: engine.engine_available,
+            required: false,
+            download_url: "https://github.com/AdkHex/AudioSyncMaster".into(),
+        },
+    ]
+}
+
+fn file_info_cache() -> &'static Mutex<HashMap<String, serde_json::Value>> {
+    FILE_INFO_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Raw `mkvmerge -J` output, keyed by path, size and mtime. Separate from
+/// FILE_INFO_CACHE, which stores the app's own parsed shape rather than the
+/// probe it was derived from.
+fn mkvmerge_info_cache() -> &'static Mutex<HashMap<String, serde_json::Value>> {
+    static MKVMERGE_INFO_CACHE: OnceLock<Mutex<HashMap<String, serde_json::Value>>> =
+        OnceLock::new();
+    MKVMERGE_INFO_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn build_file_cache_key(
+    path: &Path,
+    metadata: &fs::Metadata,
+    file_type: &str,
+    include_tracks: bool,
+) -> String {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|timestamp| timestamp.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    format!(
+        "{}|{}|{}|{}|{}",
+        path.to_string_lossy(),
+        metadata.len(),
+        modified,
+        file_type,
+        include_tracks
+    )
+}
+
+fn get_cached_file_info(cache_key: &str) -> Option<serde_json::Value> {
+    file_info_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(cache_key).cloned())
+}
+
+fn put_cached_file_info(cache_key: String, value: &serde_json::Value) {
+    if let Ok(mut cache) = file_info_cache().lock() {
+        cache.insert(cache_key, value.clone());
+    }
+}
+
+/// Probe a file with `mkvmerge -J`, reusing the answer for identical files.
+///
+/// Building one job's command line probes every external file attached to it,
+/// and a batch typically attaches the same dub to every episode -- so the same
+/// file was being probed once per job, each time paying a process spawn and a
+/// full container parse. The key includes size and mtime, so a file edited
+/// between runs is re-read rather than served stale.
+fn get_mkvmerge_info(path: &Path) -> Option<serde_json::Value> {
+    if !mkvmerge_available() {
+        return None;
+    }
+
+    let cache_key = fs::metadata(path).ok().map(|metadata| {
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{}|{}|{modified}", path.to_string_lossy(), metadata.len())
+    });
+
+    if let Some(key) = &cache_key {
+        if let Ok(cache) = mkvmerge_info_cache().lock() {
+            if let Some(cached) = cache.get(key) {
+                return Some(cached.clone());
+            }
+        }
+    }
+
+    let output = hidden_command("mkvmerge")
+        .arg("-J")
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+
+    if let Some(key) = cache_key {
+        if let Ok(mut cache) = mkvmerge_info_cache().lock() {
+            cache.insert(key, value.clone());
+        }
+    }
+    Some(value)
+}
+
+/// Format a length in seconds as the `HH:MM:SS` string the UI displays.
+fn format_duration(seconds: f64) -> String {
+    let total_seconds = seconds.round() as u64;
+    format!(
+        "{:02}:{:02}:{:02}",
+        total_seconds / 3600,
+        (total_seconds % 3600) / 60,
+        total_seconds % 60
+    )
+}
+
+fn parse_mkvmerge_duration_seconds(mkvmerge: &serde_json::Value) -> Option<f64> {
+    let duration = mkvmerge
+        .get("container")?
+        .get("properties")?
+        .get("duration")?;
+    // mkvmerge ALWAYS returns duration in nanoseconds as a u64 integer
+    // Convert to seconds for display
+    let nanoseconds = if let Some(value) = duration.as_u64() {
+        value as f64
+    } else if let Some(value) = duration.as_i64() {
+        value as f64
+    } else if let Some(value) = duration.as_f64() {
+        // If it's a float, check if it's already in seconds or nanoseconds
+        // mkvmerge typically uses u64, but handle float case
+        if value > 1_000_000_000.0 {
+            value // Already in nanoseconds
+        } else {
+            value * 1_000_000_000.0 // Convert seconds to nanoseconds
+        }
+    } else if let Some(value) = duration.as_str() {
+        // Parse string - mkvmerge always uses nanoseconds
+        value.parse::<f64>().ok()?
+    } else {
+        return None;
+    };
+
+    // Convert nanoseconds to seconds
+    let seconds = nanoseconds / 1_000_000_000.0;
+
+    // Ensure seconds is reasonable (not negative, not more than 24 hours for most videos)
+    if seconds < 0.0 || !seconds.is_finite() || seconds > 86400.0 * 365.0 {
+        return None;
+    }
+
+    Some(seconds)
+}
+
+fn parse_mkvmerge_tracks(mkvmerge: &serde_json::Value) -> Vec<TrackInfo> {
+    let mut tracks = Vec::new();
+    let Some(track_items) = mkvmerge.get("tracks").and_then(|t| t.as_array()) else {
+        return tracks;
+    };
+    for track in track_items {
+        let track_type = track
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("unknown");
+        let mapped_type = match track_type {
+            "video" => "video",
+            "audio" => "audio",
+            "subtitles" => "subtitle",
+            _ => "unknown",
+        };
+        if mapped_type == "unknown" {
+            continue;
+        }
+        let track_id = track
+            .get("id")
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "0".to_string());
+        let codec = track
+            .get("codec")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let properties = track.get("properties");
+        let language = properties
+            .and_then(|p| p.get("language"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let name = properties
+            .and_then(|p| p.get("track_name"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let is_default = properties
+            .and_then(|p| p.get("default_track"))
+            .and_then(|v| v.as_bool());
+        let is_forced = properties
+            .and_then(|p| p.get("forced_track"))
+            .and_then(|v| v.as_bool());
+
+        // Extract bitrate (in bits per second) - mkvmerge may use different field names
+        // Try multiple possible field names: bit_rate, tag_bps, or calculate from properties
+        let bitrate = properties.and_then(|p| {
+            // First try bit_rate (most common)
+            if let Some(v) = p.get("bit_rate") {
+                if let Some(value) = v.as_u64() {
+                    return Some(value);
+                } else if let Some(value) = v.as_f64() {
+                    return Some(value as u64);
+                } else if let Some(value) = v.as_str() {
+                    if let Ok(parsed) = value.parse::<u64>() {
+                        return Some(parsed);
+                    }
+                }
+            }
+            // Try tag_bps (sometimes used for audio tracks)
+            if let Some(v) = p.get("tag_bps") {
+                if let Some(value) = v.as_u64() {
+                    return Some(value);
+                } else if let Some(value) = v.as_f64() {
+                    return Some(value as u64);
+                } else if let Some(value) = v.as_str() {
+                    if let Ok(parsed) = value.parse::<u64>() {
+                        return Some(parsed);
+                    }
+                }
+            }
+            // For audio tracks, try calculating from audio properties if available
+            if mapped_type == "audio" {
+                let bits_per_sample = p
+                    .get("audio_bits_per_sample")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(16);
+                let sample_rate = p
+                    .get("audio_sampling_frequency")
+                    .and_then(|v| v.as_u64())
+                    .or_else(|| {
+                        p.get("audio_sampling_frequency")
+                            .and_then(|v| v.as_f64())
+                            .map(|f| f as u64)
+                    });
+                let channels = p.get("audio_channels").and_then(|v| v.as_u64());
+
+                if let (Some(sr), Some(ch)) = (sample_rate, channels) {
+                    // Calculate raw PCM bitrate (not compressed, but gives an estimate)
+                    return Some(bits_per_sample * sr * ch);
+                }
+            }
+            None
+        });
+
+        tracks.push(TrackInfo {
+            id: track_id,
+            track_type: mapped_type.to_string(),
+            codec,
+            language,
+            name,
+            is_default,
+            is_forced,
+            bitrate,
+            action: Some("keep".to_string()),
+        });
+    }
+    tracks
+}
+
+fn get_mediainfo(path: &Path) -> Option<serde_json::Value> {
+    if !mediainfo_available() {
+        return None;
+    }
+    let output = hidden_command("mediainfo")
+        .arg("--Output=JSON")
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+fn parse_duration_seconds(mediainfo: &serde_json::Value) -> Option<f64> {
+    let tracks = mediainfo.get("media")?.get("track")?.as_array()?;
+    for track in tracks {
+        if track.get("@type")?.as_str()? == "General" {
+            if let Some(duration) = track.get("Duration") {
+                // mediainfo JSON output returns duration in seconds as a string (e.g., "7749.320")
+                let duration_str = duration.as_str()?;
+
+                // First try parsing as seconds (most common for mediainfo JSON)
+                if let Ok(seconds) = duration_str.trim().parse::<f64>() {
+                    return Some(seconds);
+                }
+
+                // Try parsing as HH:MM:SS.mmm format
+                if duration_str.contains(':') {
+                    let parts: Vec<&str> = duration_str.split(':').collect();
+                    if parts.len() >= 3 {
+                        if let (Ok(h), Ok(m), Ok(s)) = (
+                            parts[0].parse::<f64>(),
+                            parts[1].parse::<f64>(),
+                            parts[2].parse::<f64>(),
+                        ) {
+                            return Some(h * 3600.0 + m * 60.0 + s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_video_fps(mediainfo: &serde_json::Value) -> Option<f64> {
+    let tracks = mediainfo.get("media")?.get("track")?.as_array()?;
+    for track in tracks {
+        if track.get("@type")?.as_str()? == "Video" {
+            let value = track
+                .get("FrameRate")
+                .or_else(|| track.get("FrameRate_Original"))
+                .or_else(|| track.get("FrameRate_Nominal"));
+            if let Some(v) = value.and_then(|v| v.as_str()) {
+                let cleaned: String = v
+                    .chars()
+                    .filter(|c| c.is_ascii_digit() || *c == '.')
+                    .collect();
+                if let Ok(parsed) = cleaned.parse::<f64>() {
+                    return Some(parsed);
+                }
+            } else if let Some(v) = value.and_then(|v| v.as_f64()) {
+                return Some(v);
+            } else if let Some(v) = value.and_then(|v| v.as_u64()) {
+                return Some(v as f64);
+            }
+        }
+    }
+    None
+}
+
+fn parse_bitrate_value(value: &serde_json::Value) -> Option<u64> {
+    if let Some(v) = value.as_u64() {
+        return Some(v);
+    }
+    if let Some(v) = value.as_f64() {
+        return Some(v as u64);
+    }
+    if let Some(v) = value.as_str() {
+        // Strip non-digits (e.g., "3 455 kb/s" -> "3455")
+        let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() {
+            if let Ok(parsed) = digits.parse::<u64>() {
+                // If mediainfo already returns bits per second, keep as-is.
+                // If it returns kbps, it will be a small number; normalize to bps.
+                if parsed < 10_000 {
+                    return Some(parsed * 1000);
+                }
+                return Some(parsed);
+            }
+        }
+    }
+    None
+}
+
+fn parse_tracks(mediainfo: &serde_json::Value) -> Vec<TrackInfo> {
+    let mut tracks = Vec::new();
+    let Some(track_items) = mediainfo
+        .get("media")
+        .and_then(|m| m.get("track"))
+        .and_then(|t| t.as_array())
+    else {
+        return tracks;
+    };
+
+    for (index, track) in track_items.iter().enumerate() {
+        let track_type = track
+            .get("@type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("Unknown");
+        let mapped_type = match track_type {
+            "Video" => "video",
+            "Audio" => "audio",
+            "Text" => "subtitle",
+            "Menu" => "chapter",
+            _ => "unknown",
+        };
+        if mapped_type == "unknown" {
+            continue;
+        }
+        let codec = track
+            .get("Format")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let language = track
+            .get("Language")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let name = track
+            .get("Title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let is_default = track
+            .get("Default")
+            .and_then(|v| v.as_str())
+            .map(|v| v.eq_ignore_ascii_case("Yes"));
+        let is_forced = track
+            .get("Forced")
+            .and_then(|v| v.as_str())
+            .map(|v| v.eq_ignore_ascii_case("Yes"));
+
+        // Extract bitrate from mediainfo (in bits per second)
+        // mediainfo can provide bitrate as "BitRate" or "BitRate_Mode" + "BitRate"
+        let bitrate = track
+            .get("BitRate")
+            .and_then(parse_bitrate_value)
+            .or_else(|| track.get("BitRate_Maximum").and_then(parse_bitrate_value));
+
+        tracks.push(TrackInfo {
+            id: (index + 1).to_string(),
+            track_type: mapped_type.to_string(),
+            codec,
+            language,
+            name,
+            is_default,
+            is_forced,
+            bitrate,
+            action: Some("keep".to_string()),
+        });
+    }
+
+    tracks
+}
+
+fn parse_external_track_id(mediainfo: &serde_json::Value, track_type: &str) -> Option<u64> {
+    let tracks = mediainfo.get("media")?.get("track")?.as_array()?;
+    for track in tracks {
+        if track.get("@type")?.as_str()? != track_type {
+            continue;
+        }
+        if let Some(id_val) = track.get("ID") {
+            if let Some(v) = id_val.as_u64() {
+                if v > 0 {
+                    return Some(v);
+                }
+            }
+            if let Some(v) = id_val.as_f64() {
+                let parsed = v as u64;
+                if parsed > 0 {
+                    return Some(parsed);
+                }
+            }
+            if let Some(v) = id_val.as_str() {
+                let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+                if let Ok(parsed) = digits.parse::<u64>() {
+                    if parsed > 0 {
+                        return Some(parsed);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_external_track_id_mkvmerge(mkvmerge: &serde_json::Value, track_type: &str) -> Option<u64> {
+    let tracks = mkvmerge.get("tracks")?.as_array()?;
+    for track in tracks {
+        let mkv_type = track.get("type")?.as_str()?;
+        let mapped = match mkv_type {
+            "audio" => "Audio",
+            "subtitles" => "Text",
+            "video" => "Video",
+            _ => "Unknown",
+        };
+        if mapped != track_type {
+            continue;
+        }
+        if let Some(id_val) = track.get("id") {
+            if let Some(v) = id_val.as_u64() {
+                return Some(v);
+            }
+            if let Some(v) = id_val.as_i64() {
+                return Some(v as u64);
+            }
+            if let Some(v) = id_val.as_str() {
+                let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+                if let Ok(parsed) = digits.parse::<u64>() {
+                    return Some(parsed);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_external_track_ids_mkvmerge(mkvmerge: &serde_json::Value, track_type: &str) -> Vec<u64> {
+    let mut ids = Vec::new();
+    let Some(tracks) = mkvmerge.get("tracks").and_then(|v| v.as_array()) else {
+        return ids;
+    };
+    for track in tracks {
+        let mkv_type = match track.get("type").and_then(|v| v.as_str()) {
+            Some(value) => value,
+            None => continue,
+        };
+        let mapped = match mkv_type {
+            "audio" => "Audio",
+            "subtitles" => "Text",
+            "video" => "Video",
+            _ => "Unknown",
+        };
+        if mapped != track_type {
+            continue;
+        }
+        let id = track.get("id").and_then(|id_val| {
+            if let Some(v) = id_val.as_u64() {
+                return Some(v);
+            }
+            if let Some(v) = id_val.as_i64() {
+                return Some(v as u64);
+            }
+            if let Some(v) = id_val.as_str() {
+                let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+                if let Ok(parsed) = digits.parse::<u64>() {
+                    return Some(parsed);
+                }
+            }
+            None
+        });
+        if let Some(id) = id {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+fn generate_id(prefix: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_millis();
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{}-{}", prefix, timestamp, counter)
+}
+
+fn scan_files(request: &ScanRequest) -> Result<Vec<PathBuf>, String> {
+    let mut results = Vec::new();
+    let allowed_extensions = normalize_extension_list(&request.extensions);
+    let root = Path::new(&request.folder);
+    let include_patterns = normalize_patterns(&request.include_patterns);
+    let exclude_patterns = normalize_patterns(&request.exclude_patterns);
+    let ignore_patterns = normalize_patterns(&request.ignore_patterns);
+    if !root.exists() {
+        return Err(format!("Source folder does not exist: {}", request.folder));
+    }
+    if !root.is_dir() {
+        return Err(format!("Source path is not a folder: {}", request.folder));
+    }
+    let walker = WalkDir::new(&request.folder)
+        .follow_links(true)
+        .max_depth(if request.recursive { usize::MAX } else { 1 });
+
+    for entry in walker.into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !ignore_patterns.is_empty() && matches_any_pattern(path, root, &ignore_patterns) {
+            continue;
+        }
+        if path.is_file()
+            && should_include_file(path, &allowed_extensions)
+            && (include_patterns.is_empty() || matches_any_pattern(path, root, &include_patterns))
+            && !matches_any_pattern(path, root, &exclude_patterns)
+        {
+            results.push(path.to_path_buf());
+        }
+    }
+
+    Ok(results)
+}
+
+fn scan_cancelled(state: &AppState, scan_id: &str) -> bool {
+    state.scans().contains(scan_id)
+}
+
+fn clear_scan_cancel(state: &AppState, scan_id: &str) {
+    state.scans().remove(scan_id);
+}
+
+fn build_file_info(
+    path: &Path,
+    file_type: &str,
+    include_tracks: bool,
+) -> Result<serde_json::Value, String> {
+    let metadata =
+        fs::metadata(path).map_err(|e| format!("Failed to read metadata for {:?}: {e}", path))?;
+    let cache_key = build_file_cache_key(path, &metadata, file_type, include_tracks);
+    if let Some(cached) = get_cached_file_info(&cache_key) {
+        return Ok(cached);
+    }
+    let size = metadata.len();
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+    let full_path = path.to_string_lossy().to_string();
+    let id = generate_id(file_type);
+
+    let value = if file_type == "video" && !include_tracks {
+        let video = VideoFileInfo {
+            id,
+            name,
+            path: full_path,
+            size,
+            duration: None,
+            duration_seconds: None,
+            fps: None,
+            status: "pending".to_string(),
+            tracks: Vec::new(),
+        };
+        serde_json::to_value(video).map_err(|e| format!("Serialize error: {e}"))?
+    } else if file_type == "video" {
+        let (mkvmerge_info, mediainfo) = rayon::join(
+            || get_mkvmerge_info(path),
+            || get_mediainfo(path),
+        );
+        let duration_seconds = mkvmerge_info
+            .as_ref()
+            .and_then(parse_mkvmerge_duration_seconds)
+            .or_else(|| mediainfo.as_ref().and_then(parse_duration_seconds));
+        let duration = duration_seconds.map(format_duration);
+        let fps = mediainfo.as_ref().and_then(parse_video_fps);
+        let mut tracks = if include_tracks {
+            if let Some(info) = mkvmerge_info.as_ref() {
+                parse_mkvmerge_tracks(info)
+            } else {
+                mediainfo.as_ref().map(parse_tracks).unwrap_or_default()
+            }
+        } else {
+            Vec::new()
+        };
+
+        // If we have mediainfo, supplement missing bitrate data for audio tracks
+        if let Some(mi) = mediainfo.as_ref() {
+            let mi_tracks = parse_tracks(mi);
+            let mi_audio_tracks: Vec<_> = mi_tracks
+                .iter()
+                .filter(|t| t.track_type == "audio")
+                .collect();
+
+            // Build a list of audio track IDs first to avoid borrow conflicts
+            let audio_track_ids: Vec<String> = tracks
+                .iter()
+                .filter(|t| t.track_type == "audio")
+                .map(|t| t.id.clone())
+                .collect();
+
+            // Prefer mediainfo bitrate for audio tracks (more accurate for VBR)
+            for track in tracks.iter_mut() {
+                if track.track_type == "audio" {
+                    if let Some(idx) = audio_track_ids.iter().position(|id| id == &track.id) {
+                        if let Some(mi_track) = mi_audio_tracks.get(idx) {
+                            if mi_track.bitrate.is_some() {
+                                track.bitrate = mi_track.bitrate;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let video = VideoFileInfo {
+            id,
+            name,
+            path: full_path,
+            size,
+            duration,
+            duration_seconds,
+            fps,
+            status: "pending".to_string(),
+            tracks,
+        };
+        serde_json::to_value(video).map_err(|e| format!("Serialize error: {e}"))?
+    } else {
+        let normalized_file_type = match file_type {
+            "chapter" | "attachment" | "audio" | "subtitle" => file_type.to_string(),
+            _ => {
+                eprintln!(
+                    "Warning: Unexpected file_type '{}' for file {:?}, using as-is",
+                    file_type, path
+                );
+                file_type.to_string()
+            }
+        };
+
+        let (mkvmerge_info, mediainfo) = if normalized_file_type == "audio" || normalized_file_type == "subtitle" {
+            rayon::join(
+                || get_mkvmerge_info(path),
+                || get_mediainfo(path),
+            )
+        } else {
+            (None, None)
+        };
+        let (bitrate, duration_seconds, track_id) = if let Some(mi) = mediainfo.as_ref() {
+            let tracks = parse_tracks(mi);
+            let audio_track = tracks.iter().find(|t| t.track_type == "audio");
+            let bitrate = audio_track.and_then(|t| t.bitrate);
+            // mediainfo reports no General duration for some raw elementary
+            // streams (a bare .aac among them), so fall back to mkvmerge, which
+            // does probe them.
+            let duration_seconds = parse_duration_seconds(mi).or_else(|| {
+                mkvmerge_info
+                    .as_ref()
+                    .and_then(parse_mkvmerge_duration_seconds)
+            });
+            let track_id = if normalized_file_type == "audio" {
+                mkvmerge_info
+                    .as_ref()
+                    .and_then(|mkv| parse_external_track_id_mkvmerge(mkv, "Audio"))
+                    .or_else(|| parse_external_track_id(mi, "Audio"))
+            } else {
+                mkvmerge_info
+                    .as_ref()
+                    .and_then(|mkv| parse_external_track_id_mkvmerge(mkv, "Text"))
+                    .or_else(|| parse_external_track_id(mi, "Text"))
+            };
+            let track_id = track_id.filter(|id| *id > 0);
+            (bitrate, duration_seconds, track_id)
+        } else {
+            let track_id = if normalized_file_type == "audio" {
+                mkvmerge_info
+                    .as_ref()
+                    .and_then(|mkv| parse_external_track_id_mkvmerge(mkv, "Audio"))
+            } else {
+                mkvmerge_info
+                    .as_ref()
+                    .and_then(|mkv| parse_external_track_id_mkvmerge(mkv, "Text"))
+            };
+            let track_id = track_id.filter(|id| *id > 0);
+            let duration_seconds = mkvmerge_info
+                .as_ref()
+                .and_then(parse_mkvmerge_duration_seconds);
+            (None, duration_seconds, track_id)
+        };
+        let duration = duration_seconds.map(format_duration);
+
+        let mut tracks = if include_tracks {
+            if let Some(info) = mkvmerge_info.as_ref() {
+                parse_mkvmerge_tracks(info)
+            } else if let Some(mi) = mediainfo.as_ref() {
+                parse_tracks(mi)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        if normalized_file_type == "audio" {
+            tracks.retain(|t| t.track_type == "audio" || t.track_type == "subtitle");
+        } else if normalized_file_type == "subtitle" {
+            tracks.retain(|t| t.track_type == "subtitle");
+        }
+
+        let external = ExternalFileInfo {
+            id,
+            name,
+            path: full_path,
+            file_type: normalized_file_type,
+            source: None,
+            language: None,
+            track_name: None,
+            delay: None,
+            is_default: None,
+            is_forced: None,
+            mux_after: None,
+            matched_video_id: None,
+            size: Some(size),
+            bitrate,
+            duration,
+            duration_seconds,
+            track_id,
+            tracks,
+            included_track_ids: None,
+            include_subtitles: None,
+            included_subtitle_track_ids: None,
+            included_subtitles_default: None,
+            included_subtitles_forced: None,
+            included_subtitles_first: None,
+            track_overrides: HashMap::new(),
+            stretch: None,
+            apply_language: true,
+        };
+        serde_json::to_value(external)
+            .map_err(|e| format!("Serialize error for {:?}: {e}", path))?
+    };
+
+    put_cached_file_info(cache_key, &value);
+    Ok(value)
+}
+
+#[tauri::command]
+fn get_app_paths(state: State<AppState>) -> Result<AppPaths, String> {
+    Ok(state.paths.clone())
+}
+
+#[tauri::command]
+fn load_options(state: State<AppState>) -> Result<OptionsData, String> {
+    let options = read_options(&state.paths.options_path)?;
+    write_options(&state.paths.options_path, &options)?;
+    Ok(options)
+}
+
+#[tauri::command]
+fn save_options(state: State<AppState>, options: OptionsData) -> Result<(), String> {
+    write_options(&state.paths.options_path, &options)
+}
+
+#[tauri::command]
+fn scan_media(request: ScanRequest) -> Result<Vec<serde_json::Value>, String> {
+    let files = scan_files(&request)?;
+    let results = files
+        .par_iter()
+        .filter_map(|path| {
+            match build_file_info(path, &request.file_type, request.include_tracks) {
+                Ok(file_info) => Some(file_info),
+                Err(error) => {
+                    eprintln!("Failed to process file {:?}: {}", path, error);
+                    None
+                }
+            }
+        })
+        .collect();
+    Ok(results)
+}
+
+#[tauri::command]
+fn inspect_paths(request: InspectRequest) -> Result<Vec<serde_json::Value>, String> {
+    let paths: Vec<PathBuf> = request.paths.into_iter().map(PathBuf::from).collect();
+    let results = paths
+        .par_iter()
+        .filter(|path| path.is_file())
+        .filter_map(|path| {
+            match build_file_info(path, &request.file_type, request.include_tracks) {
+                Ok(file_info) => Some(file_info),
+                Err(error) => {
+                    eprintln!("Failed to inspect file {:?}: {}", path, error);
+                    None
+                }
+            }
+        })
+        .collect();
+    Ok(results)
+}
+
+#[tauri::command]
+fn inspect_paths_stream(
+    state: State<AppState>,
+    window: tauri::Window,
+    request: InspectStreamRequest,
+) -> Result<(), String> {
+    let scan_id = request.scan_id.clone();
+    clear_scan_cancel(&state, &scan_id);
+    let file_type = request.file_type.clone();
+    let include_tracks = request.include_tracks;
+    let total = request.paths.len();
+    if total == 0 {
+        let payload = InspectStreamChunkEvent {
+            scan_id: scan_id.clone(),
+            processed: 0,
+            total: 0,
+            items: Vec::new(),
+        };
+        let _ = window.emit("inspect-paths-stream-chunk", payload);
+        let _ = window.emit(
+            "inspect-paths-stream-done",
+            InspectStreamDoneEvent { scan_id, total: 0 },
+        );
+        return Ok(());
+    }
+
+    let batch_size = request.batch_size.unwrap_or(8).max(1);
+    let all_paths: Vec<PathBuf> = request.paths.into_iter().map(PathBuf::from).collect();
+    let mut processed = 0usize;
+
+    for chunk in all_paths.chunks(batch_size) {
+        if scan_cancelled(&state, &scan_id) {
+            clear_scan_cancel(&state, &scan_id);
+            let _ = window.emit(
+                "inspect-paths-stream-done",
+                InspectStreamDoneEvent {
+                    scan_id: scan_id.clone(),
+                    total: processed,
+                },
+            );
+            return Ok(());
+        }
+
+        let items: Vec<serde_json::Value> = chunk
+            .par_iter()
+            .filter(|path| path.is_file())
+            .filter_map(
+                |path| match build_file_info(path, &file_type, include_tracks) {
+                    Ok(file_info) => Some(file_info),
+                    Err(error) => {
+                        eprintln!("Failed to inspect file {:?}: {}", path, error);
+                        None
+                    }
+                },
+            )
+            .collect();
+
+        processed = (processed + chunk.len()).min(total);
+        let payload = InspectStreamChunkEvent {
+            scan_id: scan_id.clone(),
+            processed,
+            total,
+            items,
+        };
+        if let Err(error) = window.emit("inspect-paths-stream-chunk", payload) {
+            let message = format!("Failed to emit scan chunk: {error}");
+            let _ = window.emit(
+                "inspect-paths-stream-error",
+                InspectStreamErrorEvent {
+                    scan_id: scan_id.clone(),
+                    message: message.clone(),
+                },
+            );
+            return Err(message);
+        }
+    }
+
+    let _ = window.emit(
+        "inspect-paths-stream-done",
+        InspectStreamDoneEvent { scan_id, total },
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_scan(state: State<AppState>, scan_id: String) -> Result<(), String> {
+    state.scans().insert(scan_id);
+    Ok(())
+}
+
+/// Serializes all log writes. Up to MAX_PARALLEL_JOBS worker threads plus their
+/// stdout/stderr readers append to one file; without this lock their lines
+/// interleave mid-line and the log becomes unparseable.
+static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn write_log_line(paths: &AppPaths, line: &str) -> Result<(), String> {
+    let _guard = lock_or_recover(&LOG_WRITE_LOCK);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&paths.log_path)
+        .map_err(|e| format!("Failed to open log file: {e}"))?;
+    // Single write_all so the line and its newline reach the file together.
+    file.write_all(format!("{line}\n").as_bytes())
+        .map_err(|e| format!("Failed to write log: {e}"))
+}
+
+fn clear_log(paths: &AppPaths) -> Result<(), String> {
+    let _guard = lock_or_recover(&LOG_WRITE_LOCK);
+    File::create(&paths.log_path).map_err(|e| format!("Failed to create log file: {e}"))?;
+    Ok(())
+}
+
+fn get_output_paths(job: &MuxJobRequest, settings: &MuxSettings) -> (PathBuf, PathBuf, bool) {
+    let video_path = PathBuf::from(&job.video.path);
+    let source_dir = video_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let output_dir = if settings.destination_dir.trim().is_empty() {
+        source_dir.clone()
+    } else {
+        PathBuf::from(&settings.destination_dir)
+    };
+    let file_stem = video_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
+    let output_stem = render_output_template(
+        settings.output_naming_pattern.as_deref(),
+        &job.video,
+        file_stem,
+    );
+    let overwrite_mode = settings.destination_dir.trim().is_empty() || settings.overwrite_source;
+
+    if overwrite_mode {
+        // Nanosecond clock PLUS a per-process monotonic counter. Second-level
+        // resolution let two parallel jobs with the same output stem pick the
+        // same temp path and corrupt each other; even nanoseconds alone can
+        // repeat on coarse clocks, so the counter guarantees uniqueness.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0))
+            .as_nanos();
+        let sequence = TEMP_OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp_name = format!("{}#{}-{}.mkv", output_stem, nanos, sequence);
+        let output_path = output_dir.join(temp_name);
+        let final_path = output_dir.join(format!("{}.mkv", output_stem));
+        (output_path, final_path, true)
+    } else {
+        let output_path = output_dir.join(format!("{}.mkv", output_stem));
+        (output_path.clone(), output_path, false)
+    }
+}
+
+fn sanitize_file_stem(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            ch if ch.is_control() => '_',
+            ch => ch,
+        })
+        .collect();
+    let trimmed = sanitized.trim().trim_matches('.').to_string();
+    if trimmed.is_empty() {
+        "output".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn render_output_template(pattern: Option<&str>, video: &VideoFileInfo, original_stem: &str) -> String {
+    let raw_pattern = pattern
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("{original_filename}");
+    let extension = Path::new(&video.name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mkv");
+    let rendered = raw_pattern
+        .replace("{original_filename}", original_stem)
+        .replace("{filename}", original_stem)
+        .replace("{name}", original_stem)
+        .replace("{extension}", extension)
+        .replace("{id}", &video.id);
+    sanitize_file_stem(&rendered)
+}
+
+fn compute_crc(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|e| format!("Failed to open file for CRC: {e}"))?;
+    let mut hasher = Hasher::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read file: {e}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:08X}", hasher.finalize()))
+}
+
+fn file_name_with_crc(path: &Path, crc: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output.mkv");
+    // strip_suffix, not trim_end_matches: the latter strips *every* trailing
+    // ".mkv", turning "Show.mkv.mkv" into "Show".
+    let file_stem = file_name.strip_suffix(".mkv").unwrap_or(file_name);
+    path.with_file_name(format!("{} [{}].mkv", file_stem, crc))
+}
+
+fn file_name_without_crc(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output.mkv");
+    // Only the extension: replacing every ".mkv" in the name would also eat the
+    // text of a title that happens to contain it.
+    let cleaned = file_name.strip_suffix(".mkv").unwrap_or(file_name).to_string();
+    let sanitized = if let Some(index) = cleaned.rfind('[') {
+        cleaned[..index].trim().to_string()
+    } else {
+        cleaned
+    };
+    path.with_file_name(format!("{}.mkv", sanitized))
+}
+
+fn check_free_space(path: &Path, required_bytes: u64) -> Result<(), String> {
+    let available = available_space(path).map_err(|e| format!("Failed to read free space: {e}"))?;
+    if available < required_bytes {
+        return Err(format!(
+            "Not enough free space. Required: {} bytes",
+            required_bytes
+        ));
+    }
+    Ok(())
+}
+
+fn destination_dir_for_job(job: &MuxJobRequest, settings: &MuxSettings) -> PathBuf {
+    if settings.destination_dir.trim().is_empty() {
+        PathBuf::from(&job.video.path)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
+    } else {
+        PathBuf::from(&settings.destination_dir)
+    }
+}
+
+fn ensure_output_dir(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        if path.is_dir() {
+            return Ok(());
+        }
+        return Err(format!(
+            "Output destination exists but is not a folder: {}",
+            path.to_string_lossy()
+        ));
+    }
+    fs::create_dir_all(path).map_err(|e| {
+        format!(
+            "Failed to create output destination {}: {e}",
+            path.to_string_lossy()
+        )
+    })
+}
+
+fn emit_job_error(
+    app: &AppHandle,
+    state: &AppState,
+    settings: &MuxSettings,
+    job_id: &str,
+    message: &str,
+    error: String,
+) {
+    emit_progress(
+        app,
+        MuxProgressEvent {
+            job_id: job_id.to_string(),
+            status: "error".to_string(),
+            progress: 0,
+            message: Some(message.to_string()),
+            size_after: None,
+            error_message: Some(error),
+        },
+    );
+    if settings.abort_on_errors {
+        abort_mux_queue(state);
+    }
+}
+
+fn abort_mux_queue(state: &AppState) {
+    // Drain the child handles while holding the state lock, then RELEASE it
+    // before killing anything. Killing while holding mux_state inverts the lock
+    // order used by wait_for_child_or_stop and deadlocks the UI.
+    let handles: Vec<Arc<Mutex<Child>>> = {
+        let mut mux_state = state.mux();
+        mux_state.stop = true;
+        mux_state.pause = false;
+        mux_state.queue.clear();
+        mux_state.children.drain().map(|(_, handle)| handle).collect()
+    };
+
+    for handle in handles {
+        let mut child = lock_or_recover(&handle);
+        let _ = child.kill();
+    }
+}
+
+fn unique_backup_path(source: &Path) -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_nanos();
+    let file_name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("source.mkv");
+    source.with_file_name(format!("{file_name}.mkvbatchmux-backup-{timestamp}"))
+}
+
+/// Replace the source file with the muxed output.
+///
+/// `Ok(Some(warning))` means the replacement succeeded but the backup copy
+/// could not be deleted. That is untidy, not a failure: the user's file has
+/// already been correctly replaced, and reporting it as a failed job used to
+/// send people off to re-run work that was in fact complete.
+fn safe_replace_source(
+    source: &Path,
+    output: &Path,
+    final_path: &Path,
+) -> Result<Option<String>, String> {
+    if !output.exists() {
+        return Err(format!(
+            "Muxed output was not created: {}",
+            output.to_string_lossy()
+        ));
+    }
+    if source == output {
+        return Err("Refusing to replace source with the same temporary output path.".to_string());
+    }
+
+    let backup_path = unique_backup_path(source);
+    fs::rename(source, &backup_path).map_err(|e| {
+        format!(
+            "Failed to move source to backup before overwrite: {} -> {} ({e})",
+            source.to_string_lossy(),
+            backup_path.to_string_lossy()
+        )
+    })?;
+
+    if let Err(rename_error) = fs::rename(output, final_path) {
+        let restore_result = fs::rename(&backup_path, source);
+        return Err(match restore_result {
+            Ok(()) => format!(
+                "Failed to move muxed output into place; original source was restored. {} -> {} ({rename_error})",
+                output.to_string_lossy(),
+                final_path.to_string_lossy()
+            ),
+            Err(restore_error) => format!(
+                "Failed to move muxed output into place and failed to restore backup. Output: {}, backup: {}, restore error: {restore_error}, rename error: {rename_error}",
+                output.to_string_lossy(),
+                backup_path.to_string_lossy()
+            ),
+        });
+    }
+
+    Ok(fs::remove_file(&backup_path).err().map(|e| {
+        format!(
+            "Muxed file replaced the source, but the backup could not be removed: {} ({e})",
+            backup_path.to_string_lossy()
+        )
+    }))
+}
+
+fn rename_final_output(current: &Path, target: &Path) -> Result<PathBuf, String> {
+    if current == target {
+        return Ok(current.to_path_buf());
+    }
+    if target.exists() {
+        fs::remove_file(target).map_err(|e| {
+            format!(
+                "Failed to remove existing target before rename: {} ({e})",
+                target.to_string_lossy()
+            )
+        })?;
+    }
+    fs::rename(current, target).map_err(|e| {
+        format!(
+            "Failed to rename output {} -> {}: {e}",
+            current.to_string_lossy(),
+            target.to_string_lossy()
+        )
+    })?;
+    Ok(target.to_path_buf())
+}
+
+fn collect_track_ids_by_language(
+    tracks: &[TrackInfo],
+    track_type: &str,
+    languages: &[String],
+) -> Vec<usize> {
+    let mut ids = Vec::new();
+    for (index, track) in tracks.iter().enumerate() {
+        if track.track_type != track_type {
+            continue;
+        }
+        if let Some(language) = &track.language {
+            if languages
+                .iter()
+                .any(|lang| lang.eq_ignore_ascii_case(language))
+            {
+                if let Ok(parsed) = track.id.parse::<usize>() {
+                    ids.push(parsed);
+                } else {
+                    ids.push(index);
+                }
+            }
+        }
+    }
+    ids
+}
+
+fn parse_track_id(track: &TrackInfo, index: usize) -> usize {
+    track.id.parse::<usize>().unwrap_or(index)
+}
+
+fn is_track_removed(track: &TrackInfo) -> bool {
+    matches!(track.action.as_deref(), Some("remove"))
+}
+
+fn collect_track_ids_by_action(tracks: &[TrackInfo], track_type: &str) -> (Vec<usize>, bool) {
+    let mut ids = Vec::new();
+    let mut has_removed = false;
+    for (index, track) in tracks.iter().enumerate() {
+        if track.track_type != track_type {
+            continue;
+        }
+        if is_track_removed(track) {
+            has_removed = true;
+            continue;
+        }
+        ids.push(parse_track_id(track, index));
+    }
+    (ids, has_removed)
+}
+
+/// The one track per type that may carry the default flag.
+///
+/// A Matroska file is meant to have at most one default track per type, but the
+/// track editors let several be ticked at once (the "set all" checkbox does it
+/// in a single click). Muxing that produces a file players disagree about, so
+/// the first flagged track of each type wins here and the rest are written as
+/// explicitly not-default. Doing it at the point the command is built covers
+/// every editor that can set the flag.
+fn first_default_track_per_type(tracks: &[TrackInfo]) -> HashMap<String, usize> {
+    let mut winners: HashMap<String, usize> = HashMap::new();
+    for (index, track) in tracks.iter().enumerate() {
+        if is_track_removed(track) || track.is_default != Some(true) {
+            continue;
+        }
+        winners
+            .entry(track.track_type.clone())
+            .or_insert_with(|| parse_track_id(track, index));
+    }
+    winners
+}
+
+fn intersect_ids(left: Vec<usize>, right: Vec<usize>) -> Vec<usize> {
+    left.into_iter().filter(|id| right.contains(id)).collect()
+}
+
+fn apply_track_selection(
+    args: &mut Vec<String>,
+    tracks: &[TrackInfo],
+    track_type: &str,
+    only_keep_ids: Option<Vec<usize>>,
+) {
+    let (action_ids, has_removed) = collect_track_ids_by_action(tracks, track_type);
+    let type_ids: Vec<usize> = tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, track)| track.track_type == track_type)
+        .map(|(index, track)| parse_track_id(track, index))
+        .collect();
+
+    if type_ids.is_empty() {
+        return;
+    }
+
+    let mut selected = if has_removed {
+        action_ids
+    } else {
+        type_ids.clone()
+    };
+
+    if let Some(ref keep) = only_keep_ids {
+        selected = intersect_ids(selected, keep.clone());
+    }
+
+    if selected.len() == type_ids.len() && !has_removed && only_keep_ids.is_none() {
+        return;
+    }
+
+    if selected.is_empty() {
+        match track_type {
+            "audio" => args.push("--no-audio".to_string()),
+            "subtitle" => args.push("--no-subtitles".to_string()),
+            "video" => args.push("--no-video".to_string()),
+            _ => {}
+        }
+        return;
+    }
+
+    let flag = match track_type {
+        "audio" => "--audio-tracks",
+        "subtitle" => "--subtitle-tracks",
+        "video" => "--video-tracks",
+        _ => return,
+    };
+    args.push(flag.to_string());
+    args.push(
+        selected
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+}
+
+fn build_mkvpropedit_args(job: &MuxJobRequest) -> Vec<String> {
+    let mut args = Vec::new();
+
+    // Apply track modifications: name, language, default, forced flags
+    // For Fast Mux, we apply edits for all tracks that have any properties set
+    for (index, track) in job.video.tracks.iter().enumerate() {
+        if is_track_removed(track) {
+            continue;
+        }
+
+        // mkvpropedit uses 1-based track IDs, so add 1 to the parsed track ID
+        let track_id = parse_track_id(track, index) + 1;
+
+        // Track name - apply if set (even if empty, to clear it)
+        if let Some(name) = &track.name {
+            args.push("--edit".to_string());
+            args.push(format!("track:{}", track_id));
+            args.push("--set".to_string());
+            args.push(format!("name={}", name.trim()));
+        }
+
+        // Language - apply if set
+        if let Some(language) = &track.language {
+            args.push("--edit".to_string());
+            args.push(format!("track:{}", track_id));
+            args.push("--set".to_string());
+            args.push(format!("language={}", language));
+        }
+
+        // Default flag - apply if explicitly set (Some(true) or Some(false))
+        if let Some(is_default) = track.is_default {
+            args.push("--edit".to_string());
+            args.push(format!("track:{}", track_id));
+            args.push("--set".to_string());
+            args.push(format!(
+                "flag-default={}",
+                if is_default { "1" } else { "0" }
+            ));
+        }
+
+        // Forced flag (for subtitles, use flag-forced-display)
+        if track.track_type == "subtitle" {
+            if let Some(is_forced) = track.is_forced {
+                args.push("--edit".to_string());
+                args.push(format!("track:{}", track_id));
+                args.push("--set".to_string());
+                args.push(format!(
+                    "flag-forced-display={}",
+                    if is_forced { "1" } else { "0" }
+                ));
+            }
+        } else if track.track_type == "audio" || track.track_type == "video" {
+            if let Some(is_forced) = track.is_forced {
+                args.push("--edit".to_string());
+                args.push(format!("track:{}", track_id));
+                args.push("--set".to_string());
+                args.push(format!("flag-forced={}", if is_forced { "1" } else { "0" }));
+            }
+        }
+    }
+
+    args
+}
+
+fn quote_arg(arg: &str) -> String {
+    if arg.contains(' ') || arg.contains('"') || arg.contains('\'') {
+        format!("\"{}\"", arg.replace('"', "\\\""))
+    } else {
+        arg.to_string()
+    }
+}
+
+fn join_mkvmerge_command(args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(args.len() + 1);
+    parts.push("mkvmerge".to_string());
+    for arg in args {
+        parts.push(quote_arg(arg));
+    }
+    parts.join(" ")
+}
+
+fn fast_mux_allowed_for_job(job: &MuxJobRequest, settings: &MuxSettings) -> bool {
+    settings.destination_dir.trim().is_empty()
+        && settings.overwrite_source
+        && job.audios.is_empty()
+        && job.subtitles.is_empty()
+        && job.chapters.is_empty()
+        && job.attachments.is_empty()
+        && (!settings.only_keep_audios_enabled || settings.only_keep_audio_languages.is_empty())
+        && (!settings.only_keep_subtitles_enabled || settings.only_keep_subtitle_languages.is_empty())
+}
+
+fn validate_external_files(job: &MuxJobRequest, warnings: &mut Vec<String>) {
+    if !Path::new(&job.video.path).exists() {
+        warnings.push(format!("Video file missing: {}", job.video.path));
+    }
+    for audio in &job.audios {
+        if !Path::new(&audio.path).exists() {
+            warnings.push(format!("Audio file missing: {}", audio.path));
+        }
+    }
+    for subtitle in &job.subtitles {
+        if !Path::new(&subtitle.path).exists() {
+            warnings.push(format!("Subtitle file missing: {}", subtitle.path));
+        }
+    }
+    for chapter in &job.chapters {
+        if !Path::new(&chapter.path).exists() {
+            warnings.push(format!("Chapter file missing: {}", chapter.path));
+        }
+    }
+    for attachment in &job.attachments {
+        if !Path::new(&attachment.path).exists() {
+            warnings.push(format!("Attachment file missing: {}", attachment.path));
+        }
+    }
+}
+
+fn validate_attachment_plan(job: &MuxJobRequest, settings: &MuxSettings, warnings: &mut Vec<String>) {
+    if job.attachments.is_empty() {
+        return;
+    }
+
+    let mut names = HashSet::new();
+    for attachment in &job.attachments {
+        let normalized = attachment.name.to_ascii_lowercase();
+        if !settings.allow_duplicate_attachments && !names.insert(normalized) {
+            warnings.push(format!(
+                "Duplicate attachment name will be skipped because duplicates are disabled: {}",
+                attachment.name
+            ));
+        }
+    }
+
+    if settings.attachments_expert_mode && !settings.discard_old_attachments {
+        warnings.push(
+            "Attachment expert mode is enabled while existing attachments are kept; verify duplicate names before muxing."
+                .to_string(),
+        );
+    }
+}
+
+fn validate_job_preflight(
+    job: &MuxJobRequest,
+    settings: &MuxSettings,
+    output_path: &Path,
+    final_path: &Path,
+    duplicate_output: bool,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    validate_external_files(job, &mut warnings);
+
+    let output_dir = destination_dir_for_job(job, settings);
+    if settings.destination_dir.trim().is_empty() && !settings.overwrite_source {
+        warnings.push("Destination folder is empty and overwrite source is disabled.".to_string());
+    }
+    if output_dir.exists() && !output_dir.is_dir() {
+        warnings.push(format!(
+            "Output destination exists but is not a folder: {}",
+            output_dir.to_string_lossy()
+        ));
+    }
+    if !output_dir.exists() {
+        warnings.push(format!(
+            "Output destination will be created: {}",
+            output_dir.to_string_lossy()
+        ));
+    } else if let Err(err) = check_free_space(&output_dir, job.video.size) {
+        warnings.push(err);
+    }
+
+    if duplicate_output {
+        warnings.push(format!(
+            "Multiple queued jobs target the same output path: {}",
+            final_path.to_string_lossy()
+        ));
+    }
+    if !settings.overwrite_source && final_path.exists() {
+        warnings.push(format!(
+            "Output file already exists and may be overwritten or fail: {}",
+            final_path.to_string_lossy()
+        ));
+    }
+    if output_path == Path::new(&job.video.path) || final_path == Path::new(&job.video.path) {
+        if !settings.overwrite_source {
+            warnings.push("Output path matches the source file without overwrite source enabled.".to_string());
+        }
+    }
+
+    if settings.use_mkvpropedit && !fast_mux_allowed_for_job(job, settings) {
+        warnings.push(
+            "Fast mux was requested, but this job requires full mkvmerge because it is not an in-place metadata-only edit."
+                .to_string(),
+        );
+    }
+    if settings.use_mkvpropedit && fast_mux_allowed_for_job(job, settings) && !tool_available("mkvpropedit", "-V") {
+        warnings.push("mkvpropedit is not available; fast mux cannot run.".to_string());
+    }
+    let will_use_mkvmerge = !settings.use_mkvpropedit || !fast_mux_allowed_for_job(job, settings);
+    if !mkvmerge_available() && will_use_mkvmerge {
+        warnings.push("mkvmerge is not available; full mux jobs cannot run.".to_string());
+    }
+
+    validate_attachment_plan(job, settings, &mut warnings);
+    warnings
+}
+
+fn log_job_plan(state: &AppState, job: &MuxJobRequest, output_path: &Path) {
+    let audio_list = if job.audios.is_empty() {
+        "[]".to_string()
+    } else {
+        let items: Vec<String> = job
+            .audios
+            .iter()
+            .map(|audio| {
+                format!(
+                    "{{path={}, lang={:?}, default={:?}, name={:?}}}",
+                    quote_arg(&audio.path),
+                    audio.language,
+                    audio.is_default,
+                    audio.track_name
+                )
+            })
+            .collect();
+        format!("[{}]", items.join(", "))
+    };
+    let subtitle_list = if job.subtitles.is_empty() {
+        "[]".to_string()
+    } else {
+        let items: Vec<String> = job
+            .subtitles
+            .iter()
+            .map(|subtitle| {
+                format!(
+                    "{{path={}, lang={:?}, default={:?}, forced={:?}, name={:?}}}",
+                    quote_arg(&subtitle.path),
+                    subtitle.language,
+                    subtitle.is_default,
+                    subtitle.is_forced,
+                    subtitle.track_name
+                )
+            })
+            .collect();
+        format!("[{}]", items.join(", "))
+    };
+    let chapter_list = if job.chapters.is_empty() {
+        "[]".to_string()
+    } else {
+        let items: Vec<String> = job
+            .chapters
+            .iter()
+            .map(|chapter| quote_arg(&chapter.path))
+            .collect();
+        format!("[{}]", items.join(", "))
+    };
+
+    let _ = write_log_line(
+        &state.paths,
+        &format!(
+            "JOB PLAN: video={} output={} audios={} subtitles={} chapters={}",
+            quote_arg(&job.video.path),
+            quote_arg(&output_path.to_string_lossy()),
+            audio_list,
+            subtitle_list,
+            chapter_list
+        ),
+    );
+}
+
+fn build_mkvmerge_command(
+    job: &MuxJobRequest,
+    settings: &MuxSettings,
+    output_path: &Path,
+    _state: &AppState,
+) -> Vec<String> {
+    let mut args = vec![
+        "--gui-mode".to_string(),
+        "--output".to_string(),
+        output_path.to_string_lossy().to_string(),
+    ];
+
+    let mut resolved_external_audios: Vec<(ExternalFileInfo, u64)> = Vec::new();
+    for audio in &job.audios {
+        let mut resolved_ids: Vec<u64> = Vec::new();
+        if let Some(ids) = &audio.included_track_ids {
+            if ids.is_empty() {
+                continue;
+            }
+            resolved_ids = ids.clone();
+        } else if let Some(mkvmerge) = get_mkvmerge_info(Path::new(&audio.path)) {
+            let ids = parse_external_track_ids_mkvmerge(&mkvmerge, "Audio");
+            if ids.len() > 1 {
+                resolved_ids = ids;
+            } else if let Some(id) = audio.track_id {
+                resolved_ids.push(id);
+            } else {
+                resolved_ids = ids;
+            }
+        } else if let Some(id) = audio.track_id {
+            resolved_ids.push(id);
+        }
+
+        if resolved_ids.is_empty() {
+            resolved_ids.push(0);
+        }
+
+        let set_default_on_first = audio.is_default.unwrap_or(false);
+        for (index, track_id) in resolved_ids.iter().enumerate() {
+            let mut cloned = audio.clone();
+            cloned.track_id = Some(*track_id);
+            if set_default_on_first {
+                cloned.is_default = Some(index == 0);
+            }
+            cloned.apply_language = index == 0;
+            resolved_external_audios.push((cloned, *track_id));
+        }
+    }
+
+    let mut resolved_external_subtitles: Vec<(ExternalFileInfo, u64)> = Vec::new();
+    let mut resolved_external_subtitles_from_audio: Vec<(ExternalFileInfo, u64)> = Vec::new();
+    for subtitle in &job.subtitles {
+        let mut resolved_ids: Vec<u64> = Vec::new();
+        if let Some(ids) = &subtitle.included_track_ids {
+            if ids.is_empty() {
+                continue;
+            }
+            resolved_ids = ids.clone();
+        } else if let Some(mkvmerge) = get_mkvmerge_info(Path::new(&subtitle.path)) {
+            let ids = parse_external_track_ids_mkvmerge(&mkvmerge, "Text");
+            if ids.len() > 1 {
+                resolved_ids = ids;
+            } else if let Some(id) = subtitle.track_id {
+                resolved_ids.push(id);
+            } else {
+                resolved_ids = ids;
+            }
+        } else if let Some(id) = subtitle.track_id {
+            resolved_ids.push(id);
+        }
+
+        if resolved_ids.is_empty() {
+            resolved_ids.push(0);
+        }
+
+        let set_default_on_first = subtitle.is_default.unwrap_or(false);
+        for (index, track_id) in resolved_ids.iter().enumerate() {
+            let mut cloned = subtitle.clone();
+            cloned.track_id = Some(*track_id);
+            if set_default_on_first {
+                cloned.is_default = Some(index == 0);
+            }
+            cloned.apply_language = index == 0;
+            resolved_external_subtitles.push((cloned, *track_id));
+        }
+    }
+
+    for audio in &job.audios {
+        if audio.include_subtitles != Some(true) {
+            continue;
+        }
+        let mut resolved_ids: Vec<u64> = Vec::new();
+        if let Some(ids) = &audio.included_subtitle_track_ids {
+            if ids.is_empty() {
+                continue;
+            }
+            resolved_ids = ids.clone();
+        } else if let Some(mkvmerge) = get_mkvmerge_info(Path::new(&audio.path)) {
+            resolved_ids = parse_external_track_ids_mkvmerge(&mkvmerge, "Text");
+        }
+        if resolved_ids.is_empty() {
+            continue;
+        }
+        let set_default_on_first = audio.included_subtitles_default.unwrap_or(false);
+        let set_forced = audio.included_subtitles_forced.unwrap_or(false);
+        let place_first = audio.included_subtitles_first.unwrap_or(false);
+        for (index, track_id) in resolved_ids.iter().enumerate() {
+            let mut cloned = audio.clone();
+            cloned.track_id = Some(*track_id);
+            cloned.apply_language = false;
+            cloned.is_default = if set_default_on_first {
+                Some(index == 0)
+            } else {
+                None
+            };
+            cloned.is_forced = if set_forced { Some(true) } else { None };
+            if place_first {
+                cloned.mux_after = Some("subtitle-first".to_string());
+            }
+            resolved_external_subtitles_from_audio.push((cloned, *track_id));
+        }
+    }
+
+    if settings.discard_old_chapters {
+        args.push("--no-chapters".to_string());
+    }
+    if settings.discard_old_attachments {
+        args.push("--no-attachments".to_string());
+    }
+    if settings.remove_global_tags {
+        args.push("--no-global-tags".to_string());
+    }
+
+    let external_audio_present = !resolved_external_audios.is_empty();
+    let external_subtitle_present = !resolved_external_subtitles.is_empty()
+        || !resolved_external_subtitles_from_audio.is_empty();
+
+    let external_audio_default = resolved_external_audios
+        .iter()
+        .any(|(audio, _)| audio.is_default.unwrap_or(false));
+    if external_audio_default {
+        for (index, track) in job.video.tracks.iter().enumerate() {
+            if track.track_type != "audio" {
+                continue;
+            }
+            let id = parse_track_id(track, index);
+            args.push("--default-track-flag".to_string());
+            args.push(format!("{id}:no"));
+        }
+    }
+
+    let external_subtitle_default = resolved_external_subtitles
+        .iter()
+        .chain(resolved_external_subtitles_from_audio.iter())
+        .any(|(subtitle, _)| subtitle.is_default.unwrap_or(false));
+    if external_subtitle_default {
+        for (index, track) in job.video.tracks.iter().enumerate() {
+            if track.track_type != "subtitle" {
+                continue;
+            }
+            let id = parse_track_id(track, index);
+            args.push("--default-track-flag".to_string());
+            args.push(format!("{id}:no"));
+        }
+    }
+
+    if let Some(language) = &settings.make_audio_default_language {
+        let ids = collect_track_ids_by_language(&job.video.tracks, "audio", &[language.clone()]);
+        for id in ids {
+            args.push("--default-track-flag".to_string());
+            args.push(format!("{}:yes", id));
+        }
+    }
+    if let Some(language) = &settings.make_subtitle_default_language {
+        let ids = collect_track_ids_by_language(&job.video.tracks, "subtitle", &[language.clone()]);
+        for id in ids {
+            args.push("--default-track-flag".to_string());
+            args.push(format!("{}:yes", id));
+        }
+    }
+
+    let audio_keep_ids =
+        if settings.only_keep_audios_enabled && !settings.only_keep_audio_languages.is_empty() {
+            Some(collect_track_ids_by_language(
+                &job.video.tracks,
+                "audio",
+                &settings.only_keep_audio_languages,
+            ))
+        } else {
+            None
+        };
+    let subtitle_keep_ids = if settings.only_keep_subtitles_enabled
+        && !settings.only_keep_subtitle_languages.is_empty()
+    {
+        Some(collect_track_ids_by_language(
+            &job.video.tracks,
+            "subtitle",
+            &settings.only_keep_subtitle_languages,
+        ))
+    } else {
+        None
+    };
+
+    apply_track_selection(&mut args, &job.video.tracks, "video", None);
+    apply_track_selection(&mut args, &job.video.tracks, "audio", audio_keep_ids);
+    apply_track_selection(&mut args, &job.video.tracks, "subtitle", subtitle_keep_ids);
+
+    // Apply individual track modifications (name, language, default, forced) BEFORE adding source file
+    // Format: --default-track-flag TID:value (no 0: prefix when flag comes before the file)
+    let default_winners = first_default_track_per_type(&job.video.tracks);
+    for (index, track) in job.video.tracks.iter().enumerate() {
+        if is_track_removed(track) {
+            continue;
+        }
+        let track_id = parse_track_id(track, index);
+
+        // Track name (skip if empty)
+        if let Some(name) = &track.name {
+            if !name.trim().is_empty() {
+                args.push("--track-name".to_string());
+                args.push(format!("{}:{}", track_id, name));
+            }
+        }
+
+        // Language
+        if let Some(language) = &track.language {
+            args.push("--language".to_string());
+            args.push(format!("{}:{}", track_id, language));
+        }
+
+        // Default flag - apply individual track defaults from ModifyTracksDialog
+        // These override the bulk operations (external defaults, language filters) for specific tracks
+        if let Some(is_default) = track.is_default {
+            // Only the first flagged track of this type keeps the flag; see
+            // first_default_track_per_type.
+            let wins = is_default
+                && default_winners.get(&track.track_type) == Some(&track_id);
+            args.push("--default-track-flag".to_string());
+            args.push(format!("{}:{}", track_id, if wins { "yes" } else { "no" }));
+        }
+
+        // Forced flag for subtitles (use forced-display-flag)
+        if track.track_type == "subtitle" {
+            if let Some(is_forced) = track.is_forced {
+                args.push("--forced-display-flag".to_string());
+                args.push(format!(
+                    "{}:{}",
+                    track_id,
+                    if is_forced { "yes" } else { "no" }
+                ));
+            }
+        }
+    }
+
+    // Enforce audio ordering when external audio exists:
+    // bulk audio (from Audio tab) -> per-file external audio -> original audio tracks.
+    if external_audio_present || external_subtitle_present {
+        let mut order: Vec<String> = Vec::new();
+        let source_video_tracks: Vec<usize> = job
+            .video
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| track.track_type == "video" && !is_track_removed(track))
+            .map(|(index, track)| parse_track_id(track, index))
+            .collect();
+        let source_audio_tracks: Vec<usize> = job
+            .video
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| track.track_type == "audio" && !is_track_removed(track))
+            .map(|(index, track)| parse_track_id(track, index))
+            .collect();
+        let source_subtitle_tracks: Vec<usize> = job
+            .video
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| track.track_type == "subtitle" && !is_track_removed(track))
+            .map(|(index, track)| parse_track_id(track, index))
+            .collect();
+
+        for id in source_video_tracks {
+            order.push(format!("0:{}", id));
+        }
+
+        let mut file_index = 1usize;
+        let mut bulk_audio_entries: Vec<String> = Vec::new();
+        let mut per_video_audio_entries: Vec<String> = Vec::new();
+        for (audio, track_id) in &resolved_external_audios {
+            let entry = format!("{}:{}", file_index, track_id);
+            let is_per_video = audio.source.as_deref() == Some("per-file");
+            if is_per_video {
+                per_video_audio_entries.push(entry);
+            } else {
+                bulk_audio_entries.push(entry);
+            }
+            file_index += 1;
+        }
+
+        order.extend(bulk_audio_entries);
+        order.extend(per_video_audio_entries);
+        for id in source_audio_tracks {
+            order.push(format!("0:{}", id));
+        }
+
+        let mut first_subtitle_entries: Vec<String> = Vec::new();
+        let mut bulk_subtitle_entries: Vec<String> = Vec::new();
+        let mut per_video_subtitle_entries: Vec<String> = Vec::new();
+        let all_subtitles: Vec<(ExternalFileInfo, u64)> = resolved_external_subtitles
+            .iter()
+            .cloned()
+            .chain(resolved_external_subtitles_from_audio.iter().cloned())
+            .collect();
+        for (subtitle, track_id) in &all_subtitles {
+            let entry = format!("{}:{}", file_index, track_id);
+            let is_per_video = subtitle.source.as_deref() == Some("per-file");
+            if subtitle.mux_after.as_deref() == Some("subtitle-first") {
+                first_subtitle_entries.push(entry);
+            } else if is_per_video {
+                per_video_subtitle_entries.push(entry);
+            } else {
+                bulk_subtitle_entries.push(entry);
+            }
+            file_index += 1;
+        }
+        // Subtitle order: externals explicitly flagged "place first" win, then the
+        // source file's own subtitle tracks, then bulk externals, then per-video
+        // externals. Only tracks the user flagged may precede source subtitles.
+        order.extend(first_subtitle_entries);
+        for id in source_subtitle_tracks {
+            order.push(format!("0:{}", id));
+        }
+        order.extend(bulk_subtitle_entries);
+        order.extend(per_video_subtitle_entries);
+
+        if !order.is_empty() {
+            args.push("--track-order".to_string());
+            args.push(order.join(","));
+        }
+    }
+
+    args.push(job.video.path.clone());
+
+    for (audio, track_id) in &resolved_external_audios {
+        args.push("--no-video".to_string());
+        args.push("--no-subtitles".to_string());
+        args.push("--no-chapters".to_string());
+        args.push("--no-attachments".to_string());
+        args.push("--no-global-tags".to_string());
+        args.push("--audio-tracks".to_string());
+        args.push(track_id.to_string());
+        let override_entry = audio.track_overrides.get(&track_id.to_string());
+        let language = override_entry
+            .and_then(|entry| entry.language.clone())
+            .or_else(|| {
+                if audio.apply_language {
+                    audio.language.clone()
+                } else {
+                    None
+                }
+            });
+        if let Some(language) = language {
+            args.push("--language".to_string());
+            args.push(format!("{}:{}", track_id, language));
+        }
+        let track_name = override_entry
+            .and_then(|entry| entry.track_name.clone())
+            .or_else(|| audio.track_name.clone());
+        if let Some(name) = track_name {
+            if !name.trim().is_empty() {
+                args.push("--track-name".to_string());
+                args.push(format!("{}:{}", track_id, name));
+            }
+        }
+        let delay = override_entry
+            .and_then(|entry| entry.delay)
+            .or_else(|| audio.delay);
+        let stretch = override_entry
+            .and_then(|entry| entry.stretch)
+            .or(audio.stretch);
+        // A stretch on its own still needs a --sync to carry it, so the
+        // argument is emitted whenever either half is present.
+        if delay.is_some() || stretch.filter(StretchSetting::is_usable).is_some() {
+            args.push("--sync".to_string());
+            args.push(format_sync_value(
+                *track_id,
+                delay.unwrap_or(0.0),
+                stretch,
+            ));
+        }
+        if let Some(is_default) = audio.is_default {
+            args.push("--default-track-flag".to_string());
+            args.push(format!(
+                "{}:{}",
+                track_id,
+                if is_default { "yes" } else { "no" }
+            ));
+        }
+        if let Some(_is_forced) = audio.is_forced {
+            // mkvmerge versions in the wild often do not support forced flag for audio tracks.
+        }
+        args.push(audio.path.clone());
+    }
+
+    let all_subtitles: Vec<(ExternalFileInfo, u64)> = resolved_external_subtitles
+        .iter()
+        .cloned()
+        .chain(resolved_external_subtitles_from_audio.iter().cloned())
+        .collect();
+    for (subtitle, track_id) in &all_subtitles {
+        args.push("--no-video".to_string());
+        args.push("--no-audio".to_string());
+        args.push("--no-chapters".to_string());
+        args.push("--no-attachments".to_string());
+        args.push("--no-global-tags".to_string());
+        args.push("--subtitle-tracks".to_string());
+        args.push(track_id.to_string());
+        let override_entry = subtitle.track_overrides.get(&track_id.to_string());
+        let language = override_entry
+            .and_then(|entry| entry.language.clone())
+            .or_else(|| {
+                if subtitle.apply_language {
+                    subtitle.language.clone()
+                } else {
+                    None
+                }
+            });
+        if let Some(language) = language {
+            args.push("--language".to_string());
+            args.push(format!("{}:{}", track_id, language));
+        }
+        let track_name = override_entry
+            .and_then(|entry| entry.track_name.clone())
+            .or_else(|| subtitle.track_name.clone());
+        if let Some(name) = track_name {
+            if !name.trim().is_empty() {
+                args.push("--track-name".to_string());
+                args.push(format!("{}:{}", track_id, name));
+            }
+        }
+        let delay = override_entry
+            .and_then(|entry| entry.delay)
+            .or_else(|| subtitle.delay);
+        if let Some(delay) = delay {
+            args.push("--sync".to_string());
+            args.push(format_sync_value(*track_id, delay, None));
+        }
+        if let Some(is_default) = subtitle.is_default {
+            args.push("--default-track-flag".to_string());
+            args.push(format!(
+                "{}:{}",
+                track_id,
+                if is_default { "yes" } else { "no" }
+            ));
+        }
+        if let Some(is_forced) = subtitle.is_forced {
+            args.push("--forced-display-flag".to_string());
+            args.push(format!(
+                "{}:{}",
+                track_id,
+                if is_forced { "yes" } else { "no" }
+            ));
+        }
+        args.push(subtitle.path.clone());
+    }
+
+    for chapter in &job.chapters {
+        args.push("--chapters".to_string());
+        args.push(chapter.path.clone());
+        // Apply chapter delay if set (mkvmerge uses --sync after --chapters)
+        // Note: Chapter delay shifts all chapter timestamps by the specified amount
+        if let Some(delay) = chapter.delay {
+            if delay != 0.0 {
+                args.push("--sync".to_string());
+                // For chapter files, use 0:milliseconds format (0 refers to the last added file)
+                args.push(format!("0:{}", delay_to_sync_ms(delay)));
+            }
+        }
+    }
+
+    let mut attached_names = HashSet::new();
+    for attachment in &job.attachments {
+        let normalized_name = attachment.name.to_ascii_lowercase();
+        if !settings.allow_duplicate_attachments && !attached_names.insert(normalized_name) {
+            continue;
+        }
+        args.push("--attach-file".to_string());
+        args.push(attachment.path.clone());
+    }
+
+    args
+}
+
+fn spawn_log_reader<R: Read + Send + 'static>(
+    reader: R,
+    app: AppHandle,
+    state: AppState,
+    job_id: String,
+) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut line = String::new();
+        while let Ok(bytes) = reader.read_line(&mut line) {
+            if bytes == 0 {
+                break;
+            }
+            let trimmed = line.trim_end().to_string();
+
+            // `--gui-mode` emits a progress line per percent, so a single job
+            // produces a hundred of them and a batch produces hundreds more.
+            // Each one used to reopen the log file under a lock every worker
+            // shares, and to cross the IPC boundary as its own event -- work
+            // that competes with the copy for both disk and the main thread,
+            // to say "#GUI#progress 42%" in a file nobody reads.
+            //
+            // The progress event itself still fires: that is what drives the
+            // bar. Only the logging and the raw line are skipped.
+            if let Some(progress) = parse_progress(&trimmed) {
+                emit_progress(
+                    &app,
+                    MuxProgressEvent {
+                        job_id: job_id.clone(),
+                        status: "processing".to_string(),
+                        progress,
+                        message: None,
+                        size_after: None,
+                        error_message: None,
+                    },
+                );
+                line.clear();
+                continue;
+            }
+
+            let _ = write_log_line(&state.paths, &trimmed);
+            let _ = app.emit_all(
+                "mux-log",
+                serde_json::json!({ "job_id": job_id, "line": trimmed }),
+            );
+            line.clear();
+        }
+    });
+}
+
+fn run_command_with_logs(
+    app: &AppHandle,
+    state: &AppState,
+    job: &MuxJobRequest,
+    command: &mut Command,
+) -> Result<Arc<Mutex<Child>>, String> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start process: {e}"))?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let handle = Arc::new(Mutex::new(child));
+    {
+        let mut mux_state = state.mux();
+        mux_state.children.insert(job.id.clone(), handle.clone());
+    }
+
+    if let Some(out) = stdout {
+        spawn_log_reader(out, app.clone(), state.clone(), job.id.clone());
+    }
+    if let Some(err) = stderr {
+        spawn_log_reader(err, app.clone(), state.clone(), job.id.clone());
+    }
+
+    Ok(handle)
+}
+
+fn emit_progress(app: &AppHandle, event: MuxProgressEvent) {
+    let _ = app.emit_all("mux-progress", event);
+}
+
+/// Wait for a child process, killing it if a stop was requested.
+///
+/// Lock discipline: the mux_state lock is ALWAYS released before the child
+/// handle is locked, and the two are never held simultaneously. `abort_mux_queue`
+/// follows the same rule. Previously this function held mux_state while taking
+/// the child lock, while abort_mux_queue did the same in the opposite effective
+/// order, so pressing Stop while a worker sat in `try_wait` deadlocked the app.
+fn wait_for_child_or_stop(handle: Arc<Mutex<Child>>, state: &AppState) -> Option<i32> {
+    loop {
+        // Read the flag and drop the guard immediately -- never hold it across
+        // a child-handle lock.
+        let should_stop = state.stop_requested();
+        if should_stop {
+            let mut child = lock_or_recover(&handle);
+            let _ = child.kill();
+            // Reap the killed process so it does not linger as a zombie.
+            return match child.wait() {
+                Ok(status) => status.code(),
+                Err(_) => None,
+            };
+        }
+
+        {
+            let mut child = lock_or_recover(&handle);
+            match child.try_wait() {
+                Ok(Some(status)) => return status.code(),
+                Ok(None) => {}
+                Err(_) => return None,
+            }
+        }
+
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn parse_progress(line: &str) -> Option<u8> {
+    let percent_pos = line.find('%')?;
+    let start = line[..percent_pos]
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    line[start..percent_pos].trim().parse::<u8>().ok()
+}
+
+/// Remove the temp file a failed overwrite job left behind.
+///
+/// In overwrite mode the output is a uniquely-named temp file written *into the
+/// source folder*. A failed job used to leave it there for good: it wastes the
+/// space of a whole remux, and because it ends in .mkv the next scan of that
+/// folder offers it up as a source video. In destination mode the path is the
+/// user's own chosen output, so it is left alone.
+fn discard_failed_temp_output(overwrite_mode: bool, output_path: &Path, state: &AppState) {
+    if !overwrite_mode || !output_path.exists() {
+        return;
+    }
+    match fs::remove_file(output_path) {
+        Ok(()) => {
+            let _ = write_log_line(
+                &state.paths,
+                &format!("Removed temp output {}", output_path.display()),
+            );
+        }
+        Err(err) => {
+            let _ = write_log_line(
+                &state.paths,
+                &format!(
+                    "Could not remove temp output {}: {err}",
+                    output_path.display()
+                ),
+            );
+        }
+    }
+}
+
+fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: MuxJobRequest) {
+    if state.mux().stop {
+        return;
+    }
+
+    emit_progress(
+        app,
+        MuxProgressEvent {
+            job_id: job.id.clone(),
+            status: "processing".to_string(),
+            progress: 0,
+            message: Some("Starting muxing".to_string()),
+            size_after: None,
+            error_message: None,
+        },
+    );
+    let _ = write_log_line(
+        &state.paths,
+        &format!("Starting job {} for {}", job.id, job.video.path),
+    );
+
+    let output_dir = destination_dir_for_job(&job, settings);
+    if let Err(err) = ensure_output_dir(&output_dir) {
+        emit_job_error(app, state, settings, &job.id, "Output destination unavailable", err);
+        return;
+    }
+    if let Err(err) = check_free_space(&output_dir, job.video.size) {
+        emit_job_error(app, state, settings, &job.id, "Low disk space", err);
+        return;
+    }
+
+    if settings.destination_dir.trim().is_empty() && !settings.overwrite_source {
+        emit_job_error(
+            app,
+            state,
+            settings,
+            &job.id,
+            "Destination folder required",
+            "Set a destination folder or enable overwrite source.".to_string(),
+        );
+        return;
+    }
+
+    let (output_path, final_path, overwrite_mode) = get_output_paths(&job, settings);
+    let _ = write_log_line(
+        &state.paths,
+        &format!("Output path: {}", output_path.to_string_lossy()),
+    );
+    // mkvpropedit is in-place metadata editing only.
+    // Allow it only when the user is explicitly overwriting source files.
+    let can_use_mkvpropedit = settings.use_mkvpropedit && fast_mux_allowed_for_job(&job, settings);
+    if settings.use_mkvpropedit && !can_use_mkvpropedit {
+        let _ = write_log_line(
+            &state.paths,
+            "Fast muxing requested but this job requires full mkvmerge (fast mux works only for in-place metadata edits).",
+        );
+    }
+
+    if can_use_mkvpropedit {
+        if !tool_available("mkvpropedit", "-V") {
+            emit_progress(
+                app,
+                MuxProgressEvent {
+                    job_id: job.id.clone(),
+                    status: "error".to_string(),
+                    progress: 0,
+                    message: Some("mkvpropedit not found".to_string()),
+                    size_after: None,
+                    error_message: Some("Install mkvpropedit or disable fast muxing.".to_string()),
+                },
+            );
+            return;
+        }
+
+        let edit_args = build_mkvpropedit_args(&job);
+        if !edit_args.is_empty() {
+            let full_command = format!("mkvpropedit {} {}", job.video.path, edit_args.join(" "));
+            let _ = write_log_line(&state.paths, &full_command);
+            let _ = app.emit_all(
+                "mux-log",
+                serde_json::json!({ "job_id": job.id, "line": full_command }),
+            );
+
+            let mut cmd = hidden_command("mkvpropedit");
+            cmd.arg(&job.video.path);
+            for arg in edit_args {
+                cmd.arg(arg);
+            }
+
+            let child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    emit_progress(
+                        app,
+                        MuxProgressEvent {
+                            job_id: job.id.clone(),
+                            status: "error".to_string(),
+                            progress: 0,
+                            message: Some("Failed to start mkvpropedit".to_string()),
+                            size_after: None,
+                            error_message: Some(format!("Failed to start mkvpropedit: {e}")),
+                        },
+                    );
+                    return;
+                }
+            };
+
+            let handle = Arc::new(Mutex::new(child));
+            {
+                let mut mux_state = state.mux();
+                mux_state.children.insert(job.id.clone(), handle.clone());
+            }
+
+            let status = wait_for_child_or_stop(handle.clone(), state);
+            {
+                let mut mux_state = state.mux();
+                mux_state.children.remove(&job.id);
+            }
+
+            match status {
+                Some(code) if code == 0 => {
+                    let final_size = fs::metadata(&job.video.path).ok().map(|m| m.len());
+                    emit_progress(
+                        app,
+                        MuxProgressEvent {
+                            job_id: job.id.clone(),
+                            status: "completed".to_string(),
+                            progress: 100,
+                            message: Some("Fast mux completed".to_string()),
+                            size_after: final_size,
+                            error_message: None,
+                        },
+                    );
+                }
+                Some(code) => {
+                    let error_output = format!("mkvpropedit exited with code: {code}");
+                    emit_progress(
+                        app,
+                        MuxProgressEvent {
+                            job_id: job.id.clone(),
+                            status: "error".to_string(),
+                            progress: 0,
+                            message: Some("mkvpropedit failed".to_string()),
+                            size_after: None,
+                            error_message: Some(error_output),
+                        },
+                    );
+                }
+                None => {
+                    emit_progress(
+                        app,
+                        MuxProgressEvent {
+                            job_id: job.id.clone(),
+                            status: "error".to_string(),
+                            progress: 0,
+                            message: Some("mkvpropedit error".to_string()),
+                            size_after: None,
+                            error_message: Some("Failed to wait for mkvpropedit".to_string()),
+                        },
+                    );
+                }
+            }
+            return;
+        } else {
+            let _ = write_log_line(
+                &state.paths,
+                "Fast mux requested but no track modifications detected. Falling back to mkvmerge.",
+            );
+        }
+    }
+
+    if !tool_available("mkvmerge", "-V") {
+        emit_job_error(
+            app,
+            state,
+            settings,
+            &job.id,
+            "mkvmerge not found",
+            "Install mkvmerge (MKVToolNix) and try again.".to_string(),
+        );
+        return;
+    }
+
+    let mut command = hidden_command("mkvmerge");
+    let command_args = build_mkvmerge_command(&job, settings, &output_path, state);
+    log_job_plan(state, &job, &output_path);
+    let command_line = command_args
+        .iter()
+        .map(|arg| quote_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let _ = write_log_line(&state.paths, &format!("mkvmerge {}", command_line));
+    for arg in command_args {
+        command.arg(arg);
+    }
+
+    let handle = match run_command_with_logs(app, state, &job, &mut command) {
+        Ok(child) => child,
+        Err(err) => {
+            discard_failed_temp_output(overwrite_mode, &output_path, state);
+            emit_job_error(app, state, settings, &job.id, "Failed to start process", err);
+            return;
+        }
+    };
+
+    let exit_code = wait_for_child_or_stop(handle.clone(), state).unwrap_or(-1);
+    {
+        let mut mux_state = state.mux();
+        mux_state.children.remove(&job.id);
+    }
+
+    if exit_code != 0 {
+        // mkvmerge exits 1 for warnings, having still written a valid file.
+        // Only `output_path` proves THIS run produced output: in overwrite mode
+        // it is a fresh uniquely-named temp file, and in destination mode it is
+        // the file we just asked mkvmerge to write. `final_path` was also
+        // accepted before, but it can be left over from an earlier successful
+        // run, which made genuinely failed jobs report as completed.
+        // Require a non-empty file so a truncated/aborted write is not accepted.
+        let produced_output = fs::metadata(&output_path)
+            .map(|meta| meta.is_file() && meta.len() > 0)
+            .unwrap_or(false);
+        let treat_as_success = exit_code == 1 && produced_output;
+        if treat_as_success {
+            let _ = write_log_line(
+                &state.paths,
+                &format!("Job {} completed with warnings (exit code 1)", job.id),
+            );
+        } else {
+            let _ = write_log_line(
+                &state.paths,
+                &format!("Job {} failed with exit code {}", job.id, exit_code),
+            );
+            discard_failed_temp_output(overwrite_mode, &output_path, state);
+            emit_job_error(
+                app,
+                state,
+                settings,
+                &job.id,
+                "Muxing failed",
+                format!("Process exited with code {exit_code}"),
+            );
+            return;
+        }
+    }
+
+    if overwrite_mode && output_path.exists() {
+        match safe_replace_source(Path::new(&job.video.path), &output_path, &final_path) {
+            Ok(Some(warning)) => {
+                let _ = write_log_line(&state.paths, &format!("Job {}: {warning}", job.id));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                emit_job_error(app, state, settings, &job.id, "Overwrite failed", err);
+                return;
+            }
+        }
+    }
+
+    let mut final_output = final_path.clone();
+    if settings.add_crc && final_path.exists() {
+        match compute_crc(&final_path) {
+            Ok(crc) => {
+                let with_crc = file_name_with_crc(&final_path, &crc);
+                match rename_final_output(&final_path, &with_crc) {
+                    Ok(path) => final_output = path,
+                    Err(err) => {
+                        emit_job_error(app, state, settings, &job.id, "CRC rename failed", err);
+                        return;
+                    }
+                }
+            }
+            Err(err) => {
+                emit_job_error(app, state, settings, &job.id, "CRC calculation failed", err);
+                return;
+            }
+        }
+    } else if settings.remove_old_crc && final_path.exists() {
+        let without_crc = file_name_without_crc(&final_path);
+        match rename_final_output(&final_path, &without_crc) {
+            Ok(path) => final_output = path,
+            Err(err) => {
+                emit_job_error(app, state, settings, &job.id, "CRC cleanup failed", err);
+                return;
+            }
+        }
+    }
+
+    let size_after = fs::metadata(&final_output).map(|m| m.len()).ok();
+
+    emit_progress(
+        app,
+        MuxProgressEvent {
+            job_id: job.id.clone(),
+            status: "completed".to_string(),
+            progress: 100,
+            message: Some("Muxing completed".to_string()),
+            size_after,
+            error_message: None,
+        },
+    );
+    let _ = write_log_line(
+        &state.paths,
+        &format!("Job {} completed successfully", job.id),
+    );
+
+    // `output_dir` already resolves to the destination folder, or to the source
+    // folder when overwriting in place. Gating on a non-empty destination_dir
+    // silently dropped the log for every overwrite-source run, which is the
+    // common case.
+    if settings.keep_log_file {
+        let _ = fs::copy(
+            &state.paths.log_path,
+            output_dir.join("muxing_log_file.txt"),
+        );
+    }
+}
+
+fn run_mux_queue(app: AppHandle, state: AppState) {
+    let settings = {
+        let mux_state = state.mux();
+        mux_state.settings.clone()
+    };
+    let Some(settings) = settings else {
+        return;
+    };
+
+    let jobs = {
+        let mux_state = state.mux();
+        mux_state.queue.clone()
+    };
+
+    let max_parallel = settings
+        .max_parallel_jobs
+        .unwrap_or(1)
+        .max(1)
+        .min(MAX_PARALLEL_JOBS)
+        .min(jobs.len().max(1));
+    let (tx, rx) = mpsc::channel::<MuxJobRequest>();
+    for job in jobs {
+        let _ = tx.send(job);
+    }
+    drop(tx);
+
+    let receiver = Arc::new(Mutex::new(rx));
+    let mut workers = Vec::new();
+
+    for _ in 0..max_parallel {
+        let app_handle = app.clone();
+        let state_clone = state.clone();
+        let settings_clone = settings.clone();
+        let rx_clone = receiver.clone();
+        workers.push(thread::spawn(move || loop {
+            {
+                let mux_state = state_clone.mux();
+                if mux_state.stop {
+                    break;
+                }
+                if mux_state.pause {
+                    drop(mux_state);
+                    thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
+            }
+
+            let job = {
+                let rx_lock = lock_or_recover(&rx_clone);
+                rx_lock.recv_timeout(Duration::from_millis(200))
+            };
+
+            match job {
+                Ok(job) => process_job(&app_handle, &state_clone, &settings_clone, job),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }));
+    }
+
+    for worker in workers {
+        let _ = worker.join();
+    }
+
+    let mut mux_state = state.mux();
+    mux_state.running = false;
+    mux_state.children.clear();
+}
+
+#[tauri::command]
+fn start_muxing(
+    app: AppHandle,
+    state: State<AppState>,
+    request: MuxStartRequest,
+) -> Result<(), String> {
+    let mut mux_state = state.mux();
+    if mux_state.running {
+        return Err("Muxing is already running.".to_string());
+    }
+
+    clear_log(&state.paths)?;
+    write_log_line(&state.paths, "Starting muxing run")?;
+
+    mux_state.queue = request.jobs;
+    mux_state.settings = Some(request.settings);
+    mux_state.stop = false;
+    mux_state.pause = false;
+    mux_state.running = true;
+
+    let app_handle = app.clone();
+    let state_clone = state.inner().clone();
+    thread::spawn(move || run_mux_queue(app_handle, state_clone));
+
+    Ok(())
+}
+
+#[tauri::command]
+fn preview_mux(
+    state: State<AppState>,
+    request: MuxStartRequest,
+) -> Result<Vec<MuxPreviewResult>, String> {
+    let settings = request.settings;
+    let jobs = request.jobs;
+    let mut results = Vec::new();
+    let mut output_counts: HashMap<String, usize> = HashMap::new();
+
+    for job in &jobs {
+        let (_output_path, final_path, _overwrite) = get_output_paths(job, &settings);
+        let key = final_path.to_string_lossy().to_ascii_lowercase();
+        *output_counts.entry(key).or_insert(0) += 1;
+    }
+
+    for job in jobs {
+        let (output_path, final_path, _overwrite) = get_output_paths(&job, &settings);
+        let command_args = build_mkvmerge_command(&job, &settings, &output_path, &state);
+        let command_line = join_mkvmerge_command(&command_args);
+        let duplicate_output = output_counts
+            .get(&final_path.to_string_lossy().to_ascii_lowercase())
+            .copied()
+            .unwrap_or(0)
+            > 1;
+        let warnings = validate_job_preflight(
+            &job,
+            &settings,
+            &output_path,
+            &final_path,
+            duplicate_output,
+        );
+
+        let plan = MuxPreviewPlan {
+            video: job.video.path.clone(),
+            output: output_path.to_string_lossy().to_string(),
+            audios: job.audios.clone(),
+            subtitles: job.subtitles.clone(),
+            chapters: job.chapters.clone(),
+            attachments: job.attachments.clone(),
+        };
+
+        results.push(MuxPreviewResult {
+            job_id: job.id,
+            command: command_line,
+            warnings,
+            plan,
+        });
+    }
+
+    Ok(results)
+}
+
+/// Pause the QUEUE, not the running processes.
+///
+/// Jobs already handed to mkvmerge run to completion -- suspending an external
+/// process portably would require OS-specific signalling that this app does not
+/// link. Workers stop picking up new jobs immediately. The log records this so
+/// the delay between pressing Pause and work actually stopping is explainable.
+#[tauri::command]
+fn pause_muxing(state: State<AppState>) -> Result<(), String> {
+    let mut mux_state = state.mux();
+    mux_state.pause = true;
+    let in_flight = mux_state.children.len();
+    drop(mux_state);
+    let _ = write_log_line(
+        &state.paths,
+        &format!(
+            "Pause requested: no further jobs will start; {in_flight} job(s) already running will finish first."
+        ),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn resume_muxing(state: State<AppState>) -> Result<(), String> {
+    let mut mux_state = state.mux();
+    mux_state.pause = false;
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_muxing(state: State<AppState>) -> Result<(), String> {
+    abort_mux_queue(&state);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_log_file(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    if !state.paths.log_path.exists() {
+        File::create(&state.paths.log_path)
+            .map_err(|e| format!("Failed to create log file: {e}"))?;
+    }
+    let path_string = state.paths.log_path.to_string_lossy().to_string();
+    if tauri::api::shell::open(&app.shell_scope(), path_string.clone(), None).is_ok() {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg(&path_string)
+            .status()
+            .map_err(|e| format!("Failed to open log file: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", &path_string])
+            .status()
+            .map_err(|e| format!("Failed to open log file: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let status = Command::new("xdg-open")
+            .arg(&path_string)
+            .status()
+            .map_err(|e| format!("Failed to open log file: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+
+    Err("Failed to open log file".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sha256_hex_matches_the_standard_test_vector() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    fn track(id: &str, track_type: &str, is_default: Option<bool>) -> TrackInfo {
+        TrackInfo {
+            id: id.to_string(),
+            track_type: track_type.to_string(),
+            codec: None,
+            language: None,
+            name: None,
+            is_default,
+            is_forced: None,
+            bitrate: None,
+            action: None,
+        }
+    }
+
+    #[test]
+    fn crc_suffix_keeps_a_name_that_ends_in_a_repeated_extension() {
+        let path = Path::new("/videos/Show.mkv.mkv");
+        assert_eq!(
+            file_name_with_crc(path, "ABCD1234"),
+            PathBuf::from("/videos/Show.mkv [ABCD1234].mkv")
+        );
+    }
+
+    #[test]
+    fn crc_cleanup_only_strips_the_extension() {
+        // ".mkv" inside the title must survive; only the real extension goes.
+        let path = Path::new("/videos/Show.mkv.Rip [ABCD1234].mkv");
+        assert_eq!(
+            file_name_without_crc(path),
+            PathBuf::from("/videos/Show.mkv.Rip.mkv")
+        );
+    }
+
+    #[test]
+    fn crc_cleanup_leaves_a_name_without_a_crc_alone() {
+        let path = Path::new("/videos/Episode 01.mkv");
+        assert_eq!(
+            file_name_without_crc(path),
+            PathBuf::from("/videos/Episode 01.mkv")
+        );
+    }
+
+    #[test]
+    fn only_the_first_flagged_track_of_each_type_stays_default() {
+        let tracks = vec![
+            track("0", "video", Some(true)),
+            track("1", "audio", Some(true)),
+            track("2", "audio", Some(true)),
+            track("3", "subtitle", Some(true)),
+            track("4", "subtitle", Some(true)),
+        ];
+
+        let winners = first_default_track_per_type(&tracks);
+
+        assert_eq!(winners.get("video"), Some(&0));
+        assert_eq!(winners.get("audio"), Some(&1));
+        assert_eq!(winners.get("subtitle"), Some(&3));
+    }
+
+    #[test]
+    fn a_removed_track_never_wins_the_default_flag() {
+        let mut removed = track("1", "audio", Some(true));
+        removed.action = Some("remove".to_string());
+        let tracks = vec![removed, track("2", "audio", Some(true))];
+
+        let winners = first_default_track_per_type(&tracks);
+
+        assert_eq!(winners.get("audio"), Some(&2));
+    }
+
+    #[test]
+    fn tracks_that_are_not_flagged_default_do_not_win() {
+        let tracks = vec![
+            track("1", "audio", Some(false)),
+            track("2", "audio", None),
+            track("3", "audio", Some(true)),
+        ];
+
+        let winners = first_default_track_per_type(&tracks);
+
+        assert_eq!(winners.get("audio"), Some(&3));
+    }
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0))
+            .as_nanos();
+        std::env::temp_dir().join(format!("mkvbatchmux-{name}-{suffix}"))
+    }
+
+    #[test]
+    fn safe_replace_source_restores_source_when_output_missing() {
+        let dir = unique_test_dir("missing-output");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.mkv");
+        let output = dir.join("source.tmp.mkv");
+        fs::write(&source, b"original").unwrap();
+
+        let result = safe_replace_source(&source, &output, &source);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"original");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn safe_replace_source_swaps_output_and_removes_backup() {
+        let dir = unique_test_dir("replace");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.mkv");
+        let output = dir.join("source.tmp.mkv");
+        fs::write(&source, b"original").unwrap();
+        fs::write(&output, b"muxed").unwrap();
+
+        // No warning: the backup was cleaned up too.
+        assert_eq!(safe_replace_source(&source, &output, &source).unwrap(), None);
+
+        assert_eq!(fs::read(&source).unwrap(), b"muxed");
+        assert!(!output.exists());
+        let backups: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("mkvbatchmux-backup")
+            })
+            .collect();
+        assert!(backups.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+fn main() {
+    tauri::Builder::default()
+        .setup(|app| {
+            let app_data_dir = tauri::api::path::app_data_dir(&app.config())
+                .ok_or("Failed to resolve app data directory")?;
+            ensure_dir(&app_data_dir)?;
+            let paths = AppPaths {
+                app_data_dir: app_data_dir.clone(),
+                options_path: app_data_dir.join("setting.json"),
+                log_path: app_data_dir.join("muxing_log_file.txt"),
+            };
+            let state = AppState {
+                paths,
+                mux_state: Arc::new(Mutex::new(MuxState::default())),
+                cancelled_scans: Arc::new(Mutex::new(HashSet::new())),
+            };
+            app.manage(state);
+            app.manage(audiosync::EngineHandle::default());
+            // Anything installed from Settings on a previous run lives in the
+            // app's data directory, which is not on the system PATH. Register
+            // it before the first availability probe caches a "missing".
+            register_tools_on_path(&app.handle());
+
+            // The configured size suits a large display. On a smaller one it
+            // would open larger than the screen, so shrink to fit -- leaving
+            // room for the taskbar -- and re-centre. Only ever shrinks: a
+            // monitor big enough for the default is left alone.
+            if let Some(window) = app.get_window("main") {
+                if let Ok(Some(monitor)) = window.current_monitor() {
+                    let scale = monitor.scale_factor();
+                    let screen = monitor.size().to_logical::<f64>(scale);
+                    if let Ok(size) = window.inner_size() {
+                        let current = size.to_logical::<f64>(scale);
+                        let width = current.width.min(screen.width * 0.9);
+                        let height = current.height.min(screen.height * 0.9);
+                        if width < current.width || height < current.height {
+                            let _ = window.set_size(tauri::LogicalSize::new(width, height));
+                            let _ = window.center();
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_app_paths,
+            load_options,
+            save_options,
+            scan_media,
+            inspect_paths,
+            inspect_paths_stream,
+            cancel_scan,
+            start_muxing,
+            preview_mux,
+            pause_muxing,
+            resume_muxing,
+            stop_muxing,
+            open_log_file,
+            dependency_status,
+            install_dependency,
+            audiosync::audiosync_engine_status,
+            audiosync::list_reference_tracks,
+            audiosync::measure_delays_start,
+            audiosync::measure_delays_cancel,
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            // Leave no engine process behind when the app closes.
+            if let tauri::RunEvent::Exit = event {
+                app_handle.state::<audiosync::EngineHandle>().shutdown();
+            }
+        });
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    #[test]
+    fn external_file_info_tolerates_missing_optional_keys() {
+        // Payloads written by older frontend versions omit the newer keys.
+        let json = r#"{"id":"1","name":"a.mka","path":"/a.mka","type":"audio"}"#;
+        let parsed: Result<ExternalFileInfo, _> = serde_json::from_str(json);
+        assert!(parsed.is_ok(), "failed to parse: {:?}", parsed.err());
+    }
+
+    fn video(path: &str) -> VideoFileInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": "v1",
+            "name": "Episode.mkv",
+            "path": path,
+            "size": 1024_u64,
+            "status": "pending",
+            "tracks": [],
+        }))
+        .expect("valid video fixture")
+    }
+
+    fn job(path: &str) -> MuxJobRequest {
+        serde_json::from_value(serde_json::json!({
+            "id": "job-1",
+            "video": serde_json::to_value(video(path)).unwrap(),
+            "audios": [],
+            "subtitles": [],
+            "chapters": [],
+            "attachments": [],
+        }))
+        .expect("valid job fixture")
+    }
+
+    fn overwrite_settings() -> MuxSettings {
+        serde_json::from_value(serde_json::json!({
+            "destinationDir": "",
+            "outputNamingPattern": null,
+            "overwriteSource": true,
+            "addCrc": false,
+            "removeOldCrc": false,
+            "keepLogFile": false,
+            "abortOnErrors": false,
+            "maxParallelJobs": null,
+            "onlyKeepAudiosEnabled": false,
+            "onlyKeepSubtitlesEnabled": false,
+            "onlyKeepAudioLanguages": [],
+            "onlyKeepSubtitleLanguages": [],
+            "discardOldChapters": false,
+            "discardOldAttachments": false,
+            "allowDuplicateAttachments": false,
+            "attachmentsExpertMode": false,
+            "removeGlobalTags": false,
+            "makeAudioDefaultLanguage": null,
+            "makeSubtitleDefaultLanguage": null,
+            "useMkvpropedit": false,
+        }))
+        .expect("valid settings fixture")
+    }
+
+    /// Two jobs sharing an output stem must never pick the same temp path.
+    /// Second-resolution timestamps previously collided under parallel muxing,
+    /// letting two mkvmerge processes write the same file.
+    #[test]
+    fn temp_output_paths_are_unique_for_identical_stems() {
+        let settings = overwrite_settings();
+        let mut seen = HashSet::new();
+
+        for _ in 0..256 {
+            let (output_path, _final_path, overwrite) =
+                get_output_paths(&job("/media/show/Episode.mkv"), &settings);
+            assert!(overwrite, "expected overwrite mode for empty destination");
+            assert!(
+                seen.insert(output_path.clone()),
+                "duplicate temp output path generated: {}",
+                output_path.to_string_lossy()
+            );
+        }
+    }
+
+    /// Guards the existing plain-offset behaviour against regression: this is
+    /// the form every mux has always produced and it must not change.
+    #[test]
+    fn sync_value_is_a_plain_offset_when_no_stretch_is_set() {
+        assert_eq!(format_sync_value(1, -0.088, None), "1:-88");
+        assert_eq!(format_sync_value(0, 1.890, None), "0:1890");
+        assert_eq!(format_sync_value(2, 0.0, None), "2:0");
+    }
+
+    /// The extended form carries the ratio after the offset, and only when a
+    /// ratio is actually set -- a stretch applied by accident would drift the
+    /// whole file.
+    #[test]
+    fn sync_value_includes_the_ratio_only_when_a_stretch_is_set() {
+        // PAL-timed audio on a film-rate video: short, so it is slowed by
+        // 25025/24000. Written the way it now reaches this function, since the
+        // reciprocal is a real mistake someone could copy out of a test.
+        let stretch = StretchSetting {
+            num: 25025.0,
+            den: 24000.0,
+        };
+        assert_eq!(
+            format_sync_value(1, -0.088, Some(stretch)),
+            "1:-88,25025/24000"
+        );
+        // The offset and the stretch are independent; a zero offset still
+        // carries the ratio.
+        assert_eq!(format_sync_value(1, 0.0, Some(stretch)), "1:0,25025/24000");
+    }
+
+    /// A malformed ratio must degrade to the plain offset rather than emitting
+    /// something mkvmerge rejects, which would fail the whole job.
+    #[test]
+    fn unusable_stretch_ratios_fall_back_to_a_plain_offset() {
+        let zero_denominator = StretchSetting {
+            num: 25.0,
+            den: 0.0,
+        };
+        assert_eq!(format_sync_value(1, -0.088, Some(zero_denominator)), "1:-88");
+
+        let negative = StretchSetting {
+            num: -25.0,
+            den: 24.0,
+        };
+        assert_eq!(format_sync_value(1, -0.088, Some(negative)), "1:-88");
+    }
+
+    /// The value the frontend computes must survive the conversion main.rs
+    /// performs. This is the Rust half of the round-trip proved in
+    /// delayConversion.test.ts.
+    #[test]
+    fn sync_offset_matches_the_frontend_rounding() {
+        // engineMsToDelaySeconds(87.7) == -0.088
+        assert_eq!(format_sync_value(1, -0.088, None), "1:-88");
+        // engineMsToDelaySeconds(-33.5) == 0.034
+        assert_eq!(format_sync_value(1, 0.034, None), "1:34");
+        // engineMsToDelaySeconds(1890.4) == -1.890
+        assert_eq!(format_sync_value(1, -1.890, None), "1:-1890");
+    }
+
+    /// Whole-millisecond delays whose binary representation falls just short
+    /// of the integer. `as i64` truncated these to one millisecond less than
+    /// the field showed; the measured Snatch delay of -4.178 s is one of them
+    /// in spirit, and 1.001 s is the smallest.
+    #[test]
+    fn sync_offset_is_rounded_not_truncated() {
+        assert_eq!(format_sync_value(1, 1.001, None), "1:1001");
+        assert_eq!(format_sync_value(1, -1.001, None), "1:-1001");
+        assert_eq!(format_sync_value(1, 2.002, None), "1:2002");
+        assert_eq!(format_sync_value(1, -1.023, None), "1:-1023");
+        assert_eq!(format_sync_value(1, -4.178, None), "1:-4178");
+        // Every whole millisecond within ±10 s must survive the round trip
+        // the delay field performs: seconds with three decimals -> ms.
+        for ms in -10_000..=10_000i64 {
+            let seconds: f64 = format!("{:.3}", ms as f64 / 1000.0).parse().unwrap();
+            assert_eq!(delay_to_sync_ms(seconds), ms, "{seconds} s");
+        }
+    }
+
+    /// Saved sessions written before the stretch field existed must still load.
+    #[test]
+    fn track_override_tolerates_a_missing_stretch() {
+        let parsed: TrackOverride =
+            serde_json::from_str(r#"{"language":"eng","delay":-0.088}"#).expect("should parse");
+        assert!(parsed.stretch.is_none());
+        assert_eq!(parsed.delay, Some(-0.088));
+    }
+
+    /// The temp file must differ from the final path, otherwise
+    /// safe_replace_source refuses to run.
+    #[test]
+    fn temp_output_path_differs_from_final_path() {
+        let settings = overwrite_settings();
+        let (output_path, final_path, _) = get_output_paths(&job("/media/show/Episode.mkv"), &settings);
+        assert_ne!(output_path, final_path);
+        assert_eq!(final_path.file_name().unwrap(), "Episode.mkv");
+    }
+}

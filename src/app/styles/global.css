@@ -1,0 +1,999 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* MKVBatchMux — v3 design system
+ *
+ * Calm neutral dark with a single blue accent. No gradients, no glow.
+ * Every colour below is a token: components must never hardcode a hex value,
+ * otherwise light mode breaks (which is what happened before this pass).
+ *
+ * Scale: controls 30px · rows 34px · radius 4px (8px for overlays)
+ * Type:  13px body · 12px secondary · nothing below 12px
+ */
+
+@layer base {
+  :root {
+    --background: 0 0% 96%;
+    --foreground: 0 0% 9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 9%;
+
+    --primary: 213 100% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 0% 93%;
+    --secondary-foreground: 0 0% 25%;
+
+    --muted: 0 0% 94%;
+    --muted-foreground: 0 0% 40%;
+
+    --accent: 213 100% 45%;
+    --accent-foreground: 213 100% 45%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 60% 34%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 42%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 0 0% 87%;
+    --input: 0 0% 100%;
+    --ring: 213 100% 45%;
+
+    --radius: 4px;
+    --radius-overlay: 8px;
+
+    --titlebar: 0 0% 92%;
+    --panel: 0 0% 100%;
+    --panel-header: 0 0% 97%;
+    --panel-border: 0 0% 87%;
+    --selection: 213 100% 45% / 0.1;
+    --selection-border: 213 100% 45%;
+    --table-row: 0 0% 100%;
+    --table-row-alt: 0 0% 99%;
+    --table-header: 0 0% 97%;
+
+    --sidebar-background: 0 0% 96%;
+    --sidebar-foreground: 0 0% 35%;
+    --sidebar-primary: 213 100% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 91%;
+    --sidebar-accent-foreground: 0 0% 9%;
+    --sidebar-border: 0 0% 87%;
+    --sidebar-ring: 213 100% 45%;
+
+    --toggle-off: 0 0% 78%;
+    --toggle-border: 0 0% 72%;
+    --toggle-knob: 0 0% 100%;
+
+    /* interaction states — theme-aware, replaces hardcoded greys */
+    --hover: 0 0% 0% / 0.05;
+    --press: 0 0% 0% / 0.08;
+    --control: 0 0% 100%;
+    --control-hover: 0 0% 95%;
+    --control-press: 0 0% 91%;
+    --primary-hover: 213 100% 40%;
+    --primary-press: 213 100% 34%;
+
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+
+    --row-height: 34px;
+    --row-height-header: 32px;
+    /* Paired list rows. Tall enough for the audio row's 24px action buttons
+       plus padding, so both panes agree without depending on their contents. */
+    --media-row-h: 38px;
+    --media-row-tall-h: 38px;
+    --control-height: 30px;
+    --icon-button-size: 30px;
+
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.06);
+    --shadow-2: 0 12px 32px rgb(0 0 0 / 0.14);
+  }
+
+  .dark {
+    /* Three distinct greys, dark to light: window chrome, page, raised card.
+       Keeping them separated is what makes the title bar read as chrome
+       rather than as part of the content. */
+    --titlebar: 0 0% 7%;
+    --background: 0 0% 10%;
+    --foreground: 0 0% 93%;
+
+    --card: 0 0% 14%;
+    --card-foreground: 0 0% 93%;
+
+    --popover: 0 0% 16%;
+    --popover-foreground: 0 0% 93%;
+
+    --primary: 213 100% 64%;
+    --primary-foreground: 213 100% 13%;
+
+    --secondary: 0 0% 18%;
+    --secondary-foreground: 0 0% 93%;
+
+    --muted: 0 0% 18%;
+    --muted-foreground: 0 0% 60%;
+
+    --accent: 213 100% 64%;
+    --accent-foreground: 213 100% 64%;
+
+    --destructive: 0 91% 71%;
+    --destructive-foreground: 0 0% 10%;
+
+    --success: 142 69% 58%;
+    --success-foreground: 0 0% 10%;
+
+    --warning: 43 96% 56%;
+    --warning-foreground: 0 0% 10%;
+
+    --border: 0 0% 100% / 0.09;
+    --input: 0 0% 9%;
+    --ring: 213 100% 64%;
+
+    --panel: 0 0% 15%;
+    --panel-header: 0 0% 13%;
+    --panel-border: 0 0% 100% / 0.09;
+    --selection: 213 100% 64% / 0.13;
+    --selection-border: 213 100% 64%;
+    --table-row: 0 0% 15%;
+    --table-row-alt: 0 0% 15%;
+    --table-header: 0 0% 13%;
+
+    --sidebar-background: 0 0% 11%;
+    --sidebar-foreground: 0 0% 68%;
+    --sidebar-primary: 213 100% 64%;
+    --sidebar-primary-foreground: 213 100% 13%;
+    --sidebar-accent: 0 0% 18%;
+    --sidebar-accent-foreground: 0 0% 93%;
+    --sidebar-border: 0 0% 100% / 0.09;
+    --sidebar-ring: 213 100% 64%;
+
+    --toggle-off: 0 0% 23%;
+    --toggle-border: 0 0% 100% / 0.13;
+    --toggle-knob: 0 0% 93%;
+
+    --hover: 0 0% 100% / 0.05;
+    --press: 0 0% 100% / 0.02;
+    --control: 0 0% 18%;
+    --control-hover: 0 0% 21%;
+    --control-press: 0 0% 16%;
+    --primary-hover: 213 100% 70%;
+    --primary-press: 213 100% 58%;
+
+    --shadow-1: none;
+    --shadow-2: 0 12px 32px rgb(0 0 0 / 0.5);
+  }
+}
+
+.fluent-loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.fluent-loading-card {
+  width: 320px;
+  border-radius: 10px;
+  background: hsl(var(--panel-header));
+  border: 1px solid hsl(var(--panel-border));
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+
+.fluent-loading-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid hsl(var(--panel-border));
+}
+
+.fluent-loading-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.fluent-loading-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.fluent-loading-close:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--accent) / 0.6);
+  border-color: hsl(var(--panel-border));
+}
+
+.fluent-loading-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 16px;
+  color: hsl(var(--foreground));
+}
+
+.fluent-loading-text {
+  font-size: 14px;
+  color: hsl(var(--foreground));
+}
+
+.video-source-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.video-source-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.video-source-kicker {
+  display: none;
+}
+
+.video-source-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.video-source-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--primary) / 0.22);
+  background: linear-gradient(180deg, hsl(var(--primary) / 0.12), hsl(var(--primary) / 0.06));
+  font-size: 11px;
+  font-weight: 600;
+  color: hsl(var(--primary-foreground));
+}
+
+.video-source-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+
+.video-source-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+@media (max-width: 960px) {
+  .video-source-panel {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .video-source-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.fluent-spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid hsl(var(--panel-border) / 0.7);
+  border-top-color: hsl(var(--primary));
+  animation: fluent-spin 1s linear infinite;
+}
+
+@keyframes fluent-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 13px;
+    line-height: 20px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Only actually-interactive elements get a focus ring. Previously this was on
+     `*`, so it also fired on the plain divs used as table rows. */
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [tabindex]:not([tabindex="-1"]):focus-visible,
+  [role="button"]:focus-visible,
+  [role="row"]:focus-visible,
+  [role="checkbox"]:focus-visible,
+  [role="switch"]:focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-1 ring-offset-background;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  .fluent-surface {
+    @apply bg-card border border-panel-border rounded-lg;
+    box-shadow: none;
+  }
+
+  .fluent-surface--flat {
+    @apply bg-panel border border-panel-border rounded-lg;
+    box-shadow: none;
+  }
+
+  .fluent-surface--inset {
+    @apply bg-panel border border-panel-border rounded;
+  }
+
+  /* Its own fill plus a hairline, so the chrome is visibly separate from the
+     page rather than bleeding into it. */
+  .fluent-windowbar {
+    @apply h-9 flex items-center justify-between shrink-0 border-b border-panel-border;
+    background: hsl(var(--titlebar));
+    padding: 0 0 0 12px;
+  }
+
+  .fluent-windowbar__drag {
+    @apply h-full flex items-center gap-2 min-w-0 flex-1;
+  }
+
+  .fluent-windowbar__title {
+    @apply text-xs font-semibold text-foreground truncate;
+  }
+
+  .fluent-windowbar__byline {
+    @apply text-[11px] text-muted-foreground truncate shrink-0;
+  }
+
+  .fluent-windowbar__title-wrap {
+    @apply min-w-0 flex flex-col leading-tight;
+  }
+
+  .fluent-windowbar__subtitle {
+    @apply text-[11px] text-muted-foreground truncate;
+    letter-spacing: 0.01em;
+  }
+
+  .fluent-windowbar__controls {
+    @apply flex items-center gap-0.5;
+  }
+
+  /* Windows 11 caption buttons are 46x32 and square-cornered. */
+  .fluent-window-control {
+    @apply h-9 w-[46px] rounded-none text-muted-foreground hover:text-foreground;
+    transition: background 0.12s ease-out, color 0.12s ease-out;
+  }
+
+  .fluent-window-control:hover {
+    background: hsl(var(--hover));
+  }
+
+  .fluent-window-control--close:hover {
+    background: #c42b1c;
+    color: #fff;
+  }
+
+  .fluent-topbar {
+    @apply bg-background border-b border-panel-border;
+  }
+
+  .fluent-sidebar {
+    @apply bg-sidebar border-r border-sidebar-border;
+  }
+
+  .fluent-sidebar-item {
+    @apply w-full flex items-center rounded transition-colors relative;
+    @apply text-sidebar-foreground hover:text-foreground;
+    min-height: 34px;
+    font-size: 13px;
+  }
+
+  .fluent-sidebar-item:hover {
+    background: hsl(var(--hover));
+  }
+
+  /* Selected nav reads as a filled backplate with a leading indicator —
+     no border box, which used to make it look like a checkbox. */
+  .fluent-sidebar-item.is-active {
+    @apply text-foreground font-medium;
+    background: hsl(var(--sidebar-accent));
+  }
+
+  .fluent-sidebar-item.is-active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 9px;
+    bottom: 9px;
+    width: 2px;
+    background: hsl(var(--primary));
+    border-radius: 1px;
+  }
+
+  .fluent-sidebar-count {
+    @apply ml-auto shrink-0 text-xs tabular-nums text-muted-foreground;
+  }
+
+  .fluent-sidebar-count--warn {
+    color: hsl(var(--warning));
+  }
+
+  .fluent-icon-button {
+    @apply inline-flex items-center justify-center rounded transition-colors text-muted-foreground;
+    width: var(--icon-button-size);
+    height: var(--icon-button-size);
+  }
+
+  .fluent-icon-button:hover {
+    background: hsl(var(--hover));
+    @apply text-foreground;
+  }
+
+  .fluent-button {
+    @apply inline-flex items-center justify-center gap-2 text-[12.5px] font-medium rounded;
+    height: var(--control-height);
+    padding: 0 12px;
+    transition: background 0.12s ease-out, border-color 0.12s ease-out;
+  }
+
+  .fluent-button.primary {
+    @apply bg-primary text-primary-foreground font-semibold;
+  }
+
+  .fluent-button.primary:hover {
+    background: hsl(var(--primary-hover));
+  }
+
+  .fluent-button.primary:active {
+    background: hsl(var(--primary-press));
+  }
+
+  .fluent-button.secondary {
+    @apply text-foreground border border-panel-border;
+    background: hsl(var(--control));
+  }
+
+  .fluent-button.secondary:hover {
+    background: hsl(var(--control-hover));
+  }
+
+  .fluent-button.secondary:active {
+    background: hsl(var(--control-press));
+  }
+
+  .fluent-button.destructive {
+    @apply bg-destructive text-destructive-foreground;
+  }
+
+  .fluent-button.destructive:hover {
+    @apply bg-destructive/90;
+  }
+
+  .fluent-input {
+    @apply w-full rounded border border-panel-border bg-input text-[13px] text-foreground;
+    height: var(--control-height);
+    padding: 0 12px;
+    transition: all 0.15s ease-out;
+  }
+
+  .fluent-input:focus {
+    @apply border-ring;
+  }
+
+  .config-card {
+    @apply bg-card border border-panel-border rounded-md px-5 py-5 mx-5 mt-4;
+  }
+
+  .config-label {
+    @apply text-xs font-medium text-muted-foreground w-[100px] shrink-0;
+  }
+
+  .track-selector-bar {
+    @apply bg-card border border-panel-border rounded-md mx-5 h-14 px-4 flex items-center justify-between;
+  }
+
+  .track-selector-actions {
+    @apply flex items-center gap-2;
+  }
+
+  .fluent-input::placeholder {
+    color: hsl(var(--muted-foreground) / 0.7);
+  }
+
+  /* Section headers: sentence case at readable size, not uppercase 11px. */
+  .fluent-section-header {
+    @apply text-[13px] font-semibold text-foreground;
+  }
+
+  .data-table {
+    @apply w-full border border-panel-border rounded-lg overflow-hidden bg-panel;
+  }
+
+  /* Sentence-case header, not uppercase micro-caps. */
+  .data-table__header {
+    @apply bg-table-header text-muted-foreground text-xs font-semibold border-b border-panel-border;
+    min-height: var(--row-height-header);
+  }
+
+  .data-table__row {
+    @apply transition-colors bg-table-row;
+    min-height: var(--row-height);
+    border-left: 2px solid transparent;
+  }
+
+  .data-table__row:hover {
+    background: hsl(var(--hover));
+  }
+
+  .data-table__row.is-selected {
+    background: hsl(var(--selection));
+    border-left-color: hsl(var(--selection-border));
+  }
+
+  .data-table__row.is-selected .data-table__cell {
+    @apply text-foreground;
+  }
+
+  .data-table__cell {
+    @apply px-3 text-[12.5px] text-foreground;
+  }
+
+  .data-table__cell.muted {
+    @apply text-muted-foreground;
+  }
+
+  .data-table__cell.right {
+    @apply text-right;
+  }
+
+  .data-table__cell.center {
+    @apply text-center;
+  }
+
+  .reorder-handle {
+    @apply text-muted-foreground/60 hover:text-foreground cursor-grab;
+  }
+
+  .reorder-handle:active {
+    cursor: grabbing;
+  }
+
+  .reorder-drop-indicator {
+    position: relative;
+  }
+
+  .reorder-drop-indicator::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: hsl(var(--primary));
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.4);
+  }
+
+  .toggle-switch[data-state="unchecked"] {
+    background: hsl(var(--toggle-off));
+    border-color: hsl(var(--toggle-border));
+  }
+
+  .toggle-switch[data-state="checked"] {
+    background: hsl(var(--primary));
+    border-color: hsl(var(--primary));
+  }
+
+  .toggle-thumb {
+    background: hsl(var(--toggle-knob));
+  }
+
+  .data-table__row.is-dragging {
+    @apply bg-accent/60;
+    box-shadow: 0 8px 20px rgb(0 0 0 / 0.35);
+    cursor: grabbing;
+  }
+
+  .dialog-shell {
+    @apply bg-card border border-panel-border overflow-hidden;
+    border-radius: var(--radius-overlay);
+    box-shadow: var(--shadow-2);
+  }
+
+  .dialog-shell__header {
+    @apply flex items-center justify-between px-5 py-3 border-b border-panel-border bg-panel-header;
+  }
+
+  .dialog-shell__footer {
+    @apply flex items-center justify-between px-5 py-3 border-t border-panel-border bg-panel;
+  }
+
+  /* Overlays use the 8px radius; in-page controls stay at 4px.
+     `resize` lets the user drag the bottom-right corner: dialogs listing
+     tracks or files have no natural height, so a fixed one is always wrong
+     for someone. */
+  .base-modal {
+    @apply bg-card border border-panel-border flex flex-col gap-0;
+    border-radius: var(--radius-overlay);
+    box-shadow: var(--shadow-2);
+    max-height: 86vh;
+    max-width: 94vw;
+    /* `resize` needs a non-visible overflow to expose the grip. */
+    overflow: auto;
+    resize: both;
+    min-width: 380px;
+    min-height: 220px;
+  }
+
+  /* Make the native grip legible against the card fill. */
+  .base-modal::-webkit-resizer {
+    background: transparent;
+  }
+
+  .base-modal__grip {
+    @apply absolute bottom-0 right-0 pointer-events-none text-muted-foreground;
+    width: 14px;
+    height: 14px;
+    opacity: 0.5;
+  }
+
+  .base-modal__header {
+    @apply flex items-center justify-between px-5 pt-[18px] pb-2.5;
+  }
+
+  .base-modal__heading {
+    @apply flex items-center gap-3 min-w-0;
+  }
+
+  .base-modal__icon {
+    @apply w-7 h-7 rounded flex items-center justify-center shrink-0 text-muted-foreground;
+    background: hsl(var(--muted));
+  }
+
+  .base-modal__titles {
+    @apply min-w-0 flex flex-col justify-center;
+  }
+
+  .base-modal__title {
+    @apply text-[15px] font-semibold text-foreground truncate leading-[22px] select-text;
+  }
+
+  .base-modal__subtitle {
+    @apply text-xs text-muted-foreground truncate select-text mt-0.5;
+  }
+
+  .base-modal__body {
+    @apply flex-1 min-h-0 overflow-y-auto px-5 py-2.5;
+  }
+
+  .base-modal__footer {
+    @apply flex items-center justify-between border-t border-panel-border px-5 py-3.5;
+  }
+
+  .base-modal__footer-left {
+    @apply flex items-center gap-2 text-sm;
+  }
+
+  .base-modal__footer-right {
+    @apply flex items-center gap-2;
+  }
+
+  .empty-state {
+    @apply flex flex-col items-center justify-center text-center text-muted-foreground;
+  }
+
+  .empty-state__icon {
+    @apply w-16 h-16 rounded-full bg-panel-header border border-panel-border flex items-center justify-center mb-3 opacity-40;
+  }
+
+  .table-chip {
+    @apply inline-flex items-center justify-center h-5 min-w-[54px] px-2 rounded border border-panel-border bg-panel-header/60;
+    @apply text-xs font-medium leading-none text-muted-foreground tabular-nums;
+  }
+
+  .panel-card {
+    @apply rounded-lg border border-panel-border bg-card;
+  }
+
+  /* gap-4 keeps the trailing actions off the title; without it the first
+     button sits hard against the heading text. */
+  .panel-card-header {
+    @apply table-header flex items-center justify-between gap-4 pl-4 pr-2 shrink-0;
+    height: 38px;
+  }
+
+  .panel-card-title {
+    @apply text-[12.5px] font-semibold text-foreground;
+  }
+
+  .panel-card-actions {
+    @apply flex items-center gap-1 justify-end shrink-0;
+  }
+
+  /* Row-level icon actions are borderless until hovered. */
+  .panel-icon-btn {
+    @apply h-7 w-7 rounded border border-transparent bg-transparent text-muted-foreground hover:text-foreground;
+  }
+
+  .panel-icon-btn:hover {
+    background: hsl(var(--hover));
+  }
+
+  .panel-text-btn {
+    @apply h-[26px] px-2.5 text-xs font-medium rounded whitespace-nowrap border border-transparent text-muted-foreground hover:text-foreground;
+  }
+
+  .panel-text-btn:hover {
+    background: hsl(var(--hover));
+  }
+
+  .media-row-main {
+    @apply flex items-center gap-2 min-w-max flex-1;
+  }
+
+  /* Row index is a quiet number, not a boxed badge. */
+  .media-row-index {
+    @apply inline-flex items-center justify-end tabular-nums shrink-0 text-xs font-mono;
+    width: 22px;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .media-row-handle {
+    @apply shrink-0 w-5 flex items-center justify-center text-muted-foreground/70 cursor-grab active:cursor-grabbing opacity-60 hover:opacity-100;
+    padding-top: 2px;
+  }
+
+  .media-row-name {
+    @apply text-foreground leading-tight whitespace-nowrap text-[13px] font-mono min-w-0 overflow-hidden text-ellipsis;
+  }
+
+  .media-row-actions {
+    @apply flex items-center gap-1 shrink-0 justify-end pl-2;
+    /* Four 24px buttons plus gaps: apply, re-measure, delete, edit. */
+    width: 116px;
+    padding-top: 1px;
+  }
+
+  /* Legacy utility classes mapped to Fluent tokens */
+  .control-row {
+    @apply flex items-center gap-3 px-4 py-2.5;
+  }
+
+  .app-input {
+    @apply w-full rounded-md border border-panel-border bg-panel text-sm px-3;
+    height: var(--control-height);
+  }
+
+  .btn-icon {
+    @apply inline-flex items-center justify-center rounded-md transition-colors;
+    width: var(--icon-button-size);
+    height: var(--icon-button-size);
+  }
+
+  .btn-icon:hover {
+    @apply bg-accent text-foreground;
+  }
+
+  .btn-toolbar {
+    @apply inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium;
+    height: var(--control-height);
+    padding: 0 12px;
+    @apply bg-secondary text-secondary-foreground border border-panel-border;
+  }
+
+  .btn-toolbar:hover {
+    @apply bg-secondary/80;
+  }
+
+  .section-label {
+    @apply text-[13px] font-semibold text-foreground;
+    @apply px-4 py-2 border-b border-panel-border bg-panel-header;
+  }
+
+  .table-header {
+    @apply bg-table-header text-muted-foreground text-xs font-semibold border-b border-panel-border;
+    min-height: var(--row-height-header);
+  }
+
+  .table-row {
+    @apply transition-colors;
+    min-height: var(--row-height);
+    border-left: 2px solid transparent;
+  }
+
+  .table-row:hover {
+    background: hsl(var(--hover));
+  }
+
+  .table-row.selected {
+    background: hsl(var(--selection));
+    border-left-color: hsl(var(--selection-border));
+  }
+
+  .table-row-alt {
+    @apply bg-transparent;
+  }
+
+  .workspace-split {
+    height: calc(100vh - 280px);
+  }
+
+  /* Video and audio rows sit side by side in the split panes, so they share
+     height, gutters and type -- otherwise the two lists visibly disagree.
+     Both truncate rather than growing to fit: `w-max` here made long names
+     force a horizontal scrollbar in the left pane only, and that scrollbar
+     consumed vertical space, so row N no longer lined up with row N. */
+  /* The two lists sit side by side and must agree row for row.
+     --media-row-h is a fixed height rather than a minimum: the audio row
+     carries 24px action buttons and the video row only text, so any
+     content-driven height put them permanently out of step. An audio row that
+     has been measured grows, and its video partner grows with it via
+     .file-item-video--tall. */
+  .file-item-video,
+  .file-item-audio {
+    @apply px-3 cursor-pointer transition-colors font-mono w-full min-w-0;
+    display: grid;
+    align-items: center;
+    column-gap: 12px;
+    height: var(--media-row-h);
+    border-left: 2px solid transparent;
+  }
+
+  .file-item-video {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .file-item-video:hover {
+    background: hsl(var(--hover));
+  }
+
+  .file-item-video.selected {
+    background: hsl(var(--selection));
+    border-left-color: hsl(var(--selection-border));
+  }
+
+  /* start, not center: a measured row grows to carry its delay readout and
+     stretch toggle, and centring would drag the handle and index off the
+     filename they label. */
+  .file-item-audio {
+    grid-template-columns: 16px 22px minmax(0, 1fr) 116px;
+    background: transparent;
+  }
+
+  /* A measured row shows its delay readout and stretch toggle under the name,
+     so it needs the room; both panes switch together to stay in step. */
+  .file-item-audio--tall,
+  .file-item-video--tall {
+    height: auto;
+    min-height: var(--media-row-tall-h);
+    align-items: start;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .file-item-audio:hover {
+    background: hsl(var(--hover));
+  }
+
+  .file-item-audio.selected {
+    background: hsl(var(--selection));
+    border-left: 2px solid hsl(var(--selection-border));
+  }
+
+  .file-action-btn {
+    @apply h-6 w-6 p-0 rounded border border-transparent text-muted-foreground;
+  }
+
+  .file-action-btn:hover {
+    background: hsl(var(--hover));
+    @apply text-foreground;
+  }
+
+  .file-action-btn--delete:hover {
+    color: hsl(var(--destructive));
+  }
+
+  .file-action-btn--muted {
+    @apply text-muted-foreground;
+  }
+
+  .file-action-btn--muted:hover {
+    @apply text-foreground;
+  }
+
+  @media (max-width: 1480px) {
+    .file-item-audio {
+      grid-template-columns: 16px 22px minmax(0, 1fr) 116px;
+    }
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.35);
+    border-radius: 5px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.55);
+    background-clip: content-box;
+  }
+
+  .text-truncate {
+    @apply truncate;
+  }
+
+  .transition-smooth {
+    @apply transition-all duration-150 ease-out;
+  }
+
+  .glass {
+    @apply bg-background/80 backdrop-blur-sm;
+  }
+}

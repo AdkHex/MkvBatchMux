@@ -1,0 +1,89 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devPath": "http://localhost:8080",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "MKVBatchMux",
+    "version": "1.64.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "open": true,
+        "save": true
+      },
+      "fs": {
+        "all": true
+      },
+      "path": {
+        "all": true
+      },
+      "shell": {
+        "open": true
+      },
+      "window": {
+        "all": true
+      },
+      "process": {
+        "relaunch": true
+      }
+    },
+    "bundle": {
+      "identifier": "com.ionicboy.mkvbatchmuxingtool",
+      "publisher": "Ionicboy (AdkHex)",
+      "copyright": "Copyright (c) 2026 Ionicboy (AdkHex). Licensed under the GNU GPL v3.",
+      "shortDescription": "Batch mux MKV files with MKVToolNix",
+      "targets": [
+        "nsis",
+        "updater"
+      ],
+      "icon": [
+        "icons/icon.png",
+        "icons/icon.ico"
+      ],
+      "resources": [
+        "resources/engine",
+        "resources/ffmpeg",
+        "../LICENSE",
+        "../THIRD_PARTY_NOTICES.md"
+      ],
+      "active": true,
+      "windows": {
+        "nsis": {
+          "installMode": "perMachine",
+          "languages": [
+            "English"
+          ],
+          "license": "../LICENSE"
+        }
+      }
+    },
+    "windows": [
+      {
+        "title": "MKVBatchMux",
+        "width": 1600,
+        "height": 1000,
+        "fullscreen": false,
+        "maximized": false,
+        "resizable": true,
+        "decorations": false,
+        "transparent": false,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "center": true
+      }
+    ],
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/AdkHex/MkvBatchMux/releases/latest/download/latest.json"
+      ],
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVGRDBBQUEwQkZENEE3QzQKUldURXA5Uy9vS3JRWHkvbVV4eE01QzM1TlVybnZUNHgzMENvREpLNHlDdnhUamNaeXRTSXhneTcK"
+    }
+  }
+}

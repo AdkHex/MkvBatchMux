@@ -1,0 +1,38 @@
+# Node
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+/dist/
+/.vite/
+
+# Tauri
+/src-tauri/target/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# AudioSync analysis engine: a ~37MB PyInstaller build artifact, not source.
+# Build it with `npm run fetch-engine`.
+src-tauri/resources/engine/*
+!src-tauri/resources/engine/README.md
+
+# Bundled ffmpeg/ffprobe: downloaded build artifacts, not source.
+# Fetch them with `npm run fetch-ffmpeg`.
+src-tauri/resources/ffmpeg/*
+!src-tauri/resources/ffmpeg/README.md
+
+# Editor session scratch (screenshots, transcripts)
+.nimbalyst/

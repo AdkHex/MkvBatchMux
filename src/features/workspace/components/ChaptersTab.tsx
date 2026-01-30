@@ -1,0 +1,643 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { X, RefreshCw, FolderOpen, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown, BookOpen, Pencil } from "lucide-react";
+import { Button } from "@/shared/ui/button";
+import { Input } from "@/shared/ui/input";
+import { Checkbox } from "@/shared/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/shared/ui/select";
+import { cn } from "@/shared/lib/utils";
+import { BaseModal } from "@/shared/components/BaseModal";
+import { EmptyState } from "@/shared/components/EmptyState";
+import type { VideoFile, ExternalFile, Preset, MuxSettings } from "@/shared/types";
+import { pickDirectory, scanMedia } from "@/shared/lib/backend";
+import { useTabState } from "@/features/workspace/store/useTabState";
+import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
+import { delaySecondsOrZero, parseDelayInput } from "@/shared/lib/delayInput";
+import { CHAPTER_EXTENSIONS } from "@/shared/lib/extensions";
+
+interface ChaptersTabProps {
+  chapterFiles: ExternalFile[];
+  videoFiles: VideoFile[];
+  onChapterFilesChange: (files: ExternalFile[]) => void;
+  preset?: Preset | null;
+  onMuxSettingsChange: (settings: Partial<MuxSettings>) => void;
+  searchValue?: string;
+  filterValue?: string;
+  sortValue?: string;
+}
+
+const truncateMiddle = (value: string, maxLength = 52) => {
+  if (!value || value.length <= maxLength) return value;
+  const side = Math.floor((maxLength - 3) / 2);
+  return `${value.slice(0, side)}...${value.slice(value.length - side)}`;
+};
+
+export function ChaptersTab({
+  chapterFiles,
+  videoFiles,
+  onChapterFilesChange,
+  preset,
+  onMuxSettingsChange,
+  searchValue = "",
+  filterValue = "all",
+  sortValue = "loaded",
+}: ChaptersTabProps) {
+  const { chapterTabState, updateChapterTabState } = useTabState((state) => ({
+    chapterTabState: state.chapterTabState,
+    updateChapterTabState: state.updateChapterTabState,
+  }));
+
+  const [selectedVideoIndex, setSelectedVideoIndex] = useState<number | null>(null);
+  const [selectedChapterIndex, setSelectedChapterIndex] = useState<number | null>(null);
+  /** The selected chapter's id, so the highlight can follow it when the list is
+   *  reordered and be dropped when a rescan replaces it. Selecting by position
+   *  alone meant Remove could act on whatever file later took that slot. */
+  const selectedChapterIdRef = useRef<string | null>(null);
+
+  const selectChapterIndex = useCallback(
+    (index: number | null) => {
+      selectedChapterIdRef.current =
+        index === null ? null : (chapterFiles[index]?.id ?? null);
+      setSelectedChapterIndex(index);
+    },
+    [chapterFiles],
+  );
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingFileId, setEditingFileId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({
+    delay: "0.000",
+    applyDelayToAll: false,
+  });
+
+  // Applied when the preset's chapter folder actually changes, not whenever the
+  // preset object is replaced. Saving any unrelated option rebuilds that object,
+  // and reacting to its identity would wipe a folder the user had just typed.
+  const appliedPresetFolderRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!preset) return;
+    const presetFolder = preset.Default_Chapter_Directory || "";
+    if (appliedPresetFolderRef.current === presetFolder) return;
+    appliedPresetFolderRef.current = presetFolder;
+    updateChapterTabState({
+      sourceFolder: presetFolder,
+      extension: "all",
+    });
+  }, [preset, updateChapterTabState]);
+
+  const chaptersEnabled = chapterTabState.chaptersEnabled;
+  const sourceFolder = chapterTabState.sourceFolder;
+  const extension = chapterTabState.extension;
+  const discardOldChapters = chapterTabState.discardOldChapters;
+  const chapterDelay = chapterTabState.delay;
+  const filterAndSort = <T extends { id: string; name: string; path: string; size?: number; matchedVideoId?: string }>(
+    items: T[],
+  ) => {
+    const term = searchValue.trim().toLowerCase();
+    const filtered = items.filter((file) => {
+      if (term && !`${file.name} ${file.path}`.toLowerCase().includes(term)) return false;
+      if (filterValue === "linked") return Boolean(file.matchedVideoId);
+      if (filterValue === "unlinked") return !file.matchedVideoId;
+      return true;
+    });
+    if (sortValue === "name-asc") return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+    if (sortValue === "name-desc") return [...filtered].sort((a, b) => b.name.localeCompare(a.name));
+    if (sortValue === "size-desc") return [...filtered].sort((a, b) => (b.size || 0) - (a.size || 0));
+    return filtered;
+  };
+  const visibleVideos = filterAndSort(videoFiles);
+  const visibleChapters = filterAndSort(chapterFiles);
+
+  // Reordering writes the real mux order, but a sorted view re-sorts it away,
+  // so the buttons would appear to do nothing while quietly changing the
+  // output. Blocked while a sort is on, with the reason on the control itself.
+  const sortHidesManualOrder = sortValue !== "loaded";
+  const reorderHelp = sortHidesManualOrder
+    ? "Sorting is on, so this list is not in mux order. Switch sort back to Loaded order to rearrange."
+    : undefined;
+
+  /** Identifies the newest scan, so stale replies can be dropped. */
+  const scanRequestRef = useRef(0);
+
+  const scanChapters = async (folderPath: string) => {
+    // See AttachmentsTab: only the newest scan may publish its results.
+    const requestId = ++scanRequestRef.current;
+    if (!folderPath) {
+      onChapterFilesChange([]);
+      return;
+    }
+    try {
+      const extensions = extension === "all" ? [] : [extension];
+      const results = await scanMedia({
+        folder: folderPath,
+        extensions,
+        recursive: false,
+        type: "chapter",
+        include_tracks: false,
+      });
+      if (requestId !== scanRequestRef.current) return;
+      if (!results || !Array.isArray(results)) {
+        onChapterFilesChange([]);
+        return;
+      }
+      const normalized = (results as ExternalFile[])
+        .filter((file): file is ExternalFile =>
+          !!(file && typeof file === "object" && file.id && file.name && file.path)
+        )
+        .map((file, index) => ({
+          ...file,
+          type: "chapter" as const,
+          matchedVideoId: videoFiles[index]?.id,
+        }));
+      onChapterFilesChange(normalized);
+    } catch {
+      if (requestId !== scanRequestRef.current) return;
+      onChapterFilesChange([]);
+    }
+  };
+
+  // Pairing chapter files to videos by position is the default, not a rule.
+  // A file the user linked by hand keeps that link, otherwise linking would
+  // undo itself: the link changes chapterFiles, which re-runs the sync below.
+  // A hand-made link whose video has since disappeared falls back to the
+  // positional default rather than pointing at nothing.
+  const resolveChapterLink = useCallback(
+    (file: ExternalFile, index: number): ExternalFile => {
+      if (file.isManuallyLinked && videoFiles.some((video) => video.id === file.matchedVideoId)) {
+        return file;
+      }
+      const positional = videoFiles[index]?.id;
+      if (file.matchedVideoId === positional && !file.isManuallyLinked) return file;
+      return { ...file, matchedVideoId: positional, isManuallyLinked: false };
+    },
+    [videoFiles],
+  );
+
+  const syncChapterLinks = useCallback(
+    (files: ExternalFile[]) => files.map(resolveChapterLink),
+    [resolveChapterLink],
+  );
+
+  useEffect(() => {
+    if (chapterFiles.length === 0) return;
+    const isSynced = chapterFiles.every((file, index) => resolveChapterLink(file, index) === file);
+    if (!isSynced) {
+      onChapterFilesChange(syncChapterLinks(chapterFiles));
+    }
+  }, [chapterFiles, onChapterFilesChange, resolveChapterLink, syncChapterLinks, videoFiles]);
+
+  useEffect(() => {
+    const selectedId = selectedChapterIdRef.current;
+    if (selectedId === null) return;
+    const nextIndex = chapterFiles.findIndex((file) => file.id === selectedId);
+    if (nextIndex < 0) selectedChapterIdRef.current = null;
+    setSelectedChapterIndex(nextIndex >= 0 ? nextIndex : null);
+  }, [chapterFiles]);
+
+  // The video list is only ever selected by position, so it just needs to stay
+  // inside the list.
+  useEffect(() => {
+    setSelectedVideoIndex((prev) =>
+      prev !== null && prev >= videoFiles.length ? null : prev,
+    );
+  }, [videoFiles.length]);
+
+  const reorderChapterFile = (fromIndex: number, toIndex: number) => {
+    if (toIndex < 0 || toIndex >= chapterFiles.length) return;
+    const updated = [...chapterFiles];
+    const [moved] = updated.splice(fromIndex, 1);
+    updated.splice(toIndex, 0, moved);
+    onChapterFilesChange(updated);
+    selectChapterIndex(toIndex);
+  };
+
+  const linkChapterToVideo = () => {
+    if (selectedVideoIndex === null || selectedChapterIndex === null) return;
+    const targetVideo = videoFiles[selectedVideoIndex];
+    if (!targetVideo) return;
+    const updated = chapterFiles.map((file, index) =>
+      index === selectedChapterIndex
+        ? { ...file, matchedVideoId: targetVideo.id, isManuallyLinked: true }
+        : file,
+    );
+    onChapterFilesChange(updated);
+  };
+
+  const openEditDialog = (fileId: string) => {
+    const file = chapterFiles.find((entry) => entry.id === fileId);
+    if (!file) return;
+    setEditingFileId(fileId);
+    setEditForm({ delay: (file.delay ?? 0).toFixed(3), applyDelayToAll: false });
+    setEditDialogOpen(true);
+  };
+
+  const applyEditChanges = () => {
+    if (!editingFileId) return;
+    const delayValue = delaySecondsOrZero(editForm.delay);
+    const updated = chapterFiles.map((file) => {
+      if (file.id === editingFileId) return { ...file, delay: delayValue };
+      if (editForm.applyDelayToAll) return { ...file, delay: delayValue };
+      return file;
+    });
+    onChapterFilesChange(updated);
+    setEditDialogOpen(false);
+    setEditingFileId(null);
+  };
+
+  const applyDelayToAll = () => {
+    const delayValue = delaySecondsOrZero(chapterDelay);
+    const updated = chapterFiles.map((file) => ({ ...file, delay: delayValue }));
+    onChapterFilesChange(updated);
+  };
+
+  return (
+    <div className="flex flex-col h-full p-5 gap-4 bg-background">
+      {/* Track Selector Bar */}
+      <div className="track-selector-bar">
+        <div className="flex items-center gap-3">
+          <Checkbox
+            id="chapters-enabled"
+            checked={chaptersEnabled}
+            onCheckedChange={(checked) => {
+              const enabled = checked as boolean;
+              updateChapterTabState({ chaptersEnabled: enabled });
+              if (!enabled) onChapterFilesChange([]);
+            }}
+          />
+          <label htmlFor="chapters-enabled" className="text-sm font-medium cursor-pointer">
+            Chapters
+          </label>
+          <span className="text-xs font-mono text-muted-foreground">{chapterFiles.length}</span>
+        </div>
+      </div>
+
+      {/* Configuration Card */}
+      <div className="config-card space-y-4">
+        <h3 className="text-xs text-muted-foreground font-semibold">
+          Chapter Configuration
+        </h3>
+
+        {/* Source Folder */}
+        <div className="flex items-center gap-3">
+          <label className="config-label">Source folder</label>
+          <div className="flex-1 flex items-center gap-2">
+            <Input
+              value={sourceFolder}
+              onChange={(e) => updateChapterTabState({ sourceFolder: e.target.value })}
+              placeholder="Select chapter folder path..."
+              className="h-[30px] flex-1 font-mono"
+              disabled={!chaptersEnabled}
+            />
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-[30px] w-[30px]"
+              disabled={!chaptersEnabled}
+              onClick={async () => {
+                const folder = await pickDirectory();
+                if (folder) {
+                  updateChapterTabState({ sourceFolder: folder });
+                  scanChapters(folder);
+                }
+              }}
+            >
+              <FolderOpen className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-[30px] w-[30px] border border-panel-border bg-[hsl(var(--control))] hover:bg-[hsl(var(--control-hover))] text-foreground"
+              disabled={!chaptersEnabled}
+              onClick={() => scanChapters(sourceFolder)}
+            >
+              <RefreshCw className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-[30px] w-[30px] border border-panel-border bg-[hsl(var(--control))] hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
+              disabled={!chaptersEnabled}
+              onClick={() => {
+                updateChapterTabState({ sourceFolder: "" });
+                onChapterFilesChange([]);
+              }}
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Settings Row */}
+        <div className="flex flex-wrap items-center gap-5">
+          <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2">
+            <label className="config-label">Extension</label>
+            <Select
+              value={extension}
+              onValueChange={(v) => updateChapterTabState({ extension: v })}
+              disabled={!chaptersEnabled}
+            >
+              <SelectTrigger className="h-[30px] w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All formats</SelectItem>
+                {CHAPTER_EXTENSIONS.map((ext) => (
+                  <SelectItem key={ext} value={ext}>
+                    {ext.toUpperCase()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="grid grid-cols-[100px_minmax(0,1fr)_auto_auto] items-center gap-2">
+            <label className="config-label">Delay</label>
+            <Input
+              value={chapterDelay}
+              onChange={(e) => updateChapterTabState({ delay: e.target.value })}
+              aria-invalid={!parseDelayInput(chapterDelay).valid}
+              title={parseDelayInput(chapterDelay).error}
+              className={cn(
+                "h-[30px] w-20 text-center font-mono",
+                !parseDelayInput(chapterDelay).valid &&
+                  "border-destructive focus-visible:ring-destructive",
+              )}
+              disabled={!chaptersEnabled}
+            />
+            <span className="text-xs text-muted-foreground">sec</span>
+            <Button
+              variant="default"
+              size="sm"
+              className="h-[30px] px-4 text-xs"
+              disabled={
+                !chaptersEnabled ||
+                chapterFiles.length === 0 ||
+                !delayInputsAreValid(chapterDelay)
+              }
+              onClick={applyDelayToAll}
+            >
+              Apply
+            </Button>
+          </div>
+
+          <div className="h-4 w-px bg-panel-border/40" />
+
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="discard-chapters"
+              checked={discardOldChapters}
+              onCheckedChange={(checked) => {
+                const enabled = checked as boolean;
+                updateChapterTabState({ discardOldChapters: enabled });
+                onMuxSettingsChange({ discardOldChapters: enabled });
+              }}
+              disabled={!chaptersEnabled}
+            />
+            <label htmlFor="discard-chapters" className="text-xs cursor-pointer">
+              Discard Old Chapters
+            </label>
+          </div>
+        </div>
+      </div>
+
+      {/* Chapter Matching Label */}
+      <div className="section-label rounded-md border border-panel-border">
+        Chapter Matching
+      </div>
+
+      {/* Dual Panel */}
+      <div className="workspace-split flex-1 flex overflow-hidden gap-4">
+        {/* Video List */}
+        <div className="panel-card flex-1 flex flex-col overflow-hidden">
+          <div className="panel-card-header">
+            <div className="flex items-center gap-2">
+              <h4 className="panel-card-title">Video files</h4>
+              <span className="text-xs font-mono text-muted-foreground">{videoFiles.length}</span>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
+            {visibleVideos.map((file) => {
+              const index = videoFiles.findIndex((entry) => entry.id === file.id);
+              return (
+              <div
+                key={file.id}
+                onClick={() => setSelectedVideoIndex(index)}
+                className={cn("file-item-video", selectedVideoIndex === index && "selected")}
+              >
+                <div className="media-row-main">
+                  <span className="media-row-index">{index + 1}</span>
+                  <span className="media-row-name">{truncateMiddle(file.name)}</span>
+                </div>
+              </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Reorder Controls */}
+        <div className="flex flex-col items-center justify-center gap-2 px-2 py-4 bg-panel-header rounded-md border border-panel-border">
+          <Button
+            variant="secondary"
+            size="sm"
+            className="btn-toolbar h-[30px] w-[30px] p-0"
+            disabled={
+              !chaptersEnabled ||
+              sortHidesManualOrder ||
+              selectedChapterIndex === null ||
+              selectedChapterIndex === 0
+            }
+            aria-label="Move chapter to top"
+            title={reorderHelp ?? "Move chapter to top"}
+            onClick={() => selectedChapterIndex !== null && reorderChapterFile(selectedChapterIndex, 0)}
+          >
+            <ChevronsUp className="w-4 h-4" />
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="btn-toolbar h-[30px] w-[30px] p-0"
+            disabled={
+              !chaptersEnabled ||
+              sortHidesManualOrder ||
+              selectedChapterIndex === null ||
+              selectedChapterIndex === 0
+            }
+            aria-label="Move chapter up"
+            title={reorderHelp ?? "Move chapter up"}
+            onClick={() =>
+              selectedChapterIndex !== null &&
+              reorderChapterFile(selectedChapterIndex, selectedChapterIndex - 1)
+            }
+          >
+            <ChevronUp className="w-4 h-4" />
+          </Button>
+          <Button
+            variant="default"
+            size="sm"
+            className="btn-toolbar h-[30px] px-3 text-xs"
+            disabled={!chaptersEnabled || selectedVideoIndex === null || selectedChapterIndex === null}
+            title={
+              selectedVideoIndex === null || selectedChapterIndex === null
+                ? "Select a video and a chapter file to link them."
+                : "Link the selected chapter file to the selected video."
+            }
+            onClick={linkChapterToVideo}
+          >
+            Link
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="btn-toolbar h-[30px] w-[30px] p-0"
+            disabled={
+              !chaptersEnabled ||
+              sortHidesManualOrder ||
+              selectedChapterIndex === null ||
+              selectedChapterIndex === chapterFiles.length - 1
+            }
+            aria-label="Move chapter down"
+            title={reorderHelp ?? "Move chapter down"}
+            onClick={() =>
+              selectedChapterIndex !== null &&
+              reorderChapterFile(selectedChapterIndex, selectedChapterIndex + 1)
+            }
+          >
+            <ChevronDown className="w-4 h-4" />
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="btn-toolbar h-[30px] w-[30px] p-0"
+            disabled={
+              !chaptersEnabled ||
+              sortHidesManualOrder ||
+              selectedChapterIndex === null ||
+              selectedChapterIndex === chapterFiles.length - 1
+            }
+            aria-label="Move chapter to bottom"
+            title={reorderHelp ?? "Move chapter to bottom"}
+            onClick={() =>
+              selectedChapterIndex !== null &&
+              reorderChapterFile(selectedChapterIndex, chapterFiles.length - 1)
+            }
+          >
+            <ChevronsDown className="w-4 h-4" />
+          </Button>
+        </div>
+
+        {/* Chapter List */}
+        <div className="panel-card flex-1 flex flex-col overflow-hidden">
+          <div className="panel-card-header">
+            <div className="flex items-center gap-2">
+              <h4 className="panel-card-title">Chapter files</h4>
+              <span className="text-xs font-mono text-muted-foreground">{chapterFiles.length}</span>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
+            {chapterFiles.length === 0 ? (
+              <EmptyState
+                icon={<BookOpen className="w-5 h-5 text-muted-foreground/65" />}
+                title="No chapter files found"
+                description="Enable chapters, then click the folder icon above"
+                className="h-full"
+              />
+            ) : visibleChapters.length === 0 ? (
+              <EmptyState
+                icon={<BookOpen className="w-5 h-5 text-muted-foreground/65" />}
+                title="No chapter files match the current filter"
+                description="Clear search or change the filter to show all chapter files"
+                className="h-full"
+              />
+            ) : (
+              visibleChapters.map((file) => {
+                const index = chapterFiles.findIndex((entry) => entry.id === file.id);
+                return (
+                <div
+                  key={file.id}
+                  onClick={() => selectChapterIndex(index)}
+                  onDoubleClick={() => openEditDialog(file.id)}
+                  className={cn("file-item-audio", selectedChapterIndex === index && "selected")}
+                >
+                  <div className="media-row-main">
+                    <span className="media-row-index">{index + 1}</span>
+                    <span className="media-row-name">{truncateMiddle(file.name)}</span>
+                    {Number(file.delay) !== 0 && (
+                      <span className="text-xs text-muted-foreground/60">
+                        ({Number(file.delay) > 0 ? "+" : ""}
+                        {Number(file.delay).toFixed(3)}s)
+                      </span>
+                    )}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 text-muted-foreground hover:text-foreground shrink-0"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openEditDialog(file.id);
+                    }}
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </Button>
+                </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Edit Delay Dialog */}
+      <BaseModal
+        open={editDialogOpen}
+        onOpenChange={(open) => {
+          setEditDialogOpen(open);
+          if (!open) setEditingFileId(null);
+        }}
+        title="Edit Chapter Delay"
+        subtitle={chapterFiles.find((f) => f.id === editingFileId)?.name || "Update chapter delay."}
+        icon={<BookOpen className="w-5 h-5 text-primary" />}
+        className="max-w-lg"
+        footerRight={
+          <>
+            <Button
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setEditDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={applyEditChanges} disabled={!delayInputsAreValid(editForm.delay)}>
+              Save changes
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <DelayField
+            value={editForm.delay}
+            onChange={(value) => setEditForm((prev) => ({ ...prev, delay: value }))}
+            hint="Positive values delay chapters, negative values make them earlier."
+          />
+          <div className="flex items-center gap-3">
+            <Checkbox
+              id="chapter-edit-delay-all"
+              checked={editForm.applyDelayToAll}
+              onCheckedChange={(checked) =>
+                setEditForm((prev) => ({ ...prev, applyDelayToAll: checked as boolean }))
+              }
+            />
+            <label htmlFor="chapter-edit-delay-all" className="text-sm cursor-pointer">
+              Apply delay to all chapters
+            </label>
+          </div>
+        </div>
+      </BaseModal>
+    </div>
+  );
+}
