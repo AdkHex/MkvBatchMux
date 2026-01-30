@@ -79,8 +79,21 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Build Tauri
-        run: npm run tauri:build
+      - name: Install Windows bundler (WiX)
+        if: startsWith(matrix.os, 'windows')
+        run: choco install wixtoolset -y
+
+      - name: Build Tauri (Windows MSI)
+        if: startsWith(matrix.os, 'windows')
+        run: npm run tauri:build -- --bundles msi
+
+      - name: Build Tauri (macOS DMG)
+        if: startsWith(matrix.os, 'macos')
+        run: npm run tauri:build -- --bundles dmg
+
+      - name: Build Tauri (Linux bundles)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: npm run tauri:build -- --bundles deb,appimage
 
       - name: Inspect bundle output
         shell: bash
