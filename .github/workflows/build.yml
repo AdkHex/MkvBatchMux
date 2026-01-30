@@ -82,8 +82,17 @@ jobs:
       - name: Build Tauri
         run: npm run tauri:build
 
+      - name: Inspect bundle output
+        shell: bash
+        run: |
+          echo "== src-tauri/target/release =="
+          ls -la src-tauri/target/release || true
+          echo "== src-tauri/target/release/bundle =="
+          ls -la src-tauri/target/release/bundle || true
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: tauri-bundles-${{ matrix.os }}
           path: src-tauri/target/release/bundle/**
+          if-no-files-found: error
