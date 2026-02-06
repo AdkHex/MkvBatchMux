@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Settings,
   Keyboard,
@@ -81,7 +81,6 @@ const Index = () => {
   const [jobs, setJobs] = useState<MuxJob[]>([]);
   const [previewResults, setPreviewResults] = useState<Record<string, MuxPreviewResult>>({});
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [progressTick, setProgressTick] = useState(0);
   const [options, setOptions] = useState<OptionsData | null>(null);
   const [activePreset, setActivePreset] = useState<Preset | null>(null);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
@@ -114,6 +113,7 @@ const Index = () => {
     discardOldAttachments: false,
     allowDuplicateAttachments: false,
     attachmentsExpertMode: false,
+    removeGlobalTags: false,
     makeAudioDefaultLanguage: undefined,
     makeSubtitleDefaultLanguage: undefined,
     useMkvpropedit: false,
@@ -215,13 +215,32 @@ const Index = () => {
     };
   }, []);
 
+  const previewResetKey = useMemo(
+    () =>
+      [
+        videoFiles.length,
+        audioFiles.length,
+        subtitleFiles.length,
+        chapterFiles.length,
+        attachmentFiles.length,
+        Object.keys(perVideoExternal).length,
+      ].join("|"),
+    [
+      videoFiles.length,
+      audioFiles.length,
+      subtitleFiles.length,
+      chapterFiles.length,
+      attachmentFiles.length,
+      perVideoExternal,
+    ],
+  );
+  const lastPreviewResetKey = useRef(previewResetKey);
   useEffect(() => {
-    if (jobs.length === 0) return;
-    const intervalId = window.setInterval(() => {
-      setProgressTick((tick) => tick + 1);
-    }, 300);
-    return () => window.clearInterval(intervalId);
-  }, [jobs]);
+    if (lastPreviewResetKey.current === previewResetKey) return;
+    lastPreviewResetKey.current = previewResetKey;
+    if (!Object.keys(previewResults).length) return;
+    setPreviewResults({});
+  }, [previewResetKey, previewResults]);
 
   useEffect(() => {
     const unlistenPromise = listenMuxLog((payload) => {
@@ -425,12 +444,175 @@ const Index = () => {
     });
   }, [audioFiles, attachmentFiles, chapterFiles, subtitleFiles, videoFiles, perVideoExternal]);
 
+  const getJobReport = useCallback(
+    (jobId: string) => {
+      const jobsRequest = buildJobRequests();
+      const job = jobsRequest.find((item) => item.id === jobId);
+      if (!job) return null;
+
+      const formatTrackLabel = (track: VideoFile["tracks"][number], index: number) => {
+        const name = track.name || track.codec || `Track ${index + 1}`;
+        const lang = track.language ? ` (${track.language})` : "";
+        return `${name}${lang}`;
+      };
+
+      const formatChange = (label: string, previous: string | undefined, next: string | undefined) => {
+        const prevValue = previous && previous.length > 0 ? previous : "None";
+        const nextValue = next && next.length > 0 ? next : "None";
+        if (prevValue === nextValue) return null;
+        return `${label}: ${prevValue} → ${nextValue}`;
+      };
+
+      const formatBoolChange = (label: string, previous: boolean | undefined, next: boolean | undefined) => {
+        if (previous === undefined && next === undefined) return null;
+        if (previous === next) return null;
+        const prevValue = previous === undefined ? "Auto" : previous ? "Yes" : "No";
+        const nextValue = next === undefined ? "Auto" : next ? "Yes" : "No";
+        return `${label}: ${prevValue} → ${nextValue}`;
+      };
+
+      const resolveMuxAfterLabel = (muxAfter?: string) => {
+        if (!muxAfter) return null;
+        if (muxAfter === "video") return "After Video";
+        if (muxAfter === "end") return "At End";
+        if (muxAfter.startsWith("track-")) {
+          const raw = Number(muxAfter.replace("track-", ""));
+          if (!Number.isFinite(raw) || raw <= 0) return "After Track";
+          const target = job.video.tracks?.[raw - 1];
+          if (!target) return `After Track ${raw}`;
+          const name = formatTrackLabel(target, raw - 1);
+          return `After ${target.type.toUpperCase()} • ${name}`;
+        }
+        return null;
+      };
+
+      const removedTracks = (job.video.tracks || [])
+        .map((track, index) => ({ track, index }))
+        .filter(({ track }) => track.action === "remove");
+      const modifiedTracks = (job.video.tracks || [])
+        .map((track, index) => ({ track, index }))
+        .filter(({ track }) => track.action === "modify");
+
+      const formatDelay = (value?: number) => {
+        if (!Number.isFinite(value)) return null;
+        if (!value) return null;
+        const formatted = Math.abs(value) < 1 ? value.toFixed(3) : value.toFixed(2);
+        return `${formatted}s`;
+      };
+
+      const formatExternal = (file: ExternalFile) => {
+        const details: string[] = [];
+        if (file.source) details.push(file.source === "per-file" ? "Source: Per-video" : "Source: Bulk");
+        if (file.language) details.push(`Language: ${file.language}`);
+        const delay = formatDelay(file.delay);
+        if (delay) details.push(`Delay: ${delay}`);
+        if (file.isDefault) details.push("Default: Yes");
+        if (file.isForced) details.push("Forced: Yes");
+        const muxAfterLabel = resolveMuxAfterLabel(file.muxAfter);
+        if (muxAfterLabel) details.push(`Order: ${muxAfterLabel}`);
+        return { title: file.name, details };
+      };
+
+      const sections: { title: string; items: { title: string; details: string[] }[] }[] = [];
+
+      if (removedTracks.length > 0) {
+        sections.push({
+          title: "Removed Tracks",
+          items: removedTracks.map(({ track, index }) => ({
+            title: `${track.type.toUpperCase()} • ${formatTrackLabel(track, index)}`,
+            details: [],
+          })),
+        });
+      }
+      if (modifiedTracks.length > 0) {
+        sections.push({
+          title: "Modified Tracks",
+          items: modifiedTracks.map(({ track, index }) => {
+            const name = formatTrackLabel(track, index);
+            const details: string[] = [];
+            const nameChange = formatChange(
+              "Name",
+              track.originalName,
+              track.name || track.originalName,
+            );
+            const languageChange = formatChange(
+              "Language",
+              track.originalLanguage,
+              track.language || track.originalLanguage,
+            );
+            const defaultChange = formatBoolChange(
+              "Default",
+              track.originalDefault,
+              track.isDefault,
+            );
+            const forcedChange = formatBoolChange(
+              "Forced",
+              track.originalForced,
+              track.isForced,
+            );
+            [nameChange, languageChange, defaultChange, forcedChange]
+              .filter(Boolean)
+              .forEach((entry) => details.push(entry as string));
+            return {
+              title: `${track.type.toUpperCase()} • ${name}`,
+              details,
+            };
+          }),
+        });
+      }
+      if (job.audios.length > 0) {
+        sections.push({
+          title: "Added External Audio",
+          items: job.audios.map(formatExternal),
+        });
+      }
+      if (job.subtitles.length > 0) {
+        sections.push({
+          title: "Added External Subtitles",
+          items: job.subtitles.map(formatExternal),
+        });
+      }
+      if (job.chapters.length > 0) {
+        sections.push({
+          title: "Added Chapters",
+          items: job.chapters.map(formatExternal),
+        });
+      }
+      if (job.attachments.length > 0) {
+        sections.push({
+          title: "Added Attachments",
+          items: job.attachments.map(formatExternal),
+        });
+      }
+
+      const rules: string[] = [];
+      if (muxSettings.discardOldChapters) rules.push("Remove existing chapters from source");
+      if (muxSettings.discardOldAttachments) rules.push("Remove existing attachments from source");
+      if (muxSettings.removeGlobalTags) rules.push("Remove global tags from source");
+      if (rules.length > 0) {
+        sections.push({
+          title: "Rules Applied",
+          items: rules.map((rule) => ({ title: rule, details: [] })),
+        });
+      }
+
+      return {
+        title: job.video.name,
+        sections,
+      };
+    },
+    [buildJobRequests, muxSettings.discardOldAttachments, muxSettings.discardOldChapters, muxSettings.removeGlobalTags],
+  );
+
   const fastMuxAvailable = useMemo(() => {
     const hasExternal =
       audioFiles.length > 0 ||
       subtitleFiles.length > 0 ||
       chapterFiles.length > 0 ||
       attachmentFiles.length > 0;
+    const hasPerVideoExternal = Object.values(perVideoExternal).some(
+      (entry) => entry.audios.length > 0 || entry.subtitles.length > 0,
+    );
     const hasRemovedTracks = videoFiles.some((video) =>
       (video.tracks || []).some((track) => track.action === "remove"),
     );
@@ -439,7 +621,7 @@ const Index = () => {
       muxSettings.onlyKeepSubtitlesEnabled ||
       Boolean(muxSettings.makeAudioDefaultLanguage) ||
       Boolean(muxSettings.makeSubtitleDefaultLanguage);
-    return !hasExternal && !hasRemovedTracks && !hasLanguageFilters;
+    return !hasExternal && !hasPerVideoExternal && !hasRemovedTracks && !hasLanguageFilters;
   }, [
     audioFiles.length,
     attachmentFiles.length,
@@ -449,6 +631,7 @@ const Index = () => {
     muxSettings.makeSubtitleDefaultLanguage,
     muxSettings.onlyKeepAudiosEnabled,
     muxSettings.onlyKeepSubtitlesEnabled,
+    perVideoExternal,
     videoFiles,
   ]);
 
@@ -753,6 +936,7 @@ const Index = () => {
             previewResults={previewResults}
             previewLoading={previewLoading}
             onPreviewQueue={handlePreviewQueue}
+            getJobReport={getJobReport}
           />
         );
       default:

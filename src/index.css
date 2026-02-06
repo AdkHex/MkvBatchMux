@@ -17,17 +17,17 @@
     --popover: 0 0% 100%;
     --popover-foreground: 220 14% 12%;
 
-    --primary: 209 100% 45%;
-    --primary-foreground: 0 0% 100%;
+    --primary: 40 50% 57%;
+    --primary-foreground: 220 12% 10%;
 
-    --secondary: 220 18% 92%;
-    --secondary-foreground: 220 14% 28%;
+    --secondary: 220 18% 96%;
+    --secondary-foreground: 220 12% 32%;
 
     --muted: 220 14% 94%;
-    --muted-foreground: 220 10% 42%;
+    --muted-foreground: 220 10% 45%;
 
-    --accent: 210 45% 92%;
-    --accent-foreground: 210 100% 28%;
+    --accent: 40 30% 90%;
+    --accent-foreground: 40 45% 30%;
 
     --destructive: 0 68% 46%;
     --destructive-foreground: 0 0% 100%;
@@ -38,30 +38,34 @@
     --warning: 38 90% 45%;
     --warning-foreground: 0 0% 12%;
 
-    --border: 220 14% 86%;
-    --input: 220 18% 94%;
-    --ring: 209 100% 45%;
+    --border: 220 12% 84%;
+    --input: 220 16% 96%;
+    --ring: 40 50% 57%;
 
-    --radius: 0.5rem;
+    --radius: 10px;
 
     /* Fluent surfaces */
-    --panel: 220 18% 98%;
-    --panel-header: 220 18% 96%;
-    --panel-border: 220 14% 88%;
-    --selection: 209 100% 90%;
-    --selection-border: 209 100% 45%;
+    --panel: 220 14% 96%;
+    --panel-header: 220 14% 94%;
+    --panel-border: 220 12% 84%;
+    --selection: 40 40% 92%;
+    --selection-border: 40 50% 57%;
     --table-row: 0 0% 100%;
     --table-row-alt: 0 0% 100%;
-    --table-header: 220 14% 94%;
+    --table-header: 220 14% 92%;
 
-    --sidebar-background: 220 18% 97%;
-    --sidebar-foreground: 220 12% 36%;
-    --sidebar-primary: 209 100% 45%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 209 60% 92%;
-    --sidebar-accent-foreground: 209 100% 28%;
-    --sidebar-border: 220 14% 90%;
-    --sidebar-ring: 209 100% 45%;
+    --sidebar-background: 220 14% 96%;
+    --sidebar-foreground: 220 10% 42%;
+    --sidebar-primary: 40 50% 57%;
+    --sidebar-primary-foreground: 220 12% 10%;
+    --sidebar-accent: 40 30% 92%;
+    --sidebar-accent-foreground: 40 45% 30%;
+    --sidebar-border: 220 12% 86%;
+    --sidebar-ring: 40 50% 57%;
+
+    --toggle-off: 220 12% 24%;
+    --toggle-border: 220 12% 36%;
+    --toggle-knob: 0 0% 100%;
 
     --space-1: 4px;
     --space-2: 8px;
@@ -70,36 +74,36 @@
     --space-5: 20px;
     --space-6: 24px;
 
-    --row-height: 44px;
-    --row-height-header: 48px;
-    --control-height: 36px;
-    --icon-button-size: 36px;
+    --row-height: 42px;
+    --row-height-header: 44px;
+    --control-height: 34px;
+    --icon-button-size: 34px;
 
     --shadow-1: 0 1px 0 rgb(0 0 0 / 0.05), 0 8px 24px rgb(15 23 42 / 0.08);
     --shadow-2: 0 12px 32px rgb(15 23 42 / 0.18);
   }
 
   .dark {
-    --background: 220 16% 9%;
-    --foreground: 220 12% 92%;
+    --background: 213 23% 8%;
+    --foreground: 220 10% 90%;
 
-    --card: 220 16% 12%;
-    --card-foreground: 220 12% 92%;
+    --card: 215 22% 11%;
+    --card-foreground: 220 10% 90%;
 
-    --popover: 220 16% 12%;
-    --popover-foreground: 220 12% 92%;
+    --popover: 215 22% 11%;
+    --popover-foreground: 220 10% 90%;
 
-    --primary: 209 100% 62%;
-    --primary-foreground: 0 0% 100%;
+    --primary: 40 50% 57%;
+    --primary-foreground: 220 12% 10%;
 
-    --secondary: 220 12% 16%;
+    --secondary: 215 22% 14%;
     --secondary-foreground: 220 10% 82%;
 
-    --muted: 220 12% 14%;
-    --muted-foreground: 220 8% 56%;
+    --muted: 215 18% 15%;
+    --muted-foreground: 220 8% 60%;
 
-    --accent: 209 30% 18%;
-    --accent-foreground: 209 100% 70%;
+    --accent: 40 30% 18%;
+    --accent-foreground: 40 55% 78%;
 
     --destructive: 0 70% 55%;
     --destructive-foreground: 0 0% 100%;
@@ -110,30 +114,34 @@
     --warning: 38 90% 55%;
     --warning-foreground: 0 0% 12%;
 
-    --border: 220 10% 22%;
-    --input: 220 12% 16%;
-    --ring: 209 100% 62%;
+    --border: 215 14% 22%;
+    --input: 215 20% 14%;
+    --ring: 40 50% 57%;
 
-    --panel: 220 16% 10%;
-    --panel-header: 220 14% 12%;
-    --panel-border: 220 10% 22%;
-    --selection: 209 60% 18%;
-    --selection-border: 209 100% 60%;
-    --table-row: 220 16% 11%;
-    --table-row-alt: 220 16% 11%;
-    --table-header: 220 14% 14%;
+    --panel: 215 22% 11%;
+    --panel-header: 215 20% 13%;
+    --panel-border: 215 14% 22%;
+    --selection: 40 25% 18%;
+    --selection-border: 40 50% 57%;
+    --table-row: 215 22% 12%;
+    --table-row-alt: 215 22% 12%;
+    --table-header: 215 20% 14%;
 
-    --sidebar-background: 220 18% 8%;
-    --sidebar-foreground: 220 10% 72%;
-    --sidebar-primary: 209 100% 62%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 209 30% 16%;
-    --sidebar-accent-foreground: 209 100% 72%;
-    --sidebar-border: 220 10% 18%;
-    --sidebar-ring: 209 100% 62%;
+    --sidebar-background: 213 23% 7%;
+    --sidebar-foreground: 220 8% 62%;
+    --sidebar-primary: 40 50% 57%;
+    --sidebar-primary-foreground: 220 12% 10%;
+    --sidebar-accent: 40 28% 16%;
+    --sidebar-accent-foreground: 40 55% 78%;
+    --sidebar-border: 215 14% 18%;
+    --sidebar-ring: 40 50% 57%;
 
-    --shadow-1: 0 1px 0 rgb(255 255 255 / 0.05), 0 12px 28px rgb(0 0 0 / 0.35);
-    --shadow-2: 0 20px 40px rgb(0 0 0 / 0.55);
+    --toggle-off: 220 12% 18%;
+    --toggle-border: 220 10% 26%;
+    --toggle-knob: 0 0% 95%;
+
+    --shadow-1: 0 1px 0 rgb(255 255 255 / 0.04), 0 8px 22px rgb(0 0 0 / 0.4);
+    --shadow-2: 0 22px 44px rgb(0 0 0 / 0.55);
   }
 }
 
@@ -269,11 +277,11 @@
   .fluent-sidebar-item {
     @apply w-full flex items-center gap-3 text-[13px] rounded-md transition-colors;
     @apply text-sidebar-foreground hover:text-foreground hover:bg-sidebar-accent/60;
-    min-height: 40px;
+    min-height: 38px;
   }
 
   .fluent-sidebar-item.is-active {
-    @apply text-primary bg-sidebar-accent/80 relative;
+    @apply text-primary bg-sidebar-accent/80 border border-primary/30 relative;
   }
 
   .fluent-sidebar-item.is-active::before {
@@ -329,13 +337,17 @@
   }
 
   .fluent-input {
-    @apply w-full rounded-md border border-input bg-background text-sm;
+    @apply w-full rounded-md border border-panel-border bg-panel text-sm text-foreground;
     height: var(--control-height);
     padding: 0 12px;
   }
 
   .fluent-input:focus {
-    @apply border-ring ring-2 ring-ring/40;
+    @apply border-ring ring-2 ring-ring/50;
+  }
+
+  .fluent-input::placeholder {
+    color: hsl(var(--muted-foreground) / 0.7);
   }
 
   .fluent-section-header {
@@ -352,7 +364,7 @@
   }
 
   .data-table__row {
-    @apply border-b border-panel-border/60 transition-colors;
+    @apply border-b border-panel-border/60 transition-colors bg-table-row;
     min-height: var(--row-height);
   }
 
@@ -361,12 +373,16 @@
   }
 
   .data-table__row:hover {
-    @apply bg-accent/40;
+    @apply bg-accent/50;
   }
 
   .data-table__row.is-selected {
     @apply bg-selection;
     box-shadow: inset 2px 0 0 hsl(var(--selection-border));
+  }
+
+  .data-table__row.is-selected .data-table__cell {
+    @apply text-foreground;
   }
 
   .data-table__cell {
@@ -389,6 +405,10 @@
     @apply text-muted-foreground/60 hover:text-foreground cursor-grab;
   }
 
+  .reorder-handle:active {
+    cursor: grabbing;
+  }
+
   .reorder-drop-indicator {
     position: relative;
   }
@@ -402,6 +422,26 @@
     height: 2px;
     background: hsl(var(--primary));
     box-shadow: 0 0 0 1px hsl(var(--primary) / 0.4);
+  }
+
+  .toggle-switch[data-state="unchecked"] {
+    background: hsl(var(--toggle-off));
+    border-color: hsl(var(--toggle-border));
+  }
+
+  .toggle-switch[data-state="checked"] {
+    background: hsl(var(--primary));
+    border-color: hsl(var(--primary));
+  }
+
+  .toggle-thumb {
+    background: hsl(var(--toggle-knob));
+  }
+
+  .data-table__row.is-dragging {
+    @apply bg-accent/60;
+    box-shadow: 0 8px 20px rgb(0 0 0 / 0.35);
+    cursor: grabbing;
   }
 
   .dialog-shell {
@@ -418,7 +458,7 @@
   }
 
   .base-modal {
-    @apply bg-card border border-panel-border rounded-lg overflow-hidden flex flex-col gap-0;
+    @apply bg-card border border-panel-border rounded-xl overflow-hidden flex flex-col gap-0;
     box-shadow: var(--shadow-2);
     max-height: 80vh;
   }
@@ -433,7 +473,7 @@
   }
 
   .base-modal__icon {
-    @apply w-9 h-9 rounded-md bg-primary/15 flex items-center justify-center shrink-0;
+    @apply w-9 h-9 rounded-md bg-primary/15 border border-primary/30 flex items-center justify-center shrink-0;
   }
 
   .base-modal__titles {
@@ -471,11 +511,11 @@
 
   /* Legacy utility classes mapped to Fluent tokens */
   .control-row {
-    @apply flex items-center gap-3 px-4 py-3;
+    @apply flex items-center gap-3 px-4 py-2.5;
   }
 
   .app-input {
-    @apply w-full rounded-md border border-input bg-background text-sm px-3;
+    @apply w-full rounded-md border border-panel-border bg-panel text-sm px-3;
     height: var(--control-height);
   }
 
@@ -493,7 +533,7 @@
     @apply inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium;
     height: var(--control-height);
     padding: 0 12px;
-    @apply bg-secondary text-secondary-foreground border border-border;
+    @apply bg-secondary text-secondary-foreground border border-panel-border;
   }
 
   .btn-toolbar:hover {

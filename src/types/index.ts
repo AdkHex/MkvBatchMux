@@ -19,6 +19,10 @@ export interface Track {
   isForced?: boolean;
   bitrate?: number; // Bitrate in bits per second
   action?: 'keep' | 'remove' | 'modify';
+  originalName?: string;
+  originalLanguage?: string;
+  originalDefault?: boolean;
+  originalForced?: boolean;
 }
 
 export interface ExternalFile {
@@ -102,6 +106,7 @@ export interface MuxSettings {
   discardOldAttachments: boolean;
   allowDuplicateAttachments: boolean;
   attachmentsExpertMode: boolean;
+  removeGlobalTags: boolean;
   makeAudioDefaultLanguage?: string;
   makeSubtitleDefaultLanguage?: string;
   useMkvpropedit: boolean;

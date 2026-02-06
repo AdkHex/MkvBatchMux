@@ -183,118 +183,120 @@ export function ChaptersTab({
         <label htmlFor="chapters-enabled" className="text-sm font-medium cursor-pointer">Chapters</label>
       </div>
 
-      {/* Controls Row 1 */}
-      <div className="control-row">
-        <label className="text-sm text-muted-foreground whitespace-nowrap min-w-[140px]">
-          Chapter Source Folder:
-        </label>
-        <Input
-          value={sourceFolder}
-          onChange={(e) => updateChapterTabState({ sourceFolder: e.target.value })}
-          placeholder="Enter Chapter Folder Path"
-          className="app-input flex-1"
-          disabled={!chaptersEnabled}
-        />
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="btn-icon bg-muted/50 text-foreground hover:bg-muted/70"
-            disabled={!chaptersEnabled}
-            onClick={async () => {
-              const folder = await pickDirectory();
-              if (folder) {
-                updateChapterTabState({ sourceFolder: folder });
-                scanChapters(folder);
-              }
-            }}
-          >
-            <FolderOpen className="w-4 h-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="btn-icon bg-primary/10 text-primary hover:bg-primary/20"
-            disabled={!chaptersEnabled}
-            onClick={() => scanChapters(sourceFolder)}
-          >
-            <RefreshCw className="w-4 h-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="btn-icon bg-destructive/10 text-destructive hover:bg-destructive/20"
-            disabled={!chaptersEnabled}
-            onClick={() => {
-              updateChapterTabState({ sourceFolder: '' });
-              onChapterFilesChange([]);
-            }}
-          >
-            <X className="w-4 h-4" />
-          </Button>
-        </div>
-      </div>
-
-      {/* Controls Row 2 */}
-      <div className="control-row">
-        <label className="text-sm text-muted-foreground whitespace-nowrap">Chapter Extension:</label>
-        <Select value={extension} onValueChange={(v) => updateChapterTabState({ extension: v })} disabled={!chaptersEnabled}>
-          <SelectTrigger className="w-24 h-8 bg-input border-0 text-sm">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Formats</SelectItem>
-            {CHAPTER_EXTENSIONS.map((ext) => (
-              <SelectItem key={ext} value={ext}>
-                {ext.toUpperCase()}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <div className="flex-1" />
-
-        <div className="flex items-center gap-1.5">
-          <Checkbox 
-            id="discard-chapters"
-            checked={discardOldChapters}
-            onCheckedChange={(checked) => {
-              const enabled = checked as boolean;
-              updateChapterTabState({ discardOldChapters: enabled });
-              onMuxSettingsChange({ discardOldChapters: enabled });
-            }}
-            disabled={!chaptersEnabled}
-          />
-          <label htmlFor="discard-chapters" className="text-sm cursor-pointer">Discard Old Chapters</label>
-        </div>
-      </div>
-
-      {/* Delay Configuration */}
-      <div className="control-row">
-        <label className="text-sm text-muted-foreground whitespace-nowrap">Delay</label>
-        <div className="flex items-center gap-2">
+      <div className="fluent-surface p-3 space-y-2.5">
+        {/* Controls Row 1 */}
+        <div className="control-row">
+          <label className="text-sm text-muted-foreground whitespace-nowrap min-w-[140px]">
+            Chapter Source Folder:
+          </label>
           <Input
-            value={chapterDelay}
-            onChange={(e) => updateChapterTabState({ delay: e.target.value })}
-            className="app-input h-8 w-28 text-center font-mono"
+            value={sourceFolder}
+            onChange={(e) => updateChapterTabState({ sourceFolder: e.target.value })}
+            placeholder="Enter Chapter Folder Path"
+            className="app-input flex-1"
             disabled={!chaptersEnabled}
           />
-          <span className="text-sm text-muted-foreground">sec</span>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="btn-icon bg-muted/50 text-foreground hover:bg-muted/70"
+              disabled={!chaptersEnabled}
+              onClick={async () => {
+                const folder = await pickDirectory();
+                if (folder) {
+                  updateChapterTabState({ sourceFolder: folder });
+                  scanChapters(folder);
+                }
+              }}
+            >
+              <FolderOpen className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="btn-icon bg-primary/10 text-primary hover:bg-primary/20"
+              disabled={!chaptersEnabled}
+              onClick={() => scanChapters(sourceFolder)}
+            >
+              <RefreshCw className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="btn-icon bg-destructive/10 text-destructive hover:bg-destructive/20"
+              disabled={!chaptersEnabled}
+              onClick={() => {
+                updateChapterTabState({ sourceFolder: '' });
+                onChapterFilesChange([]);
+              }}
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
-        <div className="flex-1" />
-        <Button
-          variant="default"
-          size="sm"
-          className="h-8 px-4 text-xs"
-          disabled={!chaptersEnabled || chapterFiles.length === 0}
-          onClick={() => {
-            const delayValue = Number(chapterDelay) || 0;
-            const updated = chapterFiles.map((file) => ({ ...file, delay: delayValue }));
-            onChapterFilesChange(updated);
-          }}
-        >
-          Apply
-        </Button>
+
+        {/* Controls Row 2 */}
+        <div className="control-row">
+          <label className="text-sm text-muted-foreground whitespace-nowrap">Chapter Extension:</label>
+          <Select value={extension} onValueChange={(v) => updateChapterTabState({ extension: v })} disabled={!chaptersEnabled}>
+            <SelectTrigger className="w-24 h-8 bg-input border-0 text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Formats</SelectItem>
+              {CHAPTER_EXTENSIONS.map((ext) => (
+                <SelectItem key={ext} value={ext}>
+                  {ext.toUpperCase()}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <div className="flex-1" />
+
+          <div className="flex items-center gap-1.5">
+            <Checkbox 
+              id="discard-chapters"
+              checked={discardOldChapters}
+              onCheckedChange={(checked) => {
+                const enabled = checked as boolean;
+                updateChapterTabState({ discardOldChapters: enabled });
+                onMuxSettingsChange({ discardOldChapters: enabled });
+              }}
+              disabled={!chaptersEnabled}
+            />
+            <label htmlFor="discard-chapters" className="text-sm cursor-pointer">Discard Old Chapters</label>
+          </div>
+        </div>
+
+        {/* Delay Configuration */}
+        <div className="control-row">
+          <label className="text-sm text-muted-foreground whitespace-nowrap">Delay</label>
+          <div className="flex items-center gap-2">
+            <Input
+              value={chapterDelay}
+              onChange={(e) => updateChapterTabState({ delay: e.target.value })}
+              className="app-input h-8 w-28 text-center font-mono"
+              disabled={!chaptersEnabled}
+            />
+            <span className="text-sm text-muted-foreground">sec</span>
+          </div>
+          <div className="flex-1" />
+          <Button
+            variant="default"
+            size="sm"
+            className="h-8 px-4 text-xs"
+            disabled={!chaptersEnabled || chapterFiles.length === 0}
+            onClick={() => {
+              const delayValue = Number(chapterDelay) || 0;
+              const updated = chapterFiles.map((file) => ({ ...file, delay: delayValue }));
+              onChapterFilesChange(updated);
+            }}
+          >
+            Apply
+          </Button>
+        </div>
       </div>
 
       {/* Matching Section Label */}
@@ -399,7 +401,7 @@ export function ChaptersTab({
                   <BookOpen className="w-6 h-6 text-muted-foreground" />
                 </div>
                 <p className="text-muted-foreground text-sm">No chapter files found</p>
-                <p className="text-muted-foreground/60 text-xs mt-1">Enable chapters and add a source folder</p>
+                <p className="text-muted-foreground/60 text-xs mt-1">Enable chapters, then click the folder icon above</p>
               </div>
             ) : (
               chapterFiles.map((file, index) => (

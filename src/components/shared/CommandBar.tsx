@@ -21,7 +21,7 @@ export function CommandBar({
   className,
 }: CommandBarProps) {
   return (
-    <header className={cn("fluent-topbar h-14 flex items-center px-6 gap-4 shrink-0", className)}>
+    <header className={cn("fluent-topbar h-12 flex items-center px-5 gap-3 shrink-0", className)}>
       <div className="flex items-center gap-3">
         <h2 className="text-lg font-semibold text-foreground">{title}</h2>
       </div>

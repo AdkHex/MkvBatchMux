@@ -96,117 +96,119 @@ export function AttachmentsTab({
         <label htmlFor="attachments-enabled" className="text-sm font-medium cursor-pointer">Attachments</label>
       </div>
 
-      {/* Controls Row 1 */}
-      <div className="control-row">
-        <label className="text-sm text-muted-foreground whitespace-nowrap min-w-[160px]">
-          Attachments Source Folder:
-        </label>
-        <Input
-          value={sourceFolder}
-          onChange={(e) => updateAttachmentTabState({ sourceFolder: e.target.value })}
-          placeholder="Enter Attachments Folder Path"
-          className="app-input flex-1"
-          disabled={!attachmentsEnabled}
-        />
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="btn-icon bg-muted/50 text-foreground hover:bg-muted/70"
+      <div className="fluent-surface p-3 space-y-2.5">
+        {/* Controls Row 1 */}
+        <div className="control-row">
+          <label className="text-sm text-muted-foreground whitespace-nowrap min-w-[160px]">
+            Attachments Source Folder:
+          </label>
+          <Input
+            value={sourceFolder}
+            onChange={(e) => updateAttachmentTabState({ sourceFolder: e.target.value })}
+            placeholder="Enter Attachments Folder Path"
+            className="app-input flex-1"
             disabled={!attachmentsEnabled}
-            onClick={async () => {
-              const folder = await pickDirectory();
-              if (folder) {
-                updateAttachmentTabState({ sourceFolder: folder });
-                scanAttachments(folder);
-              }
-            }}
-          >
-            <FolderOpen className="w-4 h-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="btn-icon bg-primary/10 text-primary hover:bg-primary/20"
-            disabled={!attachmentsEnabled}
-            onClick={() => scanAttachments(sourceFolder)}
-          >
-            <RefreshCw className="w-4 h-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="btn-icon bg-destructive/10 text-destructive hover:bg-destructive/20"
-            disabled={!attachmentsEnabled}
-            onClick={() => {
-              updateAttachmentTabState({ sourceFolder: '' });
-              onAttachmentFilesChange([]);
-            }}
-          >
-            <X className="w-4 h-4" />
-          </Button>
+          />
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="btn-icon bg-muted/50 text-foreground hover:bg-muted/70"
+              disabled={!attachmentsEnabled}
+              onClick={async () => {
+                const folder = await pickDirectory();
+                if (folder) {
+                  updateAttachmentTabState({ sourceFolder: folder });
+                  scanAttachments(folder);
+                }
+              }}
+            >
+              <FolderOpen className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="btn-icon bg-primary/10 text-primary hover:bg-primary/20"
+              disabled={!attachmentsEnabled}
+              onClick={() => scanAttachments(sourceFolder)}
+            >
+              <RefreshCw className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="btn-icon bg-destructive/10 text-destructive hover:bg-destructive/20"
+              disabled={!attachmentsEnabled}
+              onClick={() => {
+                updateAttachmentTabState({ sourceFolder: '' });
+                onAttachmentFilesChange([]);
+              }}
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
-      </div>
 
-      {/* Controls Row 2 */}
-      <div className="control-row">
-        <label className="text-sm text-muted-foreground whitespace-nowrap">Attachment Extension:</label>
-        <Select value={extension} onValueChange={(v) => updateAttachmentTabState({ extension: v })} disabled={!attachmentsEnabled}>
-          <SelectTrigger className="w-40 h-8 bg-input border-0 text-sm">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Formats</SelectItem>
-            {ATTACHMENT_EXTENSIONS.map((ext) => (
-              <SelectItem key={ext} value={ext}>
-                {ext.toUpperCase()}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {/* Controls Row 2 */}
+        <div className="control-row">
+          <label className="text-sm text-muted-foreground whitespace-nowrap">Attachment Extension:</label>
+          <Select value={extension} onValueChange={(v) => updateAttachmentTabState({ extension: v })} disabled={!attachmentsEnabled}>
+            <SelectTrigger className="w-40 h-8 bg-input border-0 text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Formats</SelectItem>
+              {ATTACHMENT_EXTENSIONS.map((ext) => (
+                <SelectItem key={ext} value={ext}>
+                  {ext.toUpperCase()}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-        <div className="flex-1" />
+          <div className="flex-1" />
 
-        <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            className="btn-toolbar gap-1.5"
-            disabled={!attachmentsEnabled}
-            onClick={async () => {
-              const filters = extension === 'all' ? undefined : [{ name: extension.toUpperCase(), extensions: [extension] }];
-              const files = await pickFiles(filters);
-              if (!files.length) return;
-              const newFiles = files.map((path, index) => {
-                const name = path.split(/[\\/]/).pop() || path;
-                return {
-                  id: `attachment-${Date.now()}-${index}`,
-                  name,
-                  path,
-                  type: 'attachment' as const,
-                };
-              });
-              onAttachmentFilesChange([...attachmentFiles, ...newFiles]);
-            }}
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add Files
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            className="btn-toolbar gap-1.5"
-            disabled={!attachmentsEnabled || selectedIndex === null}
-            onClick={() => {
-              if (selectedIndex === null) return;
-              const updated = attachmentFiles.filter((_, index) => index !== selectedIndex);
-              onAttachmentFilesChange(updated);
-              setSelectedIndex(null);
-            }}
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            Remove
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="btn-toolbar gap-1.5"
+              disabled={!attachmentsEnabled}
+              onClick={async () => {
+                const filters = extension === 'all' ? undefined : [{ name: extension.toUpperCase(), extensions: [extension] }];
+                const files = await pickFiles(filters);
+                if (!files.length) return;
+                const newFiles = files.map((path, index) => {
+                  const name = path.split(/[\\/]/).pop() || path;
+                  return {
+                    id: `attachment-${Date.now()}-${index}`,
+                    name,
+                    path,
+                    type: 'attachment' as const,
+                  };
+                });
+                onAttachmentFilesChange([...attachmentFiles, ...newFiles]);
+              }}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add Files
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="btn-toolbar gap-1.5"
+              disabled={!attachmentsEnabled || selectedIndex === null}
+              onClick={() => {
+                if (selectedIndex === null) return;
+                const updated = attachmentFiles.filter((_, index) => index !== selectedIndex);
+                onAttachmentFilesChange(updated);
+                setSelectedIndex(null);
+              }}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Remove
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -272,7 +274,7 @@ export function AttachmentsTab({
                 <Paperclip className="w-8 h-8 text-muted-foreground" />
               </div>
               <p className="text-muted-foreground text-sm">No attachment files added</p>
-              <p className="text-muted-foreground/60 text-xs mt-1">Enable attachments and add files (fonts, covers, etc.)</p>
+              <p className="text-muted-foreground/60 text-xs mt-1">Enable attachments, then click Add Files above</p>
             </div>
           ) : (
             attachmentFiles.map((file, index) => (

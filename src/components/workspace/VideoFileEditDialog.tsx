@@ -239,18 +239,8 @@ export function VideoFileEditDialog({
 
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
-
-  const handleDragStart = (index: number) => {
-    dragItem.current = index;
-    setDraggedIndex(index);
-  };
-
-  const handleDragEnter = (index: number) => {
-    dragOverItem.current = index;
-    if (dragItem.current !== null && dragItem.current !== index) {
-      setDragOverIndex(index);
-    }
-  };
+  const pointerDragActive = useRef(false);
+  const pointerIdRef = useRef<number | null>(null);
 
   const handleDragEnd = () => {
     if (
@@ -272,20 +262,80 @@ export function VideoFileEditDialog({
     setDragOverIndex(null);
   };
 
+  const startPointerDrag = (event: React.PointerEvent, index: number) => {
+    event.preventDefault();
+    pointerDragActive.current = true;
+    pointerIdRef.current = event.pointerId;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    dragItem.current = index;
+    dragOverItem.current = index;
+    setDraggedIndex(index);
+    setDragOverIndex(index);
+  };
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!pointerDragActive.current || pointerIdRef.current !== event.pointerId) return;
+      const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+      const row = target?.closest("[data-reorder-index]") as HTMLElement | null;
+      if (!row) return;
+      const idx = Number(row.dataset.reorderIndex);
+      if (!Number.isFinite(idx) || idx === dragOverItem.current) return;
+      dragOverItem.current = idx;
+      setDragOverIndex(idx);
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      if (!pointerDragActive.current || pointerIdRef.current !== event.pointerId) return;
+      pointerDragActive.current = false;
+      pointerIdRef.current = null;
+      handleDragEnd();
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, []);
+
   const handleApplyChanges = () => {
     if (!videoFile) return;
 
     const rowsToTracks = (rows: TrackRow[]): Track[] =>
       rows
         .filter((row) => row.source === "internal" && row.originalTrack)
-        .map((row) => ({
-          ...row.originalTrack,
-          name: row.trackName,
-          language: row.language,
-          isDefault: row.setDefault,
-          isForced: row.setForced,
-          action: row.copyTrack ? ("keep" as const) : ("remove" as const),
-        }));
+        .map((row) => {
+          const original = row.originalTrack!;
+          const originalName = original.originalName ?? original.name ?? original.codec ?? "";
+          const originalLanguage = original.originalLanguage ?? original.language ?? "";
+          const originalDefault =
+            original.originalDefault !== undefined ? original.originalDefault : original.isDefault ?? false;
+          const originalForced =
+            original.originalForced !== undefined ? original.originalForced : original.isForced ?? false;
+
+          const nameChanged = row.trackName !== (original.name || original.codec || row.trackName);
+          const languageChanged = (row.language || "") !== (original.language || "");
+          const defaultChanged = row.setDefault !== (original.isDefault ?? false);
+          const forcedChanged = row.setForced !== (original.isForced ?? false);
+          const isRemoved = !row.copyTrack;
+          const hasChanges = !isRemoved && (nameChanged || languageChanged || defaultChanged || forcedChanged);
+          return {
+            ...original,
+            name: row.trackName,
+            language: row.language,
+            isDefault: row.setDefault,
+            isForced: row.setForced,
+            action: isRemoved ? ("remove" as const) : hasChanges ? ("modify" as const) : ("keep" as const),
+            originalName,
+            originalLanguage,
+            originalDefault,
+            originalForced,
+          };
+        });
 
     const updatedTracks: Track[] = [
       ...rowsToTracks(videoTracks),
@@ -420,7 +470,7 @@ export function VideoFileEditDialog({
       footerLeft={
         <Button
           variant="ghost"
-          className="h-9 px-4 text-sm text-primary hover:text-primary hover:bg-primary/10 gap-2"
+          className="h-9 px-4 text-sm text-muted-foreground hover:text-foreground gap-2"
           onClick={handleReset}
         >
           <RotateCcw className="w-4 h-4" />
@@ -429,7 +479,7 @@ export function VideoFileEditDialog({
       }
       footerRight={
         <>
-          <Button variant="ghost" className="h-9 px-5 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" className="h-9 px-5 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button className="h-9 px-5 text-sm" onClick={handleApplyChanges}>
@@ -455,8 +505,8 @@ export function VideoFileEditDialog({
                 className={cn(
                   "flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-all",
                   activeTab === tab.id
-                    ? "bg-accent/60 text-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
+                    ? "bg-accent/60 text-primary border border-primary/30"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/40 border border-transparent",
                 )}
               >
                 <Icon className="w-4 h-4" />
@@ -521,10 +571,10 @@ export function VideoFileEditDialog({
         <ReorderableTable className="h-full min-h-0">
           <ReorderableTableHeader
             className={cn(
-              "grid items-center",
+              "grid items-center py-2",
               activeTab === "audios"
-                ? "grid-cols-[28px_56px_72px_72px_72px_96px_1fr_160px_44px]"
-                : "grid-cols-[28px_56px_72px_72px_72px_1fr_160px_44px]",
+                ? "grid-cols-[28px_56px_84px_84px_84px_96px_1fr_180px_44px]"
+                : "grid-cols-[28px_56px_84px_84px_84px_1fr_180px_44px]",
             )}
           >
             <ReorderableTableCell className="center" />
@@ -533,7 +583,7 @@ export function VideoFileEditDialog({
               <div className="flex flex-col items-center gap-0.5">
                 <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Copy</span>
                 <Checkbox
-                  className="h-3.5 w-3.5"
+                  className="h-3.5 w-7"
                   checked={allCopyChecked}
                   onCheckedChange={(checked) => setAllCopy(checked as boolean)}
                 />
@@ -543,7 +593,7 @@ export function VideoFileEditDialog({
               <div className="flex flex-col items-center gap-0.5">
                 <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Default</span>
                 <Checkbox
-                  className="h-3.5 w-3.5"
+                  className="h-3.5 w-7"
                   checked={allDefaultChecked}
                   onCheckedChange={(checked) => setAllDefault(checked as boolean)}
                 />
@@ -553,7 +603,7 @@ export function VideoFileEditDialog({
               <div className="flex flex-col items-center gap-0.5">
                 <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Forced</span>
                 <Checkbox
-                  className="h-3.5 w-3.5"
+                  className="h-3.5 w-7"
                   checked={allForcedChecked}
                   onCheckedChange={(checked) => setAllForced(checked as boolean)}
                 />
@@ -574,54 +624,70 @@ export function VideoFileEditDialog({
               currentTracks.map((track, index) => (
                 <ReorderableRow
                   key={track.id}
-                  draggable
-                  onDragStart={(event) => {
-                    event.dataTransfer.setData("text/plain", String(index));
-                    event.dataTransfer.effectAllowed = "move";
-                    handleDragStart(index);
-                  }}
-                  onDragEnter={() => handleDragEnter(index)}
-                  onDragEnd={handleDragEnd}
-                  onDragOver={(e) => e.preventDefault()}
                   onClick={() => setSelectedTrackId(track.id)}
                   selected={selectedTrackId === track.id}
                   dragging={draggedIndex === index}
                   dropTarget={dragOverIndex === index}
+                  data-reorder-index={index}
                   className={cn(
-                    "grid items-center cursor-pointer",
+                    "grid items-center cursor-pointer h-12",
                     activeTab === "audios"
-                      ? "grid-cols-[28px_56px_72px_72px_72px_96px_1fr_160px_44px]"
-                      : "grid-cols-[28px_56px_72px_72px_72px_1fr_160px_44px]",
+                      ? "grid-cols-[28px_56px_84px_84px_84px_96px_1fr_180px_44px]"
+                      : "grid-cols-[28px_56px_84px_84px_84px_1fr_180px_44px]",
                   )}
                 >
                   <ReorderableTableCell className="center">
-                    <ReorderHandle className="flex items-center justify-center">
+                    <ReorderHandle
+                      className="flex items-center justify-center touch-none"
+                      onPointerDown={(event) => startPointerDrag(event, index)}
+                    >
                       <GripVertical className="w-4 h-4" />
                     </ReorderHandle>
                   </ReorderableTableCell>
                   <ReorderableTableCell className="center text-primary font-mono">
                     {String(index + 1).padStart(2, "0")}
                   </ReorderableTableCell>
-                  <ReorderableTableCell className="center" onClick={(e) => e.stopPropagation()}>
+                  <ReorderableTableCell
+                    className="center"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleTrackChange(track.id, "copyTrack", !track.copyTrack);
+                    }}
+                  >
                     <Checkbox
                       checked={track.copyTrack}
                       onCheckedChange={(checked) => handleTrackChange(track.id, "copyTrack", checked as boolean)}
+                      className="h-3.5 w-7"
                     />
                   </ReorderableTableCell>
-                  <ReorderableTableCell className="center" onClick={(e) => e.stopPropagation()}>
+                  <ReorderableTableCell
+                    className="center"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!track.copyTrack) return;
+                      handleTrackChange(track.id, "setDefault", !track.setDefault);
+                    }}
+                  >
                     <Checkbox
                       checked={track.setDefault}
                       disabled={!track.copyTrack}
                       onCheckedChange={(checked) => handleTrackChange(track.id, "setDefault", checked as boolean)}
-                      className={cn(!track.copyTrack && "opacity-30 cursor-not-allowed")}
+                      className={cn("h-3.5 w-7", !track.copyTrack && "opacity-30 cursor-not-allowed")}
                     />
                   </ReorderableTableCell>
-                  <ReorderableTableCell className="center" onClick={(e) => e.stopPropagation()}>
+                  <ReorderableTableCell
+                    className="center"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!track.copyTrack) return;
+                      handleTrackChange(track.id, "setForced", !track.setForced);
+                    }}
+                  >
                     <Checkbox
                       checked={track.setForced}
                       disabled={!track.copyTrack}
                       onCheckedChange={(checked) => handleTrackChange(track.id, "setForced", checked as boolean)}
-                      className={cn(!track.copyTrack && "opacity-30 cursor-not-allowed")}
+                      className={cn("h-3.5 w-7", !track.copyTrack && "opacity-30 cursor-not-allowed")}
                     />
                   </ReorderableTableCell>
                   {activeTab === "audios" && (

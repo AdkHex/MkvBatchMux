@@ -4,5 +4,5 @@ import { cn } from "@/lib/utils";
 interface PageLayoutProps extends React.HTMLAttributes<HTMLDivElement> {}
 
 export function PageLayout({ className, ...props }: PageLayoutProps) {
-  return <div className={cn("flex flex-col h-full p-6 gap-6", className)} {...props} />;
+  return <div className={cn("flex flex-col h-full p-5 gap-4", className)} {...props} />;
 }

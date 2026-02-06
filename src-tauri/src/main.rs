@@ -194,6 +194,7 @@ struct MuxSettings {
     discard_old_attachments: bool,
     allow_duplicate_attachments: bool,
     attachments_expert_mode: bool,
+    remove_global_tags: bool,
     make_audio_default_language: Option<String>,
     make_subtitle_default_language: Option<String>,
     use_mkvpropedit: bool,
@@ -717,11 +718,6 @@ fn parse_external_track_id_mkvmerge(mkvmerge: &serde_json::Value, track_type: &s
     None
 }
 
-fn resolve_external_track_id(path: &str, track_type: &str) -> Option<u64> {
-    let info = get_mkvmerge_info(Path::new(path))?;
-    parse_external_track_id_mkvmerge(&info, track_type)
-}
-
 fn generate_id(prefix: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let timestamp = SystemTime::now()
@@ -1134,100 +1130,6 @@ fn apply_track_selection(
     args.push(selected.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","));
 }
 
-fn build_track_order(job: &MuxJobRequest) -> Option<Vec<String>> {
-    if job.video.tracks.is_empty() || (job.audios.is_empty() && job.subtitles.is_empty()) {
-        return None;
-    }
-
-    let source_ids: Vec<String> = job
-        .video
-        .tracks
-        .iter()
-        .enumerate()
-        .filter(|(_, track)| !is_track_removed(track))
-        .map(|(index, track)| format!("0:{}", parse_track_id(track, index)))
-        .collect();
-
-    if source_ids.is_empty() {
-        return None;
-    }
-
-    let last_video_index = job
-        .video
-        .tracks
-        .iter()
-        .enumerate()
-        .filter(|(_, track)| track.track_type == "video")
-        .map(|(index, _)| index as isize)
-        .last()
-        .unwrap_or(-1);
-
-    let mut insertions: Vec<Vec<String>> = vec![Vec::new(); source_ids.len() + 1];
-    let mut file_index = 1usize;
-
-    let mut push_external = |mux_after: Option<&String>, entry: String| {
-        let after_index = if let Some(value) = mux_after {
-            if value == "video" {
-                last_video_index
-            } else if value == "end" {
-                (source_ids.len() as isize) - 1
-            } else if let Some(track_num) = value.strip_prefix("track-") {
-                track_num.parse::<isize>().ok().map(|v| v - 1).unwrap_or(last_video_index)
-            } else {
-                last_video_index
-            }
-        } else {
-            last_video_index
-        };
-
-        let slot = if after_index < 0 {
-            0usize
-        } else {
-            usize::min(after_index as usize + 1, source_ids.len())
-        };
-        insertions[slot].push(entry);
-    };
-
-    for audio in &job.audios {
-        let track_id = audio
-            .track_id
-            .or_else(|| resolve_external_track_id(&audio.path, "Audio"));
-        let track_id = match track_id {
-            Some(id) if id > 0 => id,
-            _ => return None,
-        };
-        let entry = format!("{}:{}", file_index, track_id);
-        push_external(audio.mux_after.as_ref(), entry);
-        file_index += 1;
-    }
-
-    for subtitle in &job.subtitles {
-        let track_id = subtitle
-            .track_id
-            .or_else(|| resolve_external_track_id(&subtitle.path, "Text"));
-        let track_id = match track_id {
-            Some(id) if id > 0 => id,
-            _ => return None,
-        };
-        let entry = format!("{}:{}", file_index, track_id);
-        push_external(subtitle.mux_after.as_ref(), entry);
-        file_index += 1;
-    }
-
-    let mut order = Vec::new();
-    if !insertions[0].is_empty() {
-        order.extend(insertions[0].iter().cloned());
-    }
-    for (index, source) in source_ids.iter().enumerate() {
-        order.push(source.clone());
-        if !insertions[index + 1].is_empty() {
-            order.extend(insertions[index + 1].iter().cloned());
-        }
-    }
-
-    Some(order)
-}
-
 fn build_mkvpropedit_args(job: &MuxJobRequest) -> Vec<String> {
     let mut args = Vec::new();
     
@@ -1284,27 +1186,6 @@ fn build_mkvpropedit_args(job: &MuxJobRequest) -> Vec<String> {
     }
     
     args
-}
-
-fn has_external_audio(job: &MuxJobRequest) -> bool {
-    job.audios.iter().any(|audio| !audio.path.trim().is_empty())
-}
-
-fn has_external_subtitles(job: &MuxJobRequest) -> bool {
-    job.subtitles
-        .iter()
-        .any(|subtitle| !subtitle.path.trim().is_empty())
-}
-
-fn resolve_external_track_id_or_default(
-    path: &str,
-    track_type: &str,
-    provided: Option<u64>,
-) -> Option<u64> {
-    if let Some(id) = provided {
-        return Some(id);
-    }
-    resolve_external_track_id(path, track_type)
 }
 
 fn quote_arg(arg: &str) -> String {
@@ -1415,6 +1296,9 @@ fn build_mkvmerge_command(
     }
     if settings.discard_old_attachments {
         args.push("--no-attachments".to_string());
+    }
+    if settings.remove_global_tags {
+        args.push("--no-global-tags".to_string());
     }
 
     let external_audio_present = !resolved_external_audios.is_empty();

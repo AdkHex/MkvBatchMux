@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { X, RefreshCw, FolderOpen, Film, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,7 +47,8 @@ interface VideosTabProps {
   preset?: Preset | null;
 }
 
-function formatFileSize(bytes: number): string {
+function formatFileSize(bytes?: number): string {
+  if (!Number.isFinite(bytes)) return "—";
   const gb = bytes / 1073741824;
   return gb.toFixed(2) + " GB";
 }
@@ -74,11 +75,19 @@ export function VideosTab({
   const [showScanOverlay, setShowScanOverlay] = useState(false);
   const [editingFile, setEditingFile] = useState<VideoFile | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const scanTokenRef = useRef(0);
+  const scanAbortRef = useRef(false);
 
-  const handleDoubleClick = (file: VideoFile) => {
+  const updateFiles = (next: VideoFile[]) => {
+    startTransition(() => {
+      onFilesChange(next);
+    });
+  };
+
+  const handleDoubleClick = useCallback((file: VideoFile) => {
     setEditingFile(file);
     setIsEditDialogOpen(true);
-  };
+  }, []);
 
   useEffect(() => {
     if (files.length === 0) {
@@ -114,7 +123,7 @@ export function VideosTab({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [files]);
 
-  const handleRowClick = (event: React.MouseEvent, index: number, fileId: string) => {
+  const handleRowClick = useCallback((event: React.MouseEvent, index: number, fileId: string) => {
     const isToggle = event.metaKey || event.ctrlKey;
     const isRange = event.shiftKey;
     if (isRange && lastSelectedIndex !== null) {
@@ -148,7 +157,7 @@ export function VideosTab({
     setSelectedFileIds([fileId]);
     setSelectedFileId(fileId);
     setLastSelectedIndex(index);
-  };
+  }, [files, lastSelectedIndex, selectedFileId]);
 
   const handleSaveFile = (updatedFile: VideoFile) => {
     onFilesChange(files.map((f) => (f.id === updatedFile.id ? updatedFile : f)));
@@ -169,11 +178,21 @@ export function VideosTab({
     }
   }, [preset]);
 
+  const cancelScan = () => {
+    scanAbortRef.current = true;
+    setIsScanning(false);
+    setShowScanOverlay(false);
+  };
+
   const scanVideos = async (folderPath: string) => {
     if (!folderPath) {
+      cancelScan();
       onFilesChange([]);
       return;
     }
+    scanAbortRef.current = false;
+    scanTokenRef.current += 1;
+    const scanToken = scanTokenRef.current;
     setIsScanning(true);
     setShowScanOverlay(true);
     setScanProgress({ current: 0, total: 0 });
@@ -191,14 +210,16 @@ export function VideosTab({
         const ext = file.path.split(".").pop()?.toLowerCase();
         return ext ? normalizedExtensions.has(ext) : false;
       });
-      onFilesChange(currentFiles);
+      if (scanAbortRef.current || scanTokenRef.current !== scanToken) return;
+      updateFiles(currentFiles);
 
       const paths = currentFiles.map((file) => file.path);
       setScanProgress({ current: 0, total: paths.length });
 
-      const batchSize = 4;
+      const batchSize = 8;
       let processed = 0;
       for (let i = 0; i < paths.length; i += batchSize) {
+        if (scanAbortRef.current || scanTokenRef.current !== scanToken) return;
         const batch = paths.slice(i, i + batchSize);
         const inspected = (await inspectPaths({
           paths: batch,
@@ -206,19 +227,22 @@ export function VideosTab({
           include_tracks: true,
         })) as VideoFile[];
 
+        if (scanAbortRef.current || scanTokenRef.current !== scanToken) return;
         const byPath = new Map(currentFiles.map((file) => [file.path, file]));
         for (const item of inspected) {
           byPath.set(item.path, item);
         }
         currentFiles = Array.from(byPath.values());
-        onFilesChange(currentFiles);
+        updateFiles(currentFiles);
 
         processed += inspected.length;
         setScanProgress({ current: processed, total: paths.length });
       }
     } finally {
-      setIsScanning(false);
-      setShowScanOverlay(false);
+      if (scanTokenRef.current === scanToken) {
+        setIsScanning(false);
+        setShowScanOverlay(false);
+      }
     }
   };
 
@@ -230,7 +254,7 @@ export function VideosTab({
 
   return (
     <PageLayout>
-      {showScanOverlay && scanProgress.total > 0 && (
+      {showScanOverlay && (
         <div className="fluent-loading-overlay">
           <div className="fluent-loading-card">
             <div className="fluent-loading-header">
@@ -241,7 +265,7 @@ export function VideosTab({
               <button
                 type="button"
                 className="fluent-loading-close"
-                onClick={() => setShowScanOverlay(false)}
+                onClick={cancelScan}
                 aria-label="Close"
               >
                 <X className="w-4 h-4" />
@@ -249,7 +273,7 @@ export function VideosTab({
             </div>
             <div className="fluent-loading-body">
               <div className="fluent-spinner" />
-              <div className="fluent-loading-text">
+            <div className="fluent-loading-text">
                 {scanProgress.total > 0
                   ? `${Math.min(scanProgress.current, scanProgress.total)}/${scanProgress.total} files loaded`
                   : "Scanning videos..."}
@@ -291,6 +315,7 @@ export function VideosTab({
             <IconButton
               className="bg-destructive/10 text-destructive hover:bg-destructive/20"
               onClick={() => {
+                cancelScan();
                 onSourceFolderChange("");
                 onFilesChange([]);
               }}
@@ -376,7 +401,9 @@ export function VideosTab({
                 }
                 title={isScanning && !showScanOverlay ? "Scanning videos..." : "No video files found"}
                 description={
-                  isScanning && !showScanOverlay ? "Loading video metadata" : "Add a source folder to load videos"
+                  isScanning && !showScanOverlay
+                    ? "Loading video metadata"
+                    : "Click the folder icon above or drag & drop files here"
                 }
               />
             ) : (

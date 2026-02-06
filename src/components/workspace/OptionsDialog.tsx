@@ -195,7 +195,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
       bodyClassName="p-0"
       footerRight={
         <>
-          <Button variant="ghost" className="h-9 px-4 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" className="h-9 px-4 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button
@@ -320,6 +320,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                 id="ask-preset"
                 checked={askForPreset}
                 onCheckedChange={(checked) => setAskForPreset(checked as boolean)}
+                className="h-3.5 w-7"
               />
               <label htmlFor="ask-preset" className="text-xs text-muted-foreground cursor-pointer">
                 Ask on startup

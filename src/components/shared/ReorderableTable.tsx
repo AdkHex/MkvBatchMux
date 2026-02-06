@@ -18,20 +18,26 @@ interface ReorderableRowProps extends React.HTMLAttributes<HTMLDivElement> {
   dropTarget?: boolean;
 }
 
-export function ReorderableRow({ className, selected, dragging, dropTarget, ...props }: ReorderableRowProps) {
+export const ReorderableRow = React.memo(function ReorderableRow({
+  className,
+  selected,
+  dragging,
+  dropTarget,
+  ...props
+}: ReorderableRowProps) {
   return (
     <DataTableRow
       className={cn(
         "select-none",
         selected && "is-selected",
-        dragging && "opacity-60",
+        dragging && "is-dragging",
         dropTarget && "reorder-drop-indicator",
         className,
       )}
       {...props}
     />
   );
-}
+});
 
 export function ReorderHandle({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("reorder-handle", className)} {...props} />;

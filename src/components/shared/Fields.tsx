@@ -30,11 +30,11 @@ export const DropdownContent = React.forwardRef<
 DropdownContent.displayName = "DropdownContent";
 
 export function Toggle({ className, ...props }: React.ComponentProps<typeof Switch>) {
-  return <Switch className={cn("data-[state=checked]:bg-primary", className)} {...props} />;
+  return <Switch className={cn("data-[state=checked]:bg-primary/70", className)} {...props} />;
 }
 
 export function CheckboxField({ className, ...props }: React.ComponentProps<typeof Checkbox>) {
-  return <Checkbox className={cn("border-input data-[state=checked]:bg-primary data-[state=checked]:border-primary", className)} {...props} />;
+  return <Checkbox className={cn("border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:border-primary", className)} {...props} />;
 }
 
 export function Radio({ className, ...props }: React.ComponentProps<typeof RadioGroup>) {

@@ -678,7 +678,7 @@ export function SubtitlesTab({
                   <FileText className="w-6 h-6 text-muted-foreground/50" />
                 </div>
                 <p className="text-muted-foreground text-sm">No subtitle files</p>
-                <p className="text-muted-foreground/60 text-xs mt-1">Add source folder</p>
+                <p className="text-muted-foreground/60 text-xs mt-1">Click the folder icon above or drag & drop files here</p>
               </div>
             ) : (
               subtitleFiles.map((file, index) => (

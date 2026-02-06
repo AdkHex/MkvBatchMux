@@ -35,7 +35,7 @@ export function SidebarNav({ items, activeId, collapsed, onSelect, onToggleColla
                 key={item.id}
                 onClick={() => onSelect(item.id)}
                 className={cn(
-                  "fluent-sidebar-item",
+                  "fluent-sidebar-item border border-transparent",
                   collapsed ? "justify-center px-0" : "px-3",
                   isActive && "is-active",
                 )}
