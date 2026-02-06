@@ -117,6 +117,7 @@ export function SubtitlesTab({
     isForced: false,
     muxAfter: "audio",
     applyDelayToAll: false,
+    includedTrackIds: [] as number[],
   });
 
   const currentConfig = subtitleTrackConfigs[activeSubtitleTrack] || defaultTrackConfig;
@@ -228,7 +229,7 @@ export function SubtitlesTab({
       extensions,
       recursive: true,
       type: 'subtitle',
-      include_tracks: false,
+      include_tracks: true,
     });
     const normalized = (results as ExternalFile[]).map((file, index) => ({
       ...file,
@@ -239,6 +240,10 @@ export function SubtitlesTab({
       isDefault: currentConfig.isDefault,
       isForced: currentConfig.isForced,
       muxAfter: currentConfig.muxAfter,
+      includedTrackIds:
+        file.tracks && file.tracks.length > 0
+          ? file.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
+          : file.includedTrackIds,
     }));
     onSubtitleFilesChange(syncSubtitleLinks(normalized));
   }, [currentConfig, onSubtitleFilesChange, syncSubtitleLinks]);
@@ -317,6 +322,10 @@ export function SubtitlesTab({
   const openEditDialog = (fileId: string) => {
     const file = subtitleFiles.find((entry) => entry.id === fileId);
     if (!file) return;
+    const defaultIncluded =
+      file.tracks && file.tracks.length > 0
+        ? file.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
+        : [];
     setEditingFileId(fileId);
     setEditForm({
       trackName: file.trackName || "",
@@ -326,6 +335,7 @@ export function SubtitlesTab({
       isForced: file.isForced || false,
       muxAfter: file.muxAfter || "audio",
       applyDelayToAll: false,
+      includedTrackIds: file.includedTrackIds?.length ? file.includedTrackIds : defaultIncluded,
     });
     setEditDialogOpen(true);
   };
@@ -343,6 +353,7 @@ export function SubtitlesTab({
           isDefault: editForm.isDefault,
           isForced: editForm.isForced,
           muxAfter: editForm.muxAfter,
+          includedTrackIds: editForm.includedTrackIds,
         };
       }
       if (editForm.applyDelayToAll) {
@@ -632,43 +643,41 @@ export function SubtitlesTab({
 
         {/* Subtitle Files Card */}
         <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
-          <div className="px-4 py-2.5 bg-panel-header/70 border-b border-panel-border/30">
-            <div className="flex items-center justify-between">
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Subtitle Files</h4>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() =>
-                    selectedSubtitleIndex !== null && reorderSubtitleFile(selectedSubtitleIndex, selectedSubtitleIndex - 1)
-                  }
-                  disabled={selectedSubtitleIndex === null || selectedSubtitleIndex === 0}
-                >
-                  <ChevronUp className="w-3.5 h-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() =>
-                    selectedSubtitleIndex !== null && reorderSubtitleFile(selectedSubtitleIndex, selectedSubtitleIndex + 1)
-                  }
-                  disabled={selectedSubtitleIndex === null || selectedSubtitleIndex === subtitleFiles.length - 1}
-                >
-                  <ChevronDown className="w-3.5 h-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => selectedSubtitleIndex !== null && duplicateSubtitleFile(selectedSubtitleIndex)}
-                  disabled={selectedSubtitleIndex === null}
-                >
-                  <Copy className="w-3 h-3 mr-1" />
-                  Duplicate
-                </Button>
-              </div>
+          <div className="px-4 h-10 bg-panel-header/70 border-b border-panel-border/30 flex items-center justify-between">
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Subtitle Files</h4>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() =>
+                  selectedSubtitleIndex !== null && reorderSubtitleFile(selectedSubtitleIndex, selectedSubtitleIndex - 1)
+                }
+                disabled={selectedSubtitleIndex === null || selectedSubtitleIndex === 0}
+              >
+                <ChevronUp className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() =>
+                  selectedSubtitleIndex !== null && reorderSubtitleFile(selectedSubtitleIndex, selectedSubtitleIndex + 1)
+                }
+                disabled={selectedSubtitleIndex === null || selectedSubtitleIndex === subtitleFiles.length - 1}
+              >
+                <ChevronDown className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => selectedSubtitleIndex !== null && duplicateSubtitleFile(selectedSubtitleIndex)}
+                disabled={selectedSubtitleIndex === null}
+              >
+                <Copy className="w-3 h-3 mr-1" />
+                Duplicate
+              </Button>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
@@ -701,10 +710,15 @@ export function SubtitlesTab({
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     <GripVertical className="w-4 h-4 text-muted-foreground/50 hover:text-muted-foreground cursor-grab active:cursor-grabbing shrink-0" />
-                    <span className="text-muted-foreground">{index + 1}</span>
-                    <span className="text-foreground/80 truncate">{file.name}</span>
+                <span className="text-muted-foreground tabular-nums">{index + 1}</span>
+                <span className="text-foreground/80 truncate">{file.name}</span>
                   </div>
                   <div className="flex items-center gap-1">
+                    {file.tracks && file.tracks.length > 1 && (
+                      <span className="text-[10px] font-medium tracking-wide text-muted-foreground/80 px-2 py-0.5 rounded-md border border-panel-border/60 bg-panel-header/50">
+                        {file.tracks.length} tracks
+                      </span>
+                    )}
                     <Button
                       variant="ghost"
                       size="icon"
@@ -855,6 +869,76 @@ export function SubtitlesTab({
               </div>
             </div>
           </div>
+
+          {editingFile?.tracks && editingFile.tracks.length > 1 && (
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Included Tracks
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={() =>
+                      setEditForm((prev) => ({
+                        ...prev,
+                        includedTrackIds: editingFile.tracks
+                          ? editingFile.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
+                          : prev.includedTrackIds,
+                      }))
+                    }
+                  >
+                    Include All
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    onClick={() => setEditForm((prev) => ({ ...prev, includedTrackIds: [] }))}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {editingFile.tracks.map((track, index) => {
+                  const trackId = Number(track.id);
+                  const checked = editForm.includedTrackIds.includes(trackId);
+                  return (
+                    <div key={track.id} className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(value) => {
+                            const next = new Set(editForm.includedTrackIds);
+                            if (value) {
+                              if (!Number.isNaN(trackId)) next.add(trackId);
+                            } else {
+                              next.delete(trackId);
+                            }
+                            setEditForm((prev) => ({ ...prev, includedTrackIds: Array.from(next) }));
+                          }}
+                        />
+                        <div className="text-sm text-foreground truncate">
+                          Track {index + 1}
+                          {track.language ? ` • ${track.language}` : ""}
+                          {track.name ? ` • ${track.name}` : ""}
+                        </div>
+                      </div>
+                      {track.isDefault && (
+                        <span className="text-[10px] uppercase tracking-wide text-primary/80">Default</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="text-[11px] text-muted-foreground/70">
+                When Default is enabled for this file, the first included track becomes default and the rest are set to no.
+              </div>
+            </div>
+          )}
         </div>
       </BaseModal>
 

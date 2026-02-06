@@ -110,6 +110,12 @@ export function AudiosTab({
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkSelectedVideoIds, setBulkSelectedVideoIds] = useState<string[]>([]);
+  const [bulkSelectedAudioIds, setBulkSelectedAudioIds] = useState<string[]>([]);
+  const [bulkIncludeMode, setBulkIncludeMode] = useState<"all" | "first">("all");
+  const [bulkFirstCount, setBulkFirstCount] = useState("2");
+  const [bulkReplaceExisting, setBulkReplaceExisting] = useState(false);
   const [editForm, setEditForm] = useState({
     trackName: "",
     language: "und",
@@ -118,10 +124,15 @@ export function AudiosTab({
     isForced: false,
     muxAfter: "video",
     applyDelayToAll: false,
+    includedTrackIds: [] as number[],
   });
 
   const currentConfig = audioTrackConfigs[activeAudioTrack] || defaultTrackConfig;
   const editingFile = audioFiles.find((file) => file.id === editingFileId) || null;
+  const createExternalId = () =>
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   const muxAfterOptions = useMemo(() => {
     const primaryTracks = videoFiles[0]?.tracks || [];
@@ -264,6 +275,10 @@ export function AudiosTab({
   const openEditDialog = (fileId: string) => {
     const file = audioFiles.find((entry) => entry.id === fileId);
     if (!file) return;
+    const defaultIncluded =
+      file.tracks && file.tracks.length > 0
+        ? file.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
+        : [];
     setEditingFileId(fileId);
     setEditForm({
       trackName: file.trackName || "",
@@ -273,6 +288,7 @@ export function AudiosTab({
       isForced: file.isForced || false,
       muxAfter: file.muxAfter || "video",
       applyDelayToAll: false,
+      includedTrackIds: file.includedTrackIds?.length ? file.includedTrackIds : defaultIncluded,
     });
     setEditDialogOpen(true);
   };
@@ -290,6 +306,7 @@ export function AudiosTab({
           isDefault: editForm.isDefault,
           isForced: editForm.isForced,
           muxAfter: editForm.muxAfter,
+          includedTrackIds: editForm.includedTrackIds,
         };
       }
       if (editForm.applyDelayToAll) {
@@ -300,6 +317,80 @@ export function AudiosTab({
     onAudioFilesChange(updated);
     setEditDialogOpen(false);
     setEditingFileId(null);
+  };
+
+  const applyBulkMapping = () => {
+    if (bulkSelectedVideoIds.length === 0 || bulkSelectedAudioIds.length === 0) {
+      toast({
+        title: "Bulk Apply",
+        description: "Select at least one video and one audio file.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const firstCount = Math.max(1, Math.floor(Number(bulkFirstCount) || 1));
+    const selectedAudio = audioFiles.filter((file) => bulkSelectedAudioIds.includes(file.id));
+    if (selectedAudio.length === 0) {
+      toast({
+        title: "Bulk Apply",
+        description: "Selected audio files are not available.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const remaining = bulkReplaceExisting
+      ? audioFiles.filter((file) => !bulkSelectedVideoIds.includes(file.matchedVideoId || ""))
+      : [...audioFiles];
+
+    const nextFiles = bulkSelectedVideoIds.reduce<ExternalFile[]>((acc, videoId) => {
+      selectedAudio.forEach((file) => {
+        const available =
+          file.tracks && file.tracks.length > 0
+            ? file.tracks.map((track) => Number(track.id)).filter((id) => Number.isFinite(id))
+            : file.includedTrackIds || [];
+        let includedTrackIds: number[] | undefined;
+        if (bulkIncludeMode === "first" && available.length > 0) {
+          includedTrackIds = available.slice(0, Math.min(firstCount, available.length));
+        } else if (bulkIncludeMode === "all" && available.length > 0) {
+          includedTrackIds = available;
+        }
+
+        const existingIndex = remaining.findIndex(
+          (entry) => entry.matchedVideoId === videoId && entry.path === file.path,
+        );
+        if (existingIndex !== -1) {
+          const existing = remaining[existingIndex];
+          remaining[existingIndex] = {
+            ...existing,
+            includedTrackIds,
+            trackName: file.trackName ?? existing.trackName,
+            language: file.language ?? existing.language,
+            delay: file.delay ?? existing.delay,
+            isDefault: file.isDefault ?? existing.isDefault,
+            isForced: file.isForced ?? existing.isForced,
+            muxAfter: file.muxAfter ?? existing.muxAfter,
+            tracks: file.tracks ?? existing.tracks,
+          };
+        } else {
+          acc.push({
+            ...file,
+            id: createExternalId(),
+            matchedVideoId: videoId,
+            includedTrackIds,
+          });
+        }
+      });
+      return acc;
+    }, []);
+
+    onAudioFilesChange([...remaining, ...nextFiles]);
+    setBulkOpen(false);
+    toast({
+      title: "Bulk Apply Complete",
+      description: `Applied ${selectedAudio.length} audio file(s) to ${bulkSelectedVideoIds.length} video(s).`,
+    });
   };
 
   const linkAudioToVideo = () => {
@@ -342,7 +433,7 @@ export function AudiosTab({
       extensions,
       recursive: true,
       type: 'audio',
-      include_tracks: false,
+      include_tracks: true,
     });
     const normalized = (results as ExternalFile[]).map((file, index) => ({
       ...file,
@@ -353,6 +444,10 @@ export function AudiosTab({
       isDefault: currentConfig.isDefault,
       isForced: currentConfig.isForced,
       muxAfter: currentConfig.muxAfter,
+      includedTrackIds:
+        file.tracks && file.tracks.length > 0
+          ? file.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
+          : file.includedTrackIds,
     }));
     onAudioFilesChange(syncAudioLinks(normalized));
   }, [currentConfig, onAudioFilesChange, syncAudioLinks]);
@@ -595,7 +690,7 @@ export function AudiosTab({
       <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
         {/* Video Files Card */}
         <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
-          <div className="px-4 py-2.5 bg-panel-header/70 border-b border-panel-border/30">
+          <div className="px-4 h-10 bg-panel-header/70 border-b border-panel-border/30 flex items-center justify-between">
             <div className="flex items-center gap-2">
               {canLinkSelection ? (
                 <Button
@@ -622,8 +717,8 @@ export function AudiosTab({
                     : "hover:bg-accent/30"
                 )}
               >
-                <span className="text-muted-foreground mr-2">{index + 1}</span>
-                <span className="text-foreground/80">{file.name}</span>
+                <span className="text-muted-foreground mr-2 tabular-nums">{index + 1}</span>
+                <span className="text-foreground/80 truncate">{file.name}</span>
               </div>
             ))}
           </div>
@@ -631,43 +726,54 @@ export function AudiosTab({
 
         {/* Audio Files Card */}
         <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
-          <div className="px-4 py-2.5 bg-panel-header/70 border-b border-panel-border/30">
-            <div className="flex items-center justify-between">
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Audio Files</h4>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() =>
-                    selectedAudioIndex !== null && reorderAudioFile(selectedAudioIndex, selectedAudioIndex - 1)
-                  }
-                  disabled={selectedAudioIndex === null || selectedAudioIndex === 0}
-                >
-                  <ChevronUp className="w-3.5 h-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() =>
-                    selectedAudioIndex !== null && reorderAudioFile(selectedAudioIndex, selectedAudioIndex + 1)
-                  }
-                  disabled={selectedAudioIndex === null || selectedAudioIndex === audioFiles.length - 1}
-                >
-                  <ChevronDown className="w-3.5 h-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => selectedAudioIndex !== null && duplicateAudioFile(selectedAudioIndex)}
-                  disabled={selectedAudioIndex === null}
-                >
-                  <Copy className="w-3 h-3 mr-1" />
-                  Duplicate
-                </Button>
-              </div>
+          <div className="px-4 h-10 bg-panel-header/70 border-b border-panel-border/30 flex items-center justify-between">
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Audio Files</h4>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() =>
+                  selectedAudioIndex !== null && reorderAudioFile(selectedAudioIndex, selectedAudioIndex - 1)
+                }
+                disabled={selectedAudioIndex === null || selectedAudioIndex === 0}
+              >
+                <ChevronUp className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() =>
+                  selectedAudioIndex !== null && reorderAudioFile(selectedAudioIndex, selectedAudioIndex + 1)
+                }
+                disabled={selectedAudioIndex === null || selectedAudioIndex === audioFiles.length - 1}
+              >
+                <ChevronDown className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => selectedAudioIndex !== null && duplicateAudioFile(selectedAudioIndex)}
+                disabled={selectedAudioIndex === null}
+              >
+                <Copy className="w-3 h-3 mr-1" />
+                Duplicate
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => {
+                  setBulkSelectedVideoIds(videoFiles.map((file) => file.id));
+                  setBulkSelectedAudioIds(audioFiles.map((file) => file.id));
+                  setBulkOpen(true);
+                }}
+                disabled={videoFiles.length === 0 || audioFiles.length === 0}
+              >
+                Bulk Apply
+              </Button>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
@@ -704,6 +810,11 @@ export function AudiosTab({
                     <span className="text-foreground/80 truncate">{file.name}</span>
                   </div>
                   <div className="flex items-center gap-1">
+                    {file.tracks && file.tracks.length > 1 && (
+                      <span className="text-[10px] font-medium tracking-wide text-muted-foreground/80 px-2 py-0.5 rounded-md border border-panel-border/60 bg-panel-header/50">
+                        {file.tracks.length} tracks
+                      </span>
+                    )}
                     <Button
                       variant="ghost"
                       size="icon"
@@ -744,6 +855,109 @@ export function AudiosTab({
           </div>
         </div>
       </div>
+
+      <BaseModal
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        title="Bulk Apply Audio Files"
+        subtitle="Apply selected audio files to selected videos with a track subset."
+        icon={<AudioLines className="w-5 h-5 text-primary" />}
+        className="max-w-2xl"
+        bodyClassName="px-5 py-4"
+        footerRight={
+          <>
+            <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setBulkOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={applyBulkMapping}>Apply</Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-2 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Videos</div>
+              <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                {videoFiles.map((file) => {
+                  const checked = bulkSelectedVideoIds.includes(file.id);
+                  return (
+                    <label key={file.id} className="flex items-center gap-2 text-xs text-foreground/80 cursor-pointer">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(value) => {
+                          setBulkSelectedVideoIds((prev) =>
+                            value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
+                          );
+                        }}
+                      />
+                      <span className="truncate">{file.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-2 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Audio Files</div>
+              <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                {audioFiles.map((file) => {
+                  const checked = bulkSelectedAudioIds.includes(file.id);
+                  const trackCount = file.tracks?.length || file.includedTrackIds?.length || 0;
+                  return (
+                    <label key={file.id} className="flex items-center gap-2 text-xs text-foreground/80 cursor-pointer">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(value) => {
+                          setBulkSelectedAudioIds((prev) =>
+                            value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
+                          );
+                        }}
+                      />
+                      <span className="truncate">{file.name}</span>
+                      {trackCount > 1 && (
+                        <span className="ml-auto text-[10px] text-muted-foreground/70">{trackCount} tracks</span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-2 space-y-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Track Subset</div>
+            <div className="flex items-center gap-4 text-xs">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Checkbox
+                  checked={bulkIncludeMode === "all"}
+                  onCheckedChange={(value) => value && setBulkIncludeMode("all")}
+                />
+                All tracks
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Checkbox
+                  checked={bulkIncludeMode === "first"}
+                  onCheckedChange={(value) => value && setBulkIncludeMode("first")}
+                />
+                First
+                <Input
+                  value={bulkFirstCount}
+                  onChange={(event) => setBulkFirstCount(event.target.value)}
+                  className="h-7 w-12 text-center font-mono"
+                />
+                tracks
+              </label>
+            </div>
+          </div>
+          <div className="flex items-center justify-between rounded-md border border-panel-border/50 bg-panel-header/30 px-3 py-2">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+              <Checkbox
+                checked={bulkReplaceExisting}
+                onCheckedChange={(value) => setBulkReplaceExisting(value as boolean)}
+              />
+              Replace existing bulk audio mappings for selected videos
+            </label>
+          </div>
+        </div>
+      </BaseModal>
 
       <BaseModal
         open={editDialogOpen}
@@ -877,6 +1091,76 @@ export function AudiosTab({
               </div>
             </div>
           </div>
+
+          {editingFile?.tracks && editingFile.tracks.length > 1 && (
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Included Tracks
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={() =>
+                      setEditForm((prev) => ({
+                        ...prev,
+                        includedTrackIds: editingFile.tracks
+                          ? editingFile.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
+                          : prev.includedTrackIds,
+                      }))
+                    }
+                  >
+                    Include All
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    onClick={() => setEditForm((prev) => ({ ...prev, includedTrackIds: [] }))}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {editingFile.tracks.map((track, index) => {
+                  const trackId = Number(track.id);
+                  const checked = editForm.includedTrackIds.includes(trackId);
+                  return (
+                    <div key={track.id} className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(value) => {
+                            const next = new Set(editForm.includedTrackIds);
+                            if (value) {
+                              if (!Number.isNaN(trackId)) next.add(trackId);
+                            } else {
+                              next.delete(trackId);
+                            }
+                            setEditForm((prev) => ({ ...prev, includedTrackIds: Array.from(next) }));
+                          }}
+                        />
+                        <div className="text-sm text-foreground truncate">
+                          Track {index + 1}
+                          {track.language ? ` • ${track.language}` : ""}
+                          {track.name ? ` • ${track.name}` : ""}
+                        </div>
+                      </div>
+                      {track.isDefault && (
+                        <span className="text-[10px] uppercase tracking-wide text-primary/80">Default</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="text-[11px] text-muted-foreground/70">
+                When Default is enabled for this file, the first included track becomes default and the rest are set to no.
+              </div>
+            </div>
+          )}
         </div>
       </BaseModal>
 

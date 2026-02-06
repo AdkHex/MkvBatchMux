@@ -41,6 +41,8 @@ export interface ExternalFile {
   bitrate?: number;
   duration?: string;
   trackId?: number;
+  tracks?: Track[];
+  includedTrackIds?: number[];
   muxAfter?: string;
 }
 

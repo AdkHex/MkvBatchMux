@@ -797,13 +797,17 @@ const Index = () => {
         const inspected = await inspectPaths({
           paths,
           type,
-          include_tracks: false,
+          include_tracks: true,
         });
         const byPath = new Map(
           (inspected as ExternalFile[]).map((item) => [item.path, item]),
         );
         const newEntries = paths.map((path) => {
           const info = byPath.get(path);
+          const defaultIncluded =
+            info?.tracks && info.tracks.length > 0
+              ? info.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
+              : [];
           return {
             id: createExternalId(),
             name: path.split(/[\\/]/).pop() || path,
@@ -820,6 +824,8 @@ const Index = () => {
             bitrate: info?.bitrate,
             duration: info?.duration,
             trackId: info?.trackId,
+            tracks: info?.tracks,
+            includedTrackIds: info?.includedTrackIds?.length ? info.includedTrackIds : defaultIncluded,
           };
         });
         setPerVideoExternal((prev) => {

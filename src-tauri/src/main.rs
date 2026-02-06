@@ -156,6 +156,12 @@ struct ExternalFileInfo {
     duration: Option<String>,
     #[serde(rename = "trackId")]
     track_id: Option<u64>,
+    #[serde(default)]
+    tracks: Vec<TrackInfo>,
+    #[serde(rename = "includedTrackIds", default)]
+    included_track_ids: Option<Vec<u64>>,
+    #[serde(skip)]
+    apply_language: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -718,6 +724,47 @@ fn parse_external_track_id_mkvmerge(mkvmerge: &serde_json::Value, track_type: &s
     None
 }
 
+fn parse_external_track_ids_mkvmerge(mkvmerge: &serde_json::Value, track_type: &str) -> Vec<u64> {
+    let mut ids = Vec::new();
+    let Some(tracks) = mkvmerge.get("tracks").and_then(|v| v.as_array()) else {
+        return ids;
+    };
+    for track in tracks {
+        let mkv_type = match track.get("type").and_then(|v| v.as_str()) {
+            Some(value) => value,
+            None => continue,
+        };
+        let mapped = match mkv_type {
+            "audio" => "Audio",
+            "subtitles" => "Text",
+            "video" => "Video",
+            _ => "Unknown",
+        };
+        if mapped != track_type {
+            continue;
+        }
+        let id = track.get("id").and_then(|id_val| {
+            if let Some(v) = id_val.as_u64() {
+                return Some(v);
+            }
+            if let Some(v) = id_val.as_i64() {
+                return Some(v as u64);
+            }
+            if let Some(v) = id_val.as_str() {
+                let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+                if let Ok(parsed) = digits.parse::<u64>() {
+                    return Some(parsed);
+                }
+            }
+            None
+        });
+        if let Some(id) = id {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
 fn generate_id(prefix: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let timestamp = SystemTime::now()
@@ -875,6 +922,24 @@ fn build_file_info(path: &Path, file_type: &str, include_tracks: bool) -> Result
             (None, None, track_id)
         };
 
+        let mut tracks = if include_tracks {
+            if let Some(info) = mkvmerge_info.as_ref() {
+                parse_mkvmerge_tracks(info)
+            } else if let Some(mi) = mediainfo.as_ref() {
+                parse_tracks(mi)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        if normalized_file_type == "audio" {
+            tracks.retain(|t| t.track_type == "audio");
+        } else if normalized_file_type == "subtitle" {
+            tracks.retain(|t| t.track_type == "subtitle");
+        }
+
         let external = ExternalFileInfo {
             id,
             name,
@@ -892,6 +957,9 @@ fn build_file_info(path: &Path, file_type: &str, include_tracks: bool) -> Result
             bitrate,
             duration,
             track_id,
+            tracks,
+            included_track_ids: None,
+            apply_language: true,
         };
         serde_json::to_value(external).map_err(|e| format!("Serialize error for {:?}: {e}", path))
     }
@@ -1281,14 +1349,76 @@ fn build_mkvmerge_command(
 
     let mut resolved_external_audios: Vec<(ExternalFileInfo, u64)> = Vec::new();
     for audio in &job.audios {
-        let resolved_id = audio.track_id.unwrap_or(0);
-        resolved_external_audios.push((audio.clone(), resolved_id));
+        let mut resolved_ids: Vec<u64> = Vec::new();
+        if let Some(ids) = &audio.included_track_ids {
+            if ids.is_empty() {
+                continue;
+            }
+            resolved_ids = ids.clone();
+        } else if let Some(mkvmerge) = get_mkvmerge_info(Path::new(&audio.path)) {
+            let ids = parse_external_track_ids_mkvmerge(&mkvmerge, "Audio");
+            if ids.len() > 1 {
+                resolved_ids = ids;
+            } else if let Some(id) = audio.track_id {
+                resolved_ids.push(id);
+            } else {
+                resolved_ids = ids;
+            }
+        } else if let Some(id) = audio.track_id {
+            resolved_ids.push(id);
+        }
+
+        if resolved_ids.is_empty() {
+            resolved_ids.push(0);
+        }
+
+        let set_default_on_first = audio.is_default.unwrap_or(false);
+        for (index, track_id) in resolved_ids.iter().enumerate() {
+            let mut cloned = audio.clone();
+            cloned.track_id = Some(*track_id);
+            if set_default_on_first {
+                cloned.is_default = Some(index == 0);
+            }
+            cloned.apply_language = index == 0;
+            resolved_external_audios.push((cloned, *track_id));
+        }
     }
 
     let mut resolved_external_subtitles: Vec<(ExternalFileInfo, u64)> = Vec::new();
     for subtitle in &job.subtitles {
-        let resolved_id = subtitle.track_id.unwrap_or(0);
-        resolved_external_subtitles.push((subtitle.clone(), resolved_id));
+        let mut resolved_ids: Vec<u64> = Vec::new();
+        if let Some(ids) = &subtitle.included_track_ids {
+            if ids.is_empty() {
+                continue;
+            }
+            resolved_ids = ids.clone();
+        } else if let Some(mkvmerge) = get_mkvmerge_info(Path::new(&subtitle.path)) {
+            let ids = parse_external_track_ids_mkvmerge(&mkvmerge, "Text");
+            if ids.len() > 1 {
+                resolved_ids = ids;
+            } else if let Some(id) = subtitle.track_id {
+                resolved_ids.push(id);
+            } else {
+                resolved_ids = ids;
+            }
+        } else if let Some(id) = subtitle.track_id {
+            resolved_ids.push(id);
+        }
+
+        if resolved_ids.is_empty() {
+            resolved_ids.push(0);
+        }
+
+        let set_default_on_first = subtitle.is_default.unwrap_or(false);
+        for (index, track_id) in resolved_ids.iter().enumerate() {
+            let mut cloned = subtitle.clone();
+            cloned.track_id = Some(*track_id);
+            if set_default_on_first {
+                cloned.is_default = Some(index == 0);
+            }
+            cloned.apply_language = index == 0;
+            resolved_external_subtitles.push((cloned, *track_id));
+        }
     }
 
     if settings.discard_old_chapters {
@@ -1494,9 +1624,11 @@ fn build_mkvmerge_command(
         args.push("--no-subtitles".to_string());
         args.push("--audio-tracks".to_string());
         args.push(track_id.to_string());
-        if let Some(language) = &audio.language {
-            args.push("--language".to_string());
-            args.push(format!("{}:{}", track_id, language));
+        if audio.apply_language {
+            if let Some(language) = &audio.language {
+                args.push("--language".to_string());
+                args.push(format!("{}:{}", track_id, language));
+            }
         }
         if let Some(name) = &audio.track_name {
             if !name.trim().is_empty() {
@@ -1523,9 +1655,11 @@ fn build_mkvmerge_command(
         args.push("--no-audio".to_string());
         args.push("--subtitle-tracks".to_string());
         args.push(track_id.to_string());
-        if let Some(language) = &subtitle.language {
-            args.push("--language".to_string());
-            args.push(format!("{}:{}", track_id, language));
+        if subtitle.apply_language {
+            if let Some(language) = &subtitle.language {
+                args.push("--language".to_string());
+                args.push(format!("{}:{}", track_id, language));
+            }
         }
         if let Some(name) = &subtitle.track_name {
             if !name.trim().is_empty() {
