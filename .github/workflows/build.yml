@@ -79,24 +79,26 @@ jobs:
         run: npm run tauri:build -- --bundles msi
 
       - name: Inspect bundle output
-        shell: bash
+        shell: powershell
         run: |
-          echo "== src-tauri/target/release =="
-          ls -la src-tauri/target/release || true
-          echo "== src-tauri/target/release/bundle =="
-          ls -la src-tauri/target/release/bundle || true
+          Write-Host "== src-tauri/target/release =="
+          Get-ChildItem -Force -ErrorAction SilentlyContinue "src-tauri/target/release"
+          Write-Host "== src-tauri/target/release/bundle =="
+          Get-ChildItem -Force -ErrorAction SilentlyContinue "src-tauri/target/release/bundle"
 
       - name: Collect bundles
-        shell: bash
+        shell: powershell
         run: |
-          mkdir -p artifacts
-          if [ -d "src-tauri/target" ]; then
-            find src-tauri/target -type f \( -name "*.msi" -o -name "*.exe" \) -print -exec cp -v "{}" artifacts/ \;
-          fi
-          if [ -z "$(ls -A artifacts 2>/dev/null)" ]; then
-            echo "No bundle files found (.msi/.exe)."
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $msi = Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Filter "*.msi" -ErrorAction SilentlyContinue
+          $exe = Get-ChildItem -Path "src-tauri/target/release" -Filter "*.exe" -ErrorAction SilentlyContinue
+          if ($msi) { $msi | Copy-Item -Destination artifacts -Force }
+          if ($exe) { $exe | Copy-Item -Destination artifacts -Force }
+          $count = (Get-ChildItem -Path artifacts -ErrorAction SilentlyContinue | Measure-Object).Count
+          if ($count -eq 0) {
+            Write-Error "No Windows installer (.msi) or app (.exe) found in build output."
             exit 1
-          fi
+          }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
