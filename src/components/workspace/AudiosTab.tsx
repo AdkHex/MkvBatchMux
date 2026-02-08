@@ -110,12 +110,24 @@ export function AudiosTab({
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
+  const audioFilesCache = useRef<Record<string, ExternalFile[]>>({});
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkSelectedVideoIds, setBulkSelectedVideoIds] = useState<string[]>([]);
   const [bulkSelectedAudioIds, setBulkSelectedAudioIds] = useState<string[]>([]);
   const [bulkIncludeMode, setBulkIncludeMode] = useState<"all" | "first">("all");
   const [bulkFirstCount, setBulkFirstCount] = useState("2");
   const [bulkReplaceExisting, setBulkReplaceExisting] = useState(false);
+  const [trackEditOpen, setTrackEditOpen] = useState(false);
+  const [trackEditTarget, setTrackEditTarget] = useState<{
+    fileId: string;
+    trackId: number;
+    trackType: "audio" | "subtitle";
+  } | null>(null);
+  const [trackEditForm, setTrackEditForm] = useState({
+    language: "und",
+    delay: "0.000",
+    trackName: "",
+  });
   const [editForm, setEditForm] = useState({
     trackName: "",
     language: "und",
@@ -125,6 +137,8 @@ export function AudiosTab({
     muxAfter: "video",
     applyDelayToAll: false,
     includedTrackIds: [] as number[],
+    includeSubtitles: false,
+    includedSubtitleTrackIds: [] as number[],
   });
 
   const currentConfig = audioTrackConfigs[activeAudioTrack] || defaultTrackConfig;
@@ -150,18 +164,44 @@ export function AudiosTab({
     return options;
   }, [videoFiles]);
 
+  const getAudioTrackIds = (file: ExternalFile) =>
+    file.tracks
+      ? file.tracks
+          .filter((track) => track.type === "audio")
+          .map((track) => Number(track.id))
+          .filter((id) => Number.isFinite(id))
+      : [];
+
+  const getSubtitleTrackIds = (file: ExternalFile) =>
+    file.tracks
+      ? file.tracks
+          .filter((track) => track.type === "subtitle")
+          .map((track) => Number(track.id))
+          .filter((id) => Number.isFinite(id))
+      : [];
+
   const updateCurrentConfig = (updates: Partial<TrackConfig>) => {
     updateAudioTrackConfig(activeAudioTrack, updates);
   };
 
-  const applyCurrentConfigToFiles = () => {
-    if (audioFiles.length === 0) {
-      toast({
-        title: "No audio files",
-        description: "Add audio files to apply settings.",
-      });
-      return;
-    }
+  const lastAppliedConfig = useRef<TrackConfig | null>(null);
+
+  useEffect(() => {
+    if (audioFiles.length === 0) return;
+    const prev = lastAppliedConfig.current;
+    const same =
+      prev &&
+      prev.sourceFolder === currentConfig.sourceFolder &&
+      prev.extension === currentConfig.extension &&
+      prev.language === currentConfig.language &&
+      prev.trackName === currentConfig.trackName &&
+      prev.delay === currentConfig.delay &&
+      prev.isDefault === currentConfig.isDefault &&
+      prev.isForced === currentConfig.isForced &&
+      prev.muxAfter === currentConfig.muxAfter;
+    if (same) return;
+
+    lastAppliedConfig.current = { ...currentConfig };
     const delayValue = Number(currentConfig.delay) || 0;
     const updatedFiles = audioFiles.map((file) => ({
       ...file,
@@ -173,18 +213,24 @@ export function AudiosTab({
       muxAfter: currentConfig.muxAfter,
     }));
     onAudioFilesChange(updatedFiles);
-    toast({
-      title: "Audio settings applied",
-      description: "Track settings applied to all audio files.",
-    });
-  };
+  }, [audioFiles, currentConfig, onAudioFilesChange]);
+
+  useEffect(() => {
+    audioFilesCache.current[activeAudioTrack] = audioFiles;
+  }, [audioFiles, activeAudioTrack]);
+
+  useEffect(() => {
+    const cached = audioFilesCache.current[activeAudioTrack];
+    if (!cached || cached === audioFiles) return;
+    if (cached.length === audioFiles.length) return;
+    onAudioFilesChange(cached);
+  }, [activeAudioTrack, audioFiles, onAudioFilesChange]);
 
   const addNewTrack = useCallback(() => {
     const newTrackNumber = (audioTracks.length + 1).toString();
     setAudioTracks([...audioTracks, newTrackNumber]);
     updateAudioTrackConfig(newTrackNumber, { ...defaultTrackConfig });
     setActiveAudioTrack(newTrackNumber);
-    onAudioFilesChange([]);
     setSelectedAudioIndex(null);
     setSelectedVideoIndex(null);
     toast({
@@ -277,7 +323,7 @@ export function AudiosTab({
     if (!file) return;
     const defaultIncluded =
       file.tracks && file.tracks.length > 0
-        ? file.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
+        ? getAudioTrackIds(file)
         : [];
     setEditingFileId(fileId);
     setEditForm({
@@ -289,6 +335,9 @@ export function AudiosTab({
       muxAfter: file.muxAfter || "video",
       applyDelayToAll: false,
       includedTrackIds: file.includedTrackIds?.length ? file.includedTrackIds : defaultIncluded,
+      includeSubtitles: file.includeSubtitles || false,
+      includedSubtitleTrackIds:
+        file.includedSubtitleTrackIds?.length ? file.includedSubtitleTrackIds : getSubtitleTrackIds(file),
     });
     setEditDialogOpen(true);
   };
@@ -307,6 +356,9 @@ export function AudiosTab({
           isForced: editForm.isForced,
           muxAfter: editForm.muxAfter,
           includedTrackIds: editForm.includedTrackIds,
+          includeSubtitles: editForm.includeSubtitles,
+          includedSubtitleTrackIds: editForm.includedSubtitleTrackIds,
+          trackOverrides: file.trackOverrides,
         };
       }
       if (editForm.applyDelayToAll) {
@@ -317,6 +369,49 @@ export function AudiosTab({
     onAudioFilesChange(updated);
     setEditDialogOpen(false);
     setEditingFileId(null);
+  };
+
+  const openTrackEdit = (fileId: string, trackId: number, trackType: "audio" | "subtitle") => {
+    const file = audioFiles.find((entry) => entry.id === fileId);
+    if (!file) return;
+    const track = file.tracks?.find((t) => Number(t.id) === trackId);
+    const overrides = file.trackOverrides?.[trackId] || {};
+    setTrackEditTarget({ fileId, trackId, trackType });
+    setTrackEditForm({
+      language: overrides.language || track?.language || "und",
+      delay: (overrides.delay ?? 0).toFixed(3),
+      trackName: overrides.trackName || track?.name || "",
+    });
+    setTrackEditOpen(true);
+  };
+
+  const applyTrackEdit = () => {
+    if (!trackEditTarget) return;
+    setTrackEditOpen(false);
+    setTrackEditTarget(null);
+  };
+
+  const updateTrackOverride = (updates: { language?: string; delay?: string; trackName?: string }) => {
+    if (!trackEditTarget) return;
+    const { fileId, trackId } = trackEditTarget;
+    const nextDelay =
+      updates.delay !== undefined ? Number(updates.delay) || 0 : Number(trackEditForm.delay) || 0;
+    const nextLanguage =
+      updates.language !== undefined ? updates.language : trackEditForm.language;
+    const nextName =
+      updates.trackName !== undefined ? updates.trackName : trackEditForm.trackName;
+
+    const updated = audioFiles.map((file) => {
+      if (file.id !== fileId) return file;
+      const nextOverrides = { ...(file.trackOverrides || {}) };
+      nextOverrides[trackId] = {
+        language: nextLanguage || undefined,
+        delay: nextDelay,
+        trackName: nextName || undefined,
+      };
+      return { ...file, trackOverrides: nextOverrides };
+    });
+    onAudioFilesChange(updated);
   };
 
   const applyBulkMapping = () => {
@@ -444,9 +539,15 @@ export function AudiosTab({
       isDefault: currentConfig.isDefault,
       isForced: currentConfig.isForced,
       muxAfter: currentConfig.muxAfter,
+      includeSubtitles: file.includeSubtitles ?? false,
+      includedSubtitleTrackIds:
+        file.includedSubtitleTrackIds?.length
+          ? file.includedSubtitleTrackIds
+          : getSubtitleTrackIds(file),
+      trackOverrides: file.trackOverrides ?? {},
       includedTrackIds:
         file.tracks && file.tracks.length > 0
-          ? file.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
+          ? getAudioTrackIds(file)
           : file.includedTrackIds,
     }));
     onAudioFilesChange(syncAudioLinks(normalized));
@@ -493,7 +594,7 @@ export function AudiosTab({
       {/* Track Selector Card */}
       <div className="fluent-surface p-4 min-h-[56px]">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-12 pl-4">
             <Select value={activeAudioTrack} onValueChange={setActiveAudioTrack}>
               <SelectTrigger className="w-32 h-9 bg-secondary text-secondary-foreground border border-panel-border font-medium">
                 <SelectValue />
@@ -515,7 +616,7 @@ export function AudiosTab({
               </Button>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 mr-3">
             <Button
               variant="outline"
               size="sm"
@@ -589,7 +690,7 @@ export function AudiosTab({
         </div>
 
         {/* Settings Grid */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-[1.1fr_1.1fr_1.2fr] gap-4">
           <div className="flex items-center gap-2">
             <label className="text-[13px] text-muted-foreground">Extension</label>
             <Select value={currentConfig.extension} onValueChange={(v) => updateCurrentConfig({ extension: v })}>
@@ -626,10 +727,13 @@ export function AudiosTab({
             />
           </div>
 
-          <div className="flex items-center gap-2">
+        </div>
+
+        <div className="flex flex-wrap items-center gap-6 pt-1">
+          <div className="flex items-center gap-2 min-w-[220px]">
             <label className="text-[13px] text-muted-foreground">Mux After</label>
             <Select value={currentConfig.muxAfter} onValueChange={(v) => updateCurrentConfig({ muxAfter: v })}>
-              <SelectTrigger className="h-9 flex-1">
+              <SelectTrigger className="h-9 w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -641,10 +745,7 @@ export function AudiosTab({
               </SelectContent>
             </Select>
           </div>
-        </div>
 
-        {/* Flags Row */}
-        <div className="flex items-center justify-between gap-4 pt-1">
           <div className="flex items-center gap-2">
             <label className="text-[13px] text-muted-foreground">Delay</label>
             <Input
@@ -652,37 +753,27 @@ export function AudiosTab({
               onChange={(e) => updateCurrentConfig({ delay: e.target.value })}
               className="h-9 w-24 text-center font-mono"
             />
-            <span className="text-[13px] text-muted-foreground">sec</span>
+            <span className="text-[12px] text-muted-foreground">sec</span>
           </div>
 
-          <div className="h-5 w-px bg-border" />
-
-          <div className="flex items-center gap-2">
-            <Checkbox 
-              id="audio-default" 
-              checked={currentConfig.isDefault}
-              onCheckedChange={(checked) => updateCurrentConfig({ isDefault: checked as boolean })}
-            />
-            <label htmlFor="audio-default" className="text-[13px] cursor-pointer">Default</label>
+          <div className="grid grid-cols-2 gap-14 pl-3">
+            <div className="flex items-center gap-2 min-w-[120px]">
+              <Checkbox
+                id="audio-default"
+                checked={currentConfig.isDefault}
+                onCheckedChange={(checked) => updateCurrentConfig({ isDefault: checked as boolean })}
+              />
+              <label htmlFor="audio-default" className="text-[12px] cursor-pointer">Default</label>
+            </div>
+            <div className="flex items-center gap-2 min-w-[120px]">
+              <Checkbox
+                id="audio-forced"
+                checked={currentConfig.isForced}
+                onCheckedChange={(checked) => updateCurrentConfig({ isForced: checked as boolean })}
+              />
+              <label htmlFor="audio-forced" className="text-[12px] cursor-pointer">Forced</label>
+            </div>
           </div>
-
-          <div className="flex items-center gap-2">
-            <Checkbox 
-              id="audio-forced"
-              checked={currentConfig.isForced}
-              onCheckedChange={(checked) => updateCurrentConfig({ isForced: checked as boolean })}
-            />
-            <label htmlFor="audio-forced" className="text-[13px] cursor-pointer">Forced</label>
-          </div>
-
-          <Button
-            variant="default"
-            size="sm"
-            className="h-8 px-4 text-xs"
-            onClick={applyCurrentConfigToFiles}
-          >
-            Apply
-          </Button>
         </div>
       </div>
 
@@ -814,6 +905,35 @@ export function AudiosTab({
                       <span className="text-[10px] font-medium tracking-wide text-muted-foreground/80 px-2 py-0.5 rounded-md border border-panel-border/60 bg-panel-header/50">
                         {file.tracks.length} tracks
                       </span>
+                    )}
+                    {file.tracks && file.tracks.some((track) => track.type === "subtitle") && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className={cn(
+                          "h-7 px-2 text-[10px] uppercase tracking-wide",
+                          file.includeSubtitles
+                            ? "text-primary border border-primary/40 bg-primary/10"
+                            : "text-muted-foreground border border-panel-border/50"
+                        )}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          const subtitleIds = getSubtitleTrackIds(file);
+                          const nextInclude = !file.includeSubtitles;
+                          const updated = audioFiles.map((entry) =>
+                            entry.id === file.id
+                              ? {
+                                  ...entry,
+                                  includeSubtitles: nextInclude,
+                                  includedSubtitleTrackIds: subtitleIds.length ? subtitleIds : entry.includedSubtitleTrackIds,
+                                }
+                              : entry,
+                          );
+                          onAudioFilesChange(updated);
+                        }}
+                      >
+                        Subs {getSubtitleTrackIds(file).length}
+                      </Button>
                     )}
                     <Button
                       variant="ghost"
@@ -1092,75 +1212,240 @@ export function AudiosTab({
             </div>
           </div>
 
-          {editingFile?.tracks && editingFile.tracks.length > 1 && (
-            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Included Tracks
+          {editingFile?.tracks && editingFile.tracks.length > 0 && (
+            <>
+              <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Included Audio Tracks
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() =>
+                        setEditForm((prev) => ({
+                          ...prev,
+                          includedTrackIds: getAudioTrackIds(editingFile),
+                        }))
+                      }
+                    >
+                      Copy All
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                      onClick={() => setEditForm((prev) => ({ ...prev, includedTrackIds: [] }))}
+                    >
+                      Uncopy All
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-[11px]"
-                    onClick={() =>
-                      setEditForm((prev) => ({
-                        ...prev,
-                        includedTrackIds: editingFile.tracks
-                          ? editingFile.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
-                          : prev.includedTrackIds,
-                      }))
-                    }
-                  >
-                    Include All
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-                    onClick={() => setEditForm((prev) => ({ ...prev, includedTrackIds: [] }))}
-                  >
-                    Clear
-                  </Button>
-                </div>
-              </div>
-              <div className="space-y-2">
-                {editingFile.tracks.map((track, index) => {
-                  const trackId = Number(track.id);
-                  const checked = editForm.includedTrackIds.includes(trackId);
-                  return (
-                    <div key={track.id} className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(value) => {
-                            const next = new Set(editForm.includedTrackIds);
-                            if (value) {
-                              if (!Number.isNaN(trackId)) next.add(trackId);
-                            } else {
-                              next.delete(trackId);
-                            }
-                            setEditForm((prev) => ({ ...prev, includedTrackIds: Array.from(next) }));
-                          }}
-                        />
-                        <div className="text-sm text-foreground truncate">
-                          Track {index + 1}
-                          {track.language ? ` • ${track.language}` : ""}
-                          {track.name ? ` • ${track.name}` : ""}
+                <div className="space-y-2">
+                  {editingFile.tracks
+                    .filter((track) => track.type === "audio")
+                    .map((track, index) => {
+                      const trackId = Number(track.id);
+                      const checked = editForm.includedTrackIds.includes(trackId);
+                      return (
+                        <div key={track.id} className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={(value) => {
+                                const next = new Set(editForm.includedTrackIds);
+                                if (value) {
+                                  if (!Number.isNaN(trackId)) next.add(trackId);
+                                } else {
+                                  next.delete(trackId);
+                                }
+                                setEditForm((prev) => ({ ...prev, includedTrackIds: Array.from(next) }));
+                              }}
+                            />
+                            <div className="text-sm text-foreground truncate">
+                              Track {index + 1}
+                              {track.language ? ` • ${track.language}` : ""}
+                              {track.name ? ` • ${track.name}` : ""}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {track.isDefault && (
+                              <span className="text-[10px] uppercase tracking-wide text-primary/80">Default</span>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                              onClick={() => openTrackEdit(editingFile.id, trackId, "audio")}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
                         </div>
-                      </div>
-                      {track.isDefault && (
-                        <span className="text-[10px] uppercase tracking-wide text-primary/80">Default</span>
-                      )}
+                      );
+                    })}
+                </div>
+                <div className="text-[11px] text-muted-foreground/70">
+                  When Default is enabled for this file, the first included track becomes default and the rest are set to no.
+                </div>
+              </div>
+
+              {editingFile.tracks.some((track) => track.type === "subtitle") && (
+                <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Included Subtitle Tracks
                     </div>
-                  );
-                })}
-              </div>
-              <div className="text-[11px] text-muted-foreground/70">
-                When Default is enabled for this file, the first included track becomes default and the rest are set to no.
-              </div>
-            </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            includeSubtitles: true,
+                            includedSubtitleTrackIds: getSubtitleTrackIds(editingFile),
+                          }))
+                        }
+                      >
+                        Copy All
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                        onClick={() =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            includeSubtitles: false,
+                            includedSubtitleTrackIds: [],
+                          }))
+                        }
+                      >
+                        Uncopy All
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Checkbox
+                      checked={editForm.includeSubtitles}
+                      onCheckedChange={(value) =>
+                        setEditForm((prev) => ({
+                          ...prev,
+                          includeSubtitles: value as boolean,
+                          includedSubtitleTrackIds: value
+                            ? getSubtitleTrackIds(editingFile)
+                            : [],
+                        }))
+                      }
+                    />
+                    Include subtitle tracks from this file
+                  </div>
+                  <div className="space-y-2">
+                    {editingFile.tracks
+                      .filter((track) => track.type === "subtitle")
+                      .map((track, index) => {
+                        const trackId = Number(track.id);
+                        const checked = editForm.includedSubtitleTrackIds.includes(trackId);
+                        return (
+                          <div key={track.id} className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={(value) => {
+                                  const next = new Set(editForm.includedSubtitleTrackIds);
+                                  if (value) {
+                                    if (!Number.isNaN(trackId)) next.add(trackId);
+                                  } else {
+                                    next.delete(trackId);
+                                  }
+                                  setEditForm((prev) => ({
+                                    ...prev,
+                                    includeSubtitles: true,
+                                    includedSubtitleTrackIds: Array.from(next),
+                                  }));
+                                }}
+                              />
+                              <div className="text-sm text-foreground truncate">
+                                Track {index + 1}
+                                {track.language ? ` • ${track.language}` : ""}
+                                {track.name ? ` • ${track.name}` : ""}
+                              </div>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                              onClick={() => openTrackEdit(editingFile.id, trackId, "subtitle")}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+            </>
           )}
+        </div>
+      </BaseModal>
+
+      <BaseModal
+        open={trackEditOpen}
+        onOpenChange={setTrackEditOpen}
+        title="Edit Track Settings"
+        subtitle={trackEditTarget ? `Track ${trackEditTarget.trackId}` : "Track settings"}
+        icon={<Pencil className="w-5 h-5 text-primary" />}
+        className="max-w-md"
+        footerRight={
+          <>
+            <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setTrackEditOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={applyTrackEdit}>Save</Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Language</label>
+            <LanguageSelect
+              value={trackEditForm.language}
+              onChange={(value) => {
+                setTrackEditForm((prev) => ({ ...prev, language: value }));
+                updateTrackOverride({ language: value });
+              }}
+              className="h-9"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Track Name</label>
+            <Input
+              value={trackEditForm.trackName}
+              onChange={(event) => {
+                const value = event.target.value;
+                setTrackEditForm((prev) => ({ ...prev, trackName: value }));
+                updateTrackOverride({ trackName: value });
+              }}
+              className="h-9"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Delay (sec)</label>
+            <Input
+              value={trackEditForm.delay}
+              onChange={(event) => {
+                const value = event.target.value;
+                setTrackEditForm((prev) => ({ ...prev, delay: value }));
+                updateTrackOverride({ delay: value });
+              }}
+              className="h-9 font-mono"
+            />
+          </div>
         </div>
       </BaseModal>
 

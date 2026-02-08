@@ -43,6 +43,9 @@ export interface ExternalFile {
   trackId?: number;
   tracks?: Track[];
   includedTrackIds?: number[];
+  includeSubtitles?: boolean;
+  includedSubtitleTrackIds?: number[];
+  trackOverrides?: Record<number, { language?: string; delay?: number; trackName?: string }>;
   muxAfter?: string;
 }
 

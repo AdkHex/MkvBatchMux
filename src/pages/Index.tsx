@@ -71,8 +71,8 @@ const Index = () => {
   });
   const [activeTab, setActiveTab] = useState<TabId>("videos");
   const [videoFiles, setVideoFiles] = useState<VideoFile[]>([]);
-  const [subtitleFiles, setSubtitleFiles] = useState<ExternalFile[]>([]);
-  const [audioFiles, setAudioFiles] = useState<ExternalFile[]>([]);
+  const [subtitleFilesByTrack, setSubtitleFilesByTrack] = useState<Record<string, ExternalFile[]>>({});
+  const [audioFilesByTrack, setAudioFilesByTrack] = useState<Record<string, ExternalFile[]>>({});
   const [chapterFiles, setChapterFiles] = useState<ExternalFile[]>([]);
   const [attachmentFiles, setAttachmentFiles] = useState<ExternalFile[]>([]);
   const [perVideoExternal, setPerVideoExternal] = useState<
@@ -87,10 +87,33 @@ const Index = () => {
   const [isModifyTracksOpen, setIsModifyTracksOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [videoSourceFolder, setVideoSourceFolder] = useState("");
+  const activeAudioTrack = useTabState((state) => state.activeAudioTrack);
+  const activeSubtitleTrack = useTabState((state) => state.activeSubtitleTrack);
   const createExternalId = () =>
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const audioFilesCount = useMemo(
+    () => Object.values(audioFilesByTrack).reduce((sum, list) => sum + list.length, 0),
+    [audioFilesByTrack],
+  );
+  const subtitleFilesCount = useMemo(
+    () => Object.values(subtitleFilesByTrack).reduce((sum, list) => sum + list.length, 0),
+    [subtitleFilesByTrack],
+  );
+
+  useEffect(() => {
+    setAudioFilesByTrack((prev) =>
+      prev[activeAudioTrack] ? prev : { ...prev, [activeAudioTrack]: [] },
+    );
+  }, [activeAudioTrack]);
+
+  useEffect(() => {
+    setSubtitleFilesByTrack((prev) =>
+      prev[activeSubtitleTrack] ? prev : { ...prev, [activeSubtitleTrack]: [] },
+    );
+  }, [activeSubtitleTrack]);
 
   const [outputSettings, setOutputSettings] = useState<OutputSettings>({
     directory: "",
@@ -219,16 +242,16 @@ const Index = () => {
     () =>
       [
         videoFiles.length,
-        audioFiles.length,
-        subtitleFiles.length,
+        audioFilesCount,
+        subtitleFilesCount,
         chapterFiles.length,
         attachmentFiles.length,
         Object.keys(perVideoExternal).length,
       ].join("|"),
     [
       videoFiles.length,
-      audioFiles.length,
-      subtitleFiles.length,
+      audioFilesCount,
+      subtitleFilesCount,
       chapterFiles.length,
       attachmentFiles.length,
       perVideoExternal,
@@ -291,15 +314,21 @@ const Index = () => {
       const results = await inspectPaths({
         paths: filtered,
         type,
-        include_tracks: type === "video",
+        include_tracks: type === "video" || type === "audio" || type === "subtitle",
       });
 
       if (type === "video") {
         setVideoFiles((prev) => [...prev, ...(results as VideoFile[])]);
       } else if (type === "subtitle") {
-        setSubtitleFiles((prev) => [...prev, ...(results as ExternalFile[])]);
+        setSubtitleFilesByTrack((prev) => ({
+          ...prev,
+          [activeSubtitleTrack]: [...(prev[activeSubtitleTrack] || []), ...(results as ExternalFile[])],
+        }));
       } else if (type === "audio") {
-        setAudioFiles((prev) => [...prev, ...(results as ExternalFile[])]);
+        setAudioFilesByTrack((prev) => ({
+          ...prev,
+          [activeAudioTrack]: [...(prev[activeAudioTrack] || []), ...(results as ExternalFile[])],
+        }));
       } else if (type === "chapter") {
         setChapterFiles((prev) => [...prev, ...(results as ExternalFile[])]);
       } else {
@@ -309,7 +338,7 @@ const Index = () => {
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [activePreset, activeTab]);
+  }, [activePreset, activeTab, activeAudioTrack, activeSubtitleTrack]);
 
   const handleAddToQueue = () => {
     const newJobs: MuxJob[] = videoFiles
@@ -366,8 +395,10 @@ const Index = () => {
       return map;
     };
 
-    const audioMap = mapByVideoId(audioFiles);
-    const subtitleMap = mapByVideoId(subtitleFiles);
+    const allAudioFiles = Object.values(audioFilesByTrack).flat();
+    const allSubtitleFiles = Object.values(subtitleFilesByTrack).flat();
+    const audioMap = mapByVideoId(allAudioFiles);
+    const subtitleMap = mapByVideoId(allSubtitleFiles);
     const chapterMap = mapByVideoId(chapterFiles);
     const attachmentMap = mapByVideoId(attachmentFiles);
 
@@ -442,7 +473,7 @@ const Index = () => {
         attachments: attachmentMap.get(video.id) || [],
       };
     });
-  }, [audioFiles, attachmentFiles, chapterFiles, subtitleFiles, videoFiles, perVideoExternal]);
+  }, [audioFilesByTrack, attachmentFiles, chapterFiles, subtitleFilesByTrack, videoFiles, perVideoExternal]);
 
   const getJobReport = useCallback(
     (jobId: string) => {
@@ -606,8 +637,8 @@ const Index = () => {
 
   const fastMuxAvailable = useMemo(() => {
     const hasExternal =
-      audioFiles.length > 0 ||
-      subtitleFiles.length > 0 ||
+      audioFilesCount > 0 ||
+      subtitleFilesCount > 0 ||
       chapterFiles.length > 0 ||
       attachmentFiles.length > 0;
     const hasPerVideoExternal = Object.values(perVideoExternal).some(
@@ -623,10 +654,10 @@ const Index = () => {
       Boolean(muxSettings.makeSubtitleDefaultLanguage);
     return !hasExternal && !hasPerVideoExternal && !hasRemovedTracks && !hasLanguageFilters;
   }, [
-    audioFiles.length,
+    audioFilesCount,
     attachmentFiles.length,
     chapterFiles.length,
-    subtitleFiles.length,
+    subtitleFilesCount,
     muxSettings.makeAudioDefaultLanguage,
     muxSettings.makeSubtitleDefaultLanguage,
     muxSettings.onlyKeepAudiosEnabled,
@@ -808,6 +839,13 @@ const Index = () => {
             info?.tracks && info.tracks.length > 0
               ? info.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
               : [];
+          const defaultSubtitleIncluded =
+            info?.tracks && info.tracks.length > 0
+              ? info.tracks
+                  .filter((track) => track.type === "subtitle")
+                  .map((track) => Number(track.id))
+                  .filter((id) => !Number.isNaN(id))
+              : [];
           return {
             id: createExternalId(),
             name: path.split(/[\\/]/).pop() || path,
@@ -826,6 +864,10 @@ const Index = () => {
             trackId: info?.trackId,
             tracks: info?.tracks,
             includedTrackIds: info?.includedTrackIds?.length ? info.includedTrackIds : defaultIncluded,
+            includeSubtitles: info?.includeSubtitles ?? false,
+            includedSubtitleTrackIds:
+              info?.includedSubtitleTrackIds?.length ? info.includedSubtitleTrackIds : defaultSubtitleIncluded,
+            trackOverrides: info?.trackOverrides ?? {},
           };
         });
         setPerVideoExternal((prev) => {
@@ -884,9 +926,14 @@ const Index = () => {
       case "subtitles":
         return (
           <SubtitlesTab
-            subtitleFiles={subtitleFiles}
+            subtitleFiles={subtitleFilesByTrack[activeSubtitleTrack] || []}
             videoFiles={videoFiles}
-            onSubtitleFilesChange={setSubtitleFiles}
+            onSubtitleFilesChange={(files) =>
+              setSubtitleFilesByTrack((prev) => ({
+                ...prev,
+                [activeSubtitleTrack]: files,
+              }))
+            }
             onVideoFilesChange={setVideoFiles}
             onAddTrack={handleNewTrack}
             preset={activePreset}
@@ -895,9 +942,14 @@ const Index = () => {
       case "audios":
         return (
           <AudiosTab
-            audioFiles={audioFiles}
+            audioFiles={audioFilesByTrack[activeAudioTrack] || []}
             videoFiles={videoFiles}
-            onAudioFilesChange={setAudioFiles}
+            onAudioFilesChange={(files) =>
+              setAudioFilesByTrack((prev) => ({
+                ...prev,
+                [activeAudioTrack]: files,
+              }))
+            }
             onVideoFilesChange={setVideoFiles}
             onAddTrack={handleNewTrack}
             preset={activePreset}

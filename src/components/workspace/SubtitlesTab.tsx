@@ -109,6 +109,17 @@ export function SubtitlesTab({
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
+  const subtitleFilesCache = useRef<Record<string, ExternalFile[]>>({});
+  const [trackEditOpen, setTrackEditOpen] = useState(false);
+  const [trackEditTarget, setTrackEditTarget] = useState<{
+    fileId: string;
+    trackId: number;
+  } | null>(null);
+  const [trackEditForm, setTrackEditForm] = useState({
+    language: "und",
+    delay: "0.000",
+    trackName: "",
+  });
   const [editForm, setEditForm] = useState({
     trackName: "",
     language: "und",
@@ -142,14 +153,24 @@ export function SubtitlesTab({
     updateSubtitleTrackConfig(activeSubtitleTrack, updates);
   };
 
-  const applyCurrentConfigToFiles = () => {
-    if (subtitleFiles.length === 0) {
-      toast({
-        title: "No subtitle files",
-        description: "Add subtitle files to apply settings.",
-      });
-      return;
-    }
+  const lastAppliedConfig = useRef<TrackConfig | null>(null);
+
+  useEffect(() => {
+    if (subtitleFiles.length === 0) return;
+    const prev = lastAppliedConfig.current;
+    const same =
+      prev &&
+      prev.sourceFolder === currentConfig.sourceFolder &&
+      prev.extension === currentConfig.extension &&
+      prev.language === currentConfig.language &&
+      prev.trackName === currentConfig.trackName &&
+      prev.delay === currentConfig.delay &&
+      prev.isDefault === currentConfig.isDefault &&
+      prev.isForced === currentConfig.isForced &&
+      prev.muxAfter === currentConfig.muxAfter;
+    if (same) return;
+
+    lastAppliedConfig.current = { ...currentConfig };
     const delayValue = Number(currentConfig.delay) || 0;
     const updatedFiles = subtitleFiles.map((file) => ({
       ...file,
@@ -161,18 +182,24 @@ export function SubtitlesTab({
       muxAfter: currentConfig.muxAfter,
     }));
     onSubtitleFilesChange(updatedFiles);
-    toast({
-      title: "Subtitle settings applied",
-      description: "Track settings applied to all subtitle files.",
-    });
-  };
+  }, [subtitleFiles, currentConfig, onSubtitleFilesChange]);
+
+  useEffect(() => {
+    subtitleFilesCache.current[activeSubtitleTrack] = subtitleFiles;
+  }, [subtitleFiles, activeSubtitleTrack]);
+
+  useEffect(() => {
+    const cached = subtitleFilesCache.current[activeSubtitleTrack];
+    if (!cached || cached === subtitleFiles) return;
+    if (cached.length === subtitleFiles.length) return;
+    onSubtitleFilesChange(cached);
+  }, [activeSubtitleTrack, subtitleFiles, onSubtitleFilesChange]);
 
   const addNewTrack = useCallback(() => {
     const newTrackNumber = (subtitleTracks.length + 1).toString();
     setSubtitleTracks([...subtitleTracks, newTrackNumber]);
     updateSubtitleTrackConfig(newTrackNumber, { ...defaultTrackConfig });
     setActiveSubtitleTrack(newTrackNumber);
-    onSubtitleFilesChange([]);
     setSelectedSubtitleIndex(null);
     setSelectedVideoIndex(null);
     toast({
@@ -240,6 +267,7 @@ export function SubtitlesTab({
       isDefault: currentConfig.isDefault,
       isForced: currentConfig.isForced,
       muxAfter: currentConfig.muxAfter,
+      trackOverrides: file.trackOverrides ?? {},
       includedTrackIds:
         file.tracks && file.tracks.length > 0
           ? file.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
@@ -354,6 +382,7 @@ export function SubtitlesTab({
           isForced: editForm.isForced,
           muxAfter: editForm.muxAfter,
           includedTrackIds: editForm.includedTrackIds,
+          trackOverrides: file.trackOverrides,
         };
       }
       if (editForm.applyDelayToAll) {
@@ -364,6 +393,49 @@ export function SubtitlesTab({
     onSubtitleFilesChange(updated);
     setEditDialogOpen(false);
     setEditingFileId(null);
+  };
+
+  const openTrackEdit = (fileId: string, trackId: number) => {
+    const file = subtitleFiles.find((entry) => entry.id === fileId);
+    if (!file) return;
+    const track = file.tracks?.find((t) => Number(t.id) === trackId);
+    const overrides = file.trackOverrides?.[trackId] || {};
+    setTrackEditTarget({ fileId, trackId });
+    setTrackEditForm({
+      language: overrides.language || track?.language || "und",
+      delay: (overrides.delay ?? 0).toFixed(3),
+      trackName: overrides.trackName || track?.name || "",
+    });
+    setTrackEditOpen(true);
+  };
+
+  const applyTrackEdit = () => {
+    if (!trackEditTarget) return;
+    setTrackEditOpen(false);
+    setTrackEditTarget(null);
+  };
+
+  const updateTrackOverride = (updates: { language?: string; delay?: string; trackName?: string }) => {
+    if (!trackEditTarget) return;
+    const { fileId, trackId } = trackEditTarget;
+    const nextDelay =
+      updates.delay !== undefined ? Number(updates.delay) || 0 : Number(trackEditForm.delay) || 0;
+    const nextLanguage =
+      updates.language !== undefined ? updates.language : trackEditForm.language;
+    const nextName =
+      updates.trackName !== undefined ? updates.trackName : trackEditForm.trackName;
+
+    const updated = subtitleFiles.map((file) => {
+      if (file.id !== fileId) return file;
+      const nextOverrides = { ...(file.trackOverrides || {}) };
+      nextOverrides[trackId] = {
+        language: nextLanguage || undefined,
+        delay: nextDelay,
+        trackName: nextName || undefined,
+      };
+      return { ...file, trackOverrides: nextOverrides };
+    });
+    onSubtitleFilesChange(updated);
   };
 
   const removeSubtitleFile = (index: number) => {
@@ -410,7 +482,7 @@ export function SubtitlesTab({
       {/* Track Selector Card */}
       <div className="fluent-surface p-4 min-h-[56px]">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-12 pl-4">
             <Select value={activeSubtitleTrack} onValueChange={setActiveSubtitleTrack}>
               <SelectTrigger className="w-32 h-9 bg-secondary text-secondary-foreground border border-panel-border font-medium">
                 <SelectValue />
@@ -432,7 +504,7 @@ export function SubtitlesTab({
               </Button>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 mr-3">
             <Button
               variant="outline"
               size="sm"
@@ -506,7 +578,7 @@ export function SubtitlesTab({
         </div>
 
         {/* Settings Grid */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-[1.1fr_1.1fr_1.2fr] gap-4">
           <div className="flex items-center gap-2">
             <label className="text-[13px] text-muted-foreground">Extension</label>
             <Select value={currentConfig.extension} onValueChange={(v) => updateCurrentConfig({ extension: v })}>
@@ -543,10 +615,13 @@ export function SubtitlesTab({
             />
           </div>
 
-          <div className="flex items-center gap-2">
+        </div>
+
+        <div className="flex flex-wrap items-center gap-6 pt-1">
+          <div className="flex items-center gap-2 min-w-[220px]">
             <label className="text-[13px] text-muted-foreground">Mux After</label>
             <Select value={currentConfig.muxAfter} onValueChange={(v) => updateCurrentConfig({ muxAfter: v })}>
-              <SelectTrigger className="h-9 flex-1">
+              <SelectTrigger className="h-9 w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -558,10 +633,7 @@ export function SubtitlesTab({
               </SelectContent>
             </Select>
           </div>
-        </div>
 
-        {/* Flags Row */}
-        <div className="flex items-center justify-between gap-4 pt-1">
           <div className="flex items-center gap-2">
             <label className="text-[13px] text-muted-foreground">Delay</label>
             <Input
@@ -569,37 +641,27 @@ export function SubtitlesTab({
               onChange={(e) => updateCurrentConfig({ delay: e.target.value })}
               className="h-9 w-24 text-center font-mono"
             />
-            <span className="text-[13px] text-muted-foreground">sec</span>
+            <span className="text-[12px] text-muted-foreground">sec</span>
           </div>
 
-          <div className="h-5 w-px bg-border" />
-
-          <div className="flex items-center gap-2">
-            <Checkbox 
-              id="sub-default" 
-              checked={currentConfig.isDefault}
-              onCheckedChange={(checked) => updateCurrentConfig({ isDefault: checked as boolean })}
-            />
-            <label htmlFor="sub-default" className="text-[13px] cursor-pointer">Default</label>
+          <div className="grid grid-cols-2 gap-14 pl-3">
+            <div className="flex items-center gap-2 min-w-[120px]">
+              <Checkbox
+                id="sub-default"
+                checked={currentConfig.isDefault}
+                onCheckedChange={(checked) => updateCurrentConfig({ isDefault: checked as boolean })}
+              />
+              <label htmlFor="sub-default" className="text-[12px] cursor-pointer">Default</label>
+            </div>
+            <div className="flex items-center gap-2 min-w-[120px]">
+              <Checkbox
+                id="sub-forced"
+                checked={currentConfig.isForced}
+                onCheckedChange={(checked) => updateCurrentConfig({ isForced: checked as boolean })}
+              />
+              <label htmlFor="sub-forced" className="text-[12px] cursor-pointer">Forced</label>
+            </div>
           </div>
-
-          <div className="flex items-center gap-2">
-            <Checkbox 
-              id="sub-forced"
-              checked={currentConfig.isForced}
-              onCheckedChange={(checked) => updateCurrentConfig({ isForced: checked as boolean })}
-            />
-            <label htmlFor="sub-forced" className="text-[13px] cursor-pointer">Forced</label>
-          </div>
-
-          <Button
-            variant="default"
-            size="sm"
-            className="h-8 px-4 text-xs"
-            onClick={applyCurrentConfigToFiles}
-          >
-            Apply
-          </Button>
         </div>
       </div>
 
@@ -890,7 +952,7 @@ export function SubtitlesTab({
                       }))
                     }
                   >
-                    Include All
+                    Copy All
                   </Button>
                   <Button
                     variant="ghost"
@@ -898,7 +960,7 @@ export function SubtitlesTab({
                     className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
                     onClick={() => setEditForm((prev) => ({ ...prev, includedTrackIds: [] }))}
                   >
-                    Clear
+                    Uncopy All
                   </Button>
                 </div>
               </div>
@@ -927,9 +989,19 @@ export function SubtitlesTab({
                           {track.name ? ` • ${track.name}` : ""}
                         </div>
                       </div>
-                      {track.isDefault && (
-                        <span className="text-[10px] uppercase tracking-wide text-primary/80">Default</span>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {track.isDefault && (
+                          <span className="text-[10px] uppercase tracking-wide text-primary/80">Default</span>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          onClick={() => openTrackEdit(editingFile.id, trackId)}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
                     </div>
                   );
                 })}
@@ -939,6 +1011,61 @@ export function SubtitlesTab({
               </div>
             </div>
           )}
+        </div>
+      </BaseModal>
+
+      <BaseModal
+        open={trackEditOpen}
+        onOpenChange={setTrackEditOpen}
+        title="Edit Track Settings"
+        subtitle={trackEditTarget ? `Track ${trackEditTarget.trackId}` : "Track settings"}
+        icon={<Pencil className="w-5 h-5 text-primary" />}
+        className="max-w-md"
+        footerRight={
+          <>
+            <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setTrackEditOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={applyTrackEdit}>Save</Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Language</label>
+            <LanguageSelect
+              value={trackEditForm.language}
+              onChange={(value) => {
+                setTrackEditForm((prev) => ({ ...prev, language: value }));
+                updateTrackOverride({ language: value });
+              }}
+              className="h-9"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Track Name</label>
+            <Input
+              value={trackEditForm.trackName}
+              onChange={(event) => {
+                const value = event.target.value;
+                setTrackEditForm((prev) => ({ ...prev, trackName: value }));
+                updateTrackOverride({ trackName: value });
+              }}
+              className="h-9"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Delay (sec)</label>
+            <Input
+              value={trackEditForm.delay}
+              onChange={(event) => {
+                const value = event.target.value;
+                setTrackEditForm((prev) => ({ ...prev, delay: value }));
+                updateTrackOverride({ delay: value });
+              }}
+              className="h-9 font-mono"
+            />
+          </div>
         </div>
       </BaseModal>
 

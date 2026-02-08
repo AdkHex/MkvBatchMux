@@ -160,8 +160,22 @@ struct ExternalFileInfo {
     tracks: Vec<TrackInfo>,
     #[serde(rename = "includedTrackIds", default)]
     included_track_ids: Option<Vec<u64>>,
+    #[serde(rename = "includeSubtitles")]
+    include_subtitles: Option<bool>,
+    #[serde(rename = "includedSubtitleTrackIds", default)]
+    included_subtitle_track_ids: Option<Vec<u64>>,
+    #[serde(rename = "trackOverrides", default)]
+    track_overrides: HashMap<String, TrackOverride>,
     #[serde(skip)]
     apply_language: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct TrackOverride {
+    language: Option<String>,
+    delay: Option<f64>,
+    #[serde(rename = "trackName")]
+    track_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -935,7 +949,7 @@ fn build_file_info(path: &Path, file_type: &str, include_tracks: bool) -> Result
         };
 
         if normalized_file_type == "audio" {
-            tracks.retain(|t| t.track_type == "audio");
+            tracks.retain(|t| t.track_type == "audio" || t.track_type == "subtitle");
         } else if normalized_file_type == "subtitle" {
             tracks.retain(|t| t.track_type == "subtitle");
         }
@@ -959,6 +973,9 @@ fn build_file_info(path: &Path, file_type: &str, include_tracks: bool) -> Result
             track_id,
             tracks,
             included_track_ids: None,
+            include_subtitles: None,
+            included_subtitle_track_ids: None,
+            track_overrides: HashMap::new(),
             apply_language: true,
         };
         serde_json::to_value(external).map_err(|e| format!("Serialize error for {:?}: {e}", path))
@@ -1385,6 +1402,7 @@ fn build_mkvmerge_command(
     }
 
     let mut resolved_external_subtitles: Vec<(ExternalFileInfo, u64)> = Vec::new();
+    let mut resolved_external_subtitles_from_audio: Vec<(ExternalFileInfo, u64)> = Vec::new();
     for subtitle in &job.subtitles {
         let mut resolved_ids: Vec<u64> = Vec::new();
         if let Some(ids) = &subtitle.included_track_ids {
@@ -1421,6 +1439,32 @@ fn build_mkvmerge_command(
         }
     }
 
+    for audio in &job.audios {
+        if audio.include_subtitles != Some(true) {
+            continue;
+        }
+        let mut resolved_ids: Vec<u64> = Vec::new();
+        if let Some(ids) = &audio.included_subtitle_track_ids {
+            if ids.is_empty() {
+                continue;
+            }
+            resolved_ids = ids.clone();
+        } else if let Some(mkvmerge) = get_mkvmerge_info(Path::new(&audio.path)) {
+            resolved_ids = parse_external_track_ids_mkvmerge(&mkvmerge, "Text");
+        }
+        if resolved_ids.is_empty() {
+            continue;
+        }
+        for track_id in resolved_ids.iter() {
+            let mut cloned = audio.clone();
+            cloned.track_id = Some(*track_id);
+            cloned.apply_language = false;
+            cloned.is_default = None;
+            cloned.is_forced = None;
+            resolved_external_subtitles_from_audio.push((cloned, *track_id));
+        }
+    }
+
     if settings.discard_old_chapters {
         args.push("--no-chapters".to_string());
     }
@@ -1432,7 +1476,8 @@ fn build_mkvmerge_command(
     }
 
     let external_audio_present = !resolved_external_audios.is_empty();
-    let external_subtitle_present = !resolved_external_subtitles.is_empty();
+    let external_subtitle_present =
+        !resolved_external_subtitles.is_empty() || !resolved_external_subtitles_from_audio.is_empty();
 
     let external_audio_default = resolved_external_audios
         .iter()
@@ -1598,7 +1643,12 @@ fn build_mkvmerge_command(
 
         let mut bulk_subtitle_entries: Vec<String> = Vec::new();
         let mut per_video_subtitle_entries: Vec<String> = Vec::new();
-        for (subtitle, track_id) in &resolved_external_subtitles {
+        let all_subtitles: Vec<(ExternalFileInfo, u64)> = resolved_external_subtitles
+            .iter()
+            .cloned()
+            .chain(resolved_external_subtitles_from_audio.iter().cloned())
+            .collect();
+        for (subtitle, track_id) in &all_subtitles {
             let entry = format!("{}:{}", file_index, track_id);
             let is_per_video = subtitle.source.as_deref() == Some("per-file");
             if is_per_video {
@@ -1624,19 +1674,27 @@ fn build_mkvmerge_command(
         args.push("--no-subtitles".to_string());
         args.push("--audio-tracks".to_string());
         args.push(track_id.to_string());
-        if audio.apply_language {
-            if let Some(language) = &audio.language {
-                args.push("--language".to_string());
-                args.push(format!("{}:{}", track_id, language));
-            }
+        let override_entry = audio.track_overrides.get(&track_id.to_string());
+        let language = override_entry
+            .and_then(|entry| entry.language.clone())
+            .or_else(|| if audio.apply_language { audio.language.clone() } else { None });
+        if let Some(language) = language {
+            args.push("--language".to_string());
+            args.push(format!("{}:{}", track_id, language));
         }
-        if let Some(name) = &audio.track_name {
+        let track_name = override_entry
+            .and_then(|entry| entry.track_name.clone())
+            .or_else(|| audio.track_name.clone());
+        if let Some(name) = track_name {
             if !name.trim().is_empty() {
                 args.push("--track-name".to_string());
                 args.push(format!("{}:{}", track_id, name));
             }
         }
-        if let Some(delay) = audio.delay {
+        let delay = override_entry
+            .and_then(|entry| entry.delay)
+            .or_else(|| audio.delay);
+        if let Some(delay) = delay {
             args.push("--sync".to_string());
             args.push(format!("{}:{}", track_id, (delay * 1000.0) as i64));
         }
@@ -1650,24 +1708,37 @@ fn build_mkvmerge_command(
         args.push(audio.path.clone());
     }
 
-    for (subtitle, track_id) in &resolved_external_subtitles {
+    let all_subtitles: Vec<(ExternalFileInfo, u64)> = resolved_external_subtitles
+        .iter()
+        .cloned()
+        .chain(resolved_external_subtitles_from_audio.iter().cloned())
+        .collect();
+    for (subtitle, track_id) in &all_subtitles {
         args.push("--no-video".to_string());
         args.push("--no-audio".to_string());
         args.push("--subtitle-tracks".to_string());
         args.push(track_id.to_string());
-        if subtitle.apply_language {
-            if let Some(language) = &subtitle.language {
-                args.push("--language".to_string());
-                args.push(format!("{}:{}", track_id, language));
-            }
+        let override_entry = subtitle.track_overrides.get(&track_id.to_string());
+        let language = override_entry
+            .and_then(|entry| entry.language.clone())
+            .or_else(|| if subtitle.apply_language { subtitle.language.clone() } else { None });
+        if let Some(language) = language {
+            args.push("--language".to_string());
+            args.push(format!("{}:{}", track_id, language));
         }
-        if let Some(name) = &subtitle.track_name {
+        let track_name = override_entry
+            .and_then(|entry| entry.track_name.clone())
+            .or_else(|| subtitle.track_name.clone());
+        if let Some(name) = track_name {
             if !name.trim().is_empty() {
                 args.push("--track-name".to_string());
                 args.push(format!("{}:{}", track_id, name));
             }
         }
-        if let Some(delay) = subtitle.delay {
+        let delay = override_entry
+            .and_then(|entry| entry.delay)
+            .or_else(|| subtitle.delay);
+        if let Some(delay) = delay {
             args.push("--sync".to_string());
             args.push(format!("{}:{}", track_id, (delay * 1000.0) as i64));
         }

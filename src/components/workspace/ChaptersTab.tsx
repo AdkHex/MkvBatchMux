@@ -236,66 +236,68 @@ export function ChaptersTab({
           </div>
         </div>
 
-        {/* Controls Row 2 */}
-        <div className="control-row">
-          <label className="text-sm text-muted-foreground whitespace-nowrap">Chapter Extension:</label>
-          <Select value={extension} onValueChange={(v) => updateChapterTabState({ extension: v })} disabled={!chaptersEnabled}>
-            <SelectTrigger className="w-24 h-8 bg-input border-0 text-sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Formats</SelectItem>
-              {CHAPTER_EXTENSIONS.map((ext) => (
-                <SelectItem key={ext} value={ext}>
-                  {ext.toUpperCase()}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <div className="flex-1" />
-
-          <div className="flex items-center gap-1.5">
-            <Checkbox 
-              id="discard-chapters"
-              checked={discardOldChapters}
-              onCheckedChange={(checked) => {
-                const enabled = checked as boolean;
-                updateChapterTabState({ discardOldChapters: enabled });
-                onMuxSettingsChange({ discardOldChapters: enabled });
-              }}
-              disabled={!chaptersEnabled}
-            />
-            <label htmlFor="discard-chapters" className="text-sm cursor-pointer">Discard Old Chapters</label>
-          </div>
-        </div>
-
-        {/* Delay Configuration */}
-        <div className="control-row">
-          <label className="text-sm text-muted-foreground whitespace-nowrap">Delay</label>
+        {/* Settings Row */}
+        <div className="grid grid-cols-[1.1fr_1fr_1.2fr] gap-4 items-center">
           <div className="flex items-center gap-2">
+            <label className="text-[13px] text-muted-foreground whitespace-nowrap">Chapter Extension</label>
+            <Select
+              value={extension}
+              onValueChange={(v) => updateChapterTabState({ extension: v })}
+              disabled={!chaptersEnabled}
+            >
+              <SelectTrigger className="h-9 w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Formats</SelectItem>
+                {CHAPTER_EXTENSIONS.map((ext) => (
+                  <SelectItem key={ext} value={ext}>
+                    {ext.toUpperCase()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-[13px] text-muted-foreground whitespace-nowrap">Delay</label>
             <Input
               value={chapterDelay}
               onChange={(e) => updateChapterTabState({ delay: e.target.value })}
-              className="app-input h-8 w-28 text-center font-mono"
+              className="h-9 w-28 text-center font-mono"
               disabled={!chaptersEnabled}
             />
-            <span className="text-sm text-muted-foreground">sec</span>
+            <span className="text-[12px] text-muted-foreground">sec</span>
           </div>
-          <div className="flex-1" />
-          <Button
-            variant="default"
-            size="sm"
-            className="h-8 px-4 text-xs"
-            disabled={!chaptersEnabled || chapterFiles.length === 0}
-            onClick={() => {
-              const delayValue = Number(chapterDelay) || 0;
-              const updated = chapterFiles.map((file) => ({ ...file, delay: delayValue }));
-              onChapterFilesChange(updated);
-            }}
-          >
-            Apply
-          </Button>
+
+          <div className="flex items-center justify-end gap-4">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="discard-chapters"
+                checked={discardOldChapters}
+                onCheckedChange={(checked) => {
+                  const enabled = checked as boolean;
+                  updateChapterTabState({ discardOldChapters: enabled });
+                  onMuxSettingsChange({ discardOldChapters: enabled });
+                }}
+                disabled={!chaptersEnabled}
+              />
+              <label htmlFor="discard-chapters" className="text-[13px] cursor-pointer">Discard Old Chapters</label>
+            </div>
+            <Button
+              variant="default"
+              size="sm"
+              className="h-9 px-4 text-xs"
+              disabled={!chaptersEnabled || chapterFiles.length === 0}
+              onClick={() => {
+                const delayValue = Number(chapterDelay) || 0;
+                const updated = chapterFiles.map((file) => ({ ...file, delay: delayValue }));
+                onChapterFilesChange(updated);
+              }}
+            >
+              Apply
+            </Button>
+          </div>
         </div>
       </div>
 
