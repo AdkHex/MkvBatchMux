@@ -66,3 +66,9 @@ Artifacts will be attached to the workflow run.
 
 ## Credits
 - Ionicboy (AdkHexx)
+
+## Screenshots
+![Videos](/Screenshots/VideoTab.png)
+![Audio Tracks](/Screenshots/AudioTab.png)
+![Subtitles](/Screenshots/SubtitleTab.png)
+![Mux Settings](/Screenshots/MuxSettings.png)
