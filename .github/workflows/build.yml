@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-latest, macos-latest]
+        os: [windows-latest]
 
     steps:
       - name: Checkout
@@ -67,18 +67,6 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux deps
-        if: startsWith(matrix.os, 'ubuntu')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev \
-            libwebkit2gtk-4.0-dev \
-            librsvg2-dev \
-            patchelf
-          sudo apt-get install -y --no-install-recommends libappindicator3-dev || \
-          sudo apt-get install -y --no-install-recommends libayatana-appindicator3-dev
-
       - name: Install
         run: npm ci
 
@@ -89,14 +77,6 @@ jobs:
       - name: Build Tauri (Windows MSI)
         if: startsWith(matrix.os, 'windows')
         run: npm run tauri:build -- --bundles msi
-
-      - name: Build Tauri (macOS DMG)
-        if: startsWith(matrix.os, 'macos')
-        run: npm run tauri:build -- --bundles dmg
-
-      - name: Build Tauri (Linux bundles)
-        if: startsWith(matrix.os, 'ubuntu')
-        run: npm run tauri:build -- --bundles deb,appimage
 
       - name: Inspect bundle output
         shell: bash
@@ -111,10 +91,10 @@ jobs:
         run: |
           mkdir -p artifacts
           if [ -d "src-tauri/target" ]; then
-            find src-tauri/target -type f \( -name "*.msi" -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) -print -exec cp -v "{}" artifacts/ \;
+            find src-tauri/target -type f \( -name "*.msi" -o -name "*.exe" \) -print -exec cp -v "{}" artifacts/ \;
           fi
           if [ -z "$(ls -A artifacts 2>/dev/null)" ]; then
-            echo "No bundle files found (.msi/.dmg/.deb/.AppImage)."
+            echo "No bundle files found (.msi/.exe)."
             exit 1
           fi
 
