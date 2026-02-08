@@ -106,3 +106,20 @@ jobs:
           name: tauri-bundles-${{ matrix.os }}
           path: artifacts/**
           if-no-files-found: error
+
+      - name: Read app version
+        id: app_version
+        shell: powershell
+        run: |
+          $json = Get-Content package.json | ConvertFrom-Json
+          "version=$($json.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.app_version.outputs.version }}-build.${{ github.run_number }}
+          name: MKV Batch Muxing Tool v${{ steps.app_version.outputs.version }} (build ${{ github.run_number }})
+          body: |
+            Automated build from commit ${{ github.sha }}.
+            Artifacts: Windows installer (MSI) and/or portable EXE.
+          files: artifacts/**
