@@ -28,7 +28,7 @@
     },
     "bundle": {
       "identifier": "com.ionicboy.mkvbatchmuxingtool",
-      "targets": ["msi"],
+      "targets": ["msi", "dmg", "deb", "appimage"],
       "icon": [
         "../mkv.png",
         "icons/icon.png",
