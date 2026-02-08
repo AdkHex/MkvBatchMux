@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "MKV Batch Muxing Tool",
-    "version": "1.5.0"
+    "version": "1.6.0"
   },
   "tauri": {
     "allowlist": {
@@ -28,7 +28,9 @@
     },
     "bundle": {
       "identifier": "com.ionicboy.mkvbatchmuxingtool",
-      "targets": ["msi"],
+      "targets": [
+        "msi"
+      ],
       "icon": [
         "../mkv.png",
         "icons/icon.png",
