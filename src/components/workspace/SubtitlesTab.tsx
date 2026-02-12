@@ -174,13 +174,17 @@ export function SubtitlesTab({
     lastAppliedConfig.current = { ...currentConfig };
     const delayValue = Number(currentConfig.delay) || 0;
     const updatedFiles = subtitleFiles.map((file) => ({
-      ...file,
-      language: currentConfig.language,
-      trackName: currentConfig.trackName,
-      delay: delayValue,
-      isDefault: currentConfig.isDefault,
-      isForced: currentConfig.isForced,
-      muxAfter: currentConfig.muxAfter,
+      ...(file.isManuallyEdited
+        ? file
+        : {
+            ...file,
+            language: currentConfig.language,
+            trackName: currentConfig.trackName,
+            delay: delayValue,
+            isDefault: currentConfig.isDefault,
+            isForced: currentConfig.isForced,
+            muxAfter: currentConfig.muxAfter,
+          }),
     }));
     onSubtitleFilesChange(updatedFiles);
   }, [subtitleFiles, currentConfig, onSubtitleFilesChange]);
@@ -384,6 +388,7 @@ export function SubtitlesTab({
           muxAfter: editForm.muxAfter,
           includedTrackIds: editForm.includedTrackIds,
           trackOverrides: file.trackOverrides,
+          isManuallyEdited: true,
         };
       }
       if (editForm.applyDelayToAll) {
@@ -434,7 +439,7 @@ export function SubtitlesTab({
         delay: nextDelay,
         trackName: nextName || undefined,
       };
-      return { ...file, trackOverrides: nextOverrides };
+      return { ...file, trackOverrides: nextOverrides, isManuallyEdited: true };
     });
     onSubtitleFilesChange(updated);
   };

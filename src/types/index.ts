@@ -47,6 +47,7 @@ export interface ExternalFile {
   includedSubtitleTrackIds?: number[];
   trackOverrides?: Record<number, { language?: string; delay?: number; trackName?: string }>;
   muxAfter?: string;
+  isManuallyEdited?: boolean;
 }
 
 export interface OutputSettings {

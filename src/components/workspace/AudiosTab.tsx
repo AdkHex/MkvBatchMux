@@ -205,13 +205,17 @@ export function AudiosTab({
     lastAppliedConfig.current = { ...currentConfig };
     const delayValue = Number(currentConfig.delay) || 0;
     const updatedFiles = audioFiles.map((file) => ({
-      ...file,
-      language: currentConfig.language,
-      trackName: currentConfig.trackName,
-      delay: delayValue,
-      isDefault: currentConfig.isDefault,
-      isForced: currentConfig.isForced,
-      muxAfter: currentConfig.muxAfter,
+      ...(file.isManuallyEdited
+        ? file
+        : {
+            ...file,
+            language: currentConfig.language,
+            trackName: currentConfig.trackName,
+            delay: delayValue,
+            isDefault: currentConfig.isDefault,
+            isForced: currentConfig.isForced,
+            muxAfter: currentConfig.muxAfter,
+          }),
     }));
     onAudioFilesChange(updatedFiles);
   }, [audioFiles, currentConfig, onAudioFilesChange]);
@@ -362,6 +366,7 @@ export function AudiosTab({
           includeSubtitles: editForm.includeSubtitles,
           includedSubtitleTrackIds: editForm.includedSubtitleTrackIds,
           trackOverrides: file.trackOverrides,
+          isManuallyEdited: true,
         };
       }
       if (editForm.applyDelayToAll) {
@@ -412,7 +417,7 @@ export function AudiosTab({
         delay: nextDelay,
         trackName: nextName || undefined,
       };
-      return { ...file, trackOverrides: nextOverrides };
+      return { ...file, trackOverrides: nextOverrides, isManuallyEdited: true };
     });
     onAudioFilesChange(updated);
   };
