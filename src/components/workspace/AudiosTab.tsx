@@ -238,7 +238,7 @@ export function AudiosTab({
       title: "Track Added",
       description: `Audio #${newTrackNumber} has been created.`,
     });
-  }, [audioTracks.length]);
+  }, [audioTracks, setActiveAudioTrack, setAudioTracks, updateAudioTrackConfig]);
 
   const duplicateTrack = () => {
     const newTrackNumber = (audioTracks.length + 1).toString();
@@ -335,10 +335,12 @@ export function AudiosTab({
       isForced: file.isForced || false,
       muxAfter: file.muxAfter || "video",
       applyDelayToAll: false,
-      includedTrackIds: file.includedTrackIds?.length ? file.includedTrackIds : defaultIncluded,
+      includedTrackIds: file.includedTrackIds !== undefined ? [...file.includedTrackIds] : defaultIncluded,
       includeSubtitles: file.includeSubtitles || false,
       includedSubtitleTrackIds:
-        file.includedSubtitleTrackIds?.length ? file.includedSubtitleTrackIds : getSubtitleTrackIds(file),
+        file.includedSubtitleTrackIds !== undefined
+          ? [...file.includedSubtitleTrackIds]
+          : getSubtitleTrackIds(file),
     });
     setEditDialogOpen(true);
   };
@@ -496,10 +498,10 @@ export function AudiosTab({
 
   useEffect(() => {
     if (onAddTrack) {
-      (window as any).__audiosAddTrack = addNewTrack;
+      window.__audiosAddTrack = addNewTrack;
     }
     return () => {
-      delete (window as any).__audiosAddTrack;
+      delete window.__audiosAddTrack;
     };
   }, [onAddTrack, addNewTrack]);
 
@@ -781,20 +783,20 @@ export function AudiosTab({
       {/* Matching Panel */}
       <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
         {/* Video Files Card */}
-        <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
-          <div className="table-header px-4 flex items-center justify-between">
+        <div className="panel-card flex flex-col min-h-0 overflow-hidden">
+          <div className="panel-card-header">
             <div className="flex items-center gap-2">
               {canLinkSelection ? (
                 <Button
                   variant="default"
                   size="sm"
-                  className="h-7 px-2 text-[11px]"
+                  className="panel-text-btn"
                   onClick={linkAudioToVideo}
                 >
                   Link
                 </Button>
               ) : null}
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Video Files</h4>
+              <h4 className="panel-card-title">Video Files</h4>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
@@ -807,22 +809,24 @@ export function AudiosTab({
                   selectedVideoIndex === index && "selected",
                 )}
               >
-                <span className="text-muted-foreground mr-2 tabular-nums">{index + 1}</span>
-                <span className="text-foreground/80 truncate">{file.name}</span>
+                <div className="media-row-main">
+                  <span className="media-row-index">{index + 1}</span>
+                  <span className="media-row-name">{file.name}</span>
+                </div>
               </div>
             ))}
           </div>
         </div>
 
         {/* Audio Files Card */}
-        <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
-          <div className="table-header px-4 flex items-center justify-between">
-            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Audio Files</h4>
-            <div className="flex items-center gap-2">
+        <div className="panel-card flex flex-col min-h-0 overflow-hidden">
+          <div className="panel-card-header">
+            <h4 className="panel-card-title">Audio Files</h4>
+            <div className="panel-card-actions">
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
+                className="panel-icon-btn"
                 onClick={() =>
                   selectedAudioIndex !== null && reorderAudioFile(selectedAudioIndex, selectedAudioIndex - 1)
                 }
@@ -833,7 +837,7 @@ export function AudiosTab({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
+                className="panel-icon-btn"
                 onClick={() =>
                   selectedAudioIndex !== null && reorderAudioFile(selectedAudioIndex, selectedAudioIndex + 1)
                 }
@@ -844,7 +848,7 @@ export function AudiosTab({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-7 px-2 text-xs"
+                className="panel-text-btn"
                 onClick={() => selectedAudioIndex !== null && duplicateAudioFile(selectedAudioIndex)}
                 disabled={selectedAudioIndex === null}
               >
@@ -854,7 +858,7 @@ export function AudiosTab({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-7 px-2 text-xs"
+                className="panel-text-btn"
                 onClick={() => {
                   setBulkSelectedVideoIds(videoFiles.map((file) => file.id));
                   setBulkSelectedAudioIds(audioFiles.map((file) => file.id));
@@ -891,14 +895,14 @@ export function AudiosTab({
                     draggedIndex === index && "opacity-60"
                   )}
                 >
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="media-row-main">
                     <GripVertical className="w-4 h-4 text-muted-foreground/50 hover:text-muted-foreground cursor-grab active:cursor-grabbing shrink-0" />
-                    <span className="text-muted-foreground">{index + 1}</span>
-                    <span className="text-foreground/80 truncate">{file.name}</span>
+                    <span className="media-row-index">{index + 1}</span>
+                    <span className="media-row-name">{file.name}</span>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="media-row-actions">
                     {file.tracks && file.tracks.length > 1 && (
-                      <span className="table-chip w-[64px]">
+                      <span className="table-chip">
                         {file.tracks.length} tracks
                       </span>
                     )}
@@ -906,8 +910,8 @@ export function AudiosTab({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className={cn(
-                          "h-7 px-2 text-[10px] uppercase tracking-wide",
+                      className={cn(
+                          "h-7 px-2 text-[10px] uppercase tracking-wide rounded-md",
                           file.includeSubtitles
                             ? "text-primary border border-primary/40 bg-primary/10"
                             : "text-muted-foreground border border-panel-border/50"
@@ -934,7 +938,7 @@ export function AudiosTab({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                      className="panel-icon-btn"
                       onClick={(event) => {
                         event.stopPropagation();
                         removeAudioFile(index);
@@ -945,7 +949,7 @@ export function AudiosTab({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="panel-icon-btn"
                       onClick={(event) => {
                         event.stopPropagation();
                         openEditDialog(file.id);
@@ -956,7 +960,7 @@ export function AudiosTab({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="panel-icon-btn"
                       onClick={(event) => {
                         event.stopPropagation();
                         duplicateAudioFile(index);

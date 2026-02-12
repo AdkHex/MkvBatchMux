@@ -94,9 +94,6 @@ export const ATTACHMENT_EXTENSIONS = [
   "xml",
 ] as const;
 
-/**
- * Get all extensions for a given type
- */
 export function getAllExtensions(type: 'video' | 'audio' | 'subtitle' | 'chapter' | 'attachment'): readonly string[] {
   switch (type) {
     case 'video':
@@ -114,11 +111,8 @@ export function getAllExtensions(type: 'video' | 'audio' | 'subtitle' | 'chapter
   }
 }
 
-/**
- * Check if an extension is valid for a given type
- */
 export function isValidExtension(ext: string, type: 'video' | 'audio' | 'subtitle' | 'chapter' | 'attachment'): boolean {
   const normalized = ext.toLowerCase().replace(/^\./, '');
   const validExtensions = getAllExtensions(type);
-  return validExtensions.includes(normalized as any);
+  return validExtensions.some((item) => item === normalized);
 }

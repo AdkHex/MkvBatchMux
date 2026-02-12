@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronUp, ChevronDown, RotateCcw, Film, Subtitles, Volume2, GripVertical, Trash2, Plus, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -263,7 +263,7 @@ export function VideoFileEditDialog({
   const pointerDragActive = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
 
-  const handleDragEnd = () => {
+  const handleDragEnd = useCallback(() => {
     if (
       dragItem.current !== null &&
       dragOverItem.current !== null &&
@@ -281,7 +281,7 @@ export function VideoFileEditDialog({
     dragOverItem.current = null;
     setDraggedIndex(null);
     setDragOverIndex(null);
-  };
+  }, [setCurrentTracks]);
 
   const startPointerDrag = (event: React.PointerEvent, index: number) => {
     event.preventDefault();
@@ -321,7 +321,7 @@ export function VideoFileEditDialog({
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, []);
+  }, [handleDragEnd]);
 
   const handleApplyChanges = () => {
     if (!videoFile) return;

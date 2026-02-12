@@ -339,12 +339,17 @@ fn should_include_file(path: &Path, allowed_extensions: &[String]) -> bool {
 }
 
 fn hidden_command(program: &str) -> Command {
-    let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        let mut command = Command::new(program);
+        command.creation_flags(CREATE_NO_WINDOW);
+        return command;
     }
-    cmd
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new(program)
+    }
 }
 
 fn mediainfo_available() -> bool {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { X, RefreshCw, FolderOpen, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown, BookOpen, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -98,18 +98,19 @@ export function ChaptersTab({
           matchedVideoId: videoFiles[index]?.id,
         }));
       onChapterFilesChange(normalized);
-    } catch (error) {
-      console.error('Error scanning chapters:', error);
-      // Ensure we always set an empty array on error to prevent UI crashes
+    } catch {
       onChapterFilesChange([]);
     }
   };
 
-  const syncChapterLinks = (files: ExternalFile[]) =>
-    files.map((file, index) => ({
-      ...file,
-      matchedVideoId: videoFiles[index]?.id,
-    }));
+  const syncChapterLinks = useCallback(
+    (files: ExternalFile[]) =>
+      files.map((file, index) => ({
+        ...file,
+        matchedVideoId: videoFiles[index]?.id,
+      })),
+    [videoFiles],
+  );
 
   useEffect(() => {
     if (chapterFiles.length === 0) return;
@@ -117,7 +118,7 @@ export function ChaptersTab({
     if (!isSynced) {
       onChapterFilesChange(syncChapterLinks(chapterFiles));
     }
-  }, [chapterFiles, onChapterFilesChange, videoFiles]);
+  }, [chapterFiles, onChapterFilesChange, syncChapterLinks, videoFiles]);
 
   const reorderChapterFile = (fromIndex: number, toIndex: number) => {
     if (toIndex < 0 || toIndex >= chapterFiles.length) return;
@@ -167,9 +168,9 @@ export function ChaptersTab({
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full p-5 gap-4">
       {/* Chapters Enable Toggle */}
-      <div className="flex items-center gap-2 px-4 py-2.5 bg-panel-header">
+      <div className="panel-card flex items-center gap-2 px-4 py-2.5">
         <Checkbox 
           id="chapters-enabled" 
           checked={chaptersEnabled}
@@ -303,16 +304,16 @@ export function ChaptersTab({
       </div>
 
       {/* Matching Section Label */}
-      <div className="section-label">
+      <div className="section-label rounded-md border border-panel-border/20">
         Chapter Matching
       </div>
 
       {/* Dual Panel Matching */}
       <div className="flex-1 flex overflow-hidden">
         {/* Video List */}
-        <div className="flex-1 flex flex-col border-r border-panel-border/30 bg-card">
-          <div className="table-header">
-            <div className="px-4 flex items-center min-h-[44px]">Video Name</div>
+        <div className="panel-card flex-1 flex flex-col border-r border-panel-border/30 overflow-hidden">
+          <div className="panel-card-header">
+            <div className="panel-card-title">Video Name</div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
             {videoFiles.map((file, index) => (
@@ -320,19 +321,21 @@ export function ChaptersTab({
                 key={file.id}
                 onClick={() => setSelectedVideoIndex(index)}
                 className={cn(
-                  "table-row px-4 text-sm cursor-pointer transition-smooth font-mono flex items-center",
-                  selectedVideoIndex === index && "selected",
-                )}
+                    "table-row px-4 text-sm cursor-pointer transition-smooth font-mono flex items-center",
+                    selectedVideoIndex === index && "selected",
+                  )}
               >
-                <span className="text-muted-foreground mr-2">{index + 1}</span>
-                {file.name}
+                <div className="media-row-main">
+                  <span className="media-row-index">{index + 1}</span>
+                  <span className="media-row-name">{file.name}</span>
+                </div>
               </div>
             ))}
           </div>
         </div>
 
         {/* Reorder Controls */}
-        <div className="flex flex-col items-center justify-center gap-2 px-3 py-4 bg-panel-header border-r border-panel-border">
+        <div className="flex flex-col items-center justify-center gap-2 px-3 py-4 bg-panel-header rounded-md border border-panel-border/25">
           <Button
             variant="secondary"
             size="sm"
@@ -391,9 +394,9 @@ export function ChaptersTab({
         </div>
 
         {/* Chapter List */}
-        <div className="flex-1 flex flex-col bg-card">
-          <div className="table-header">
-            <div className="px-4 flex items-center min-h-[44px]">Chapter Name</div>
+        <div className="panel-card flex-1 flex flex-col overflow-hidden">
+          <div className="panel-card-header">
+            <div className="panel-card-title">Chapter Name</div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
             {chapterFiles.length === 0 ? (
@@ -414,9 +417,9 @@ export function ChaptersTab({
                     selectedChapterIndex === index && "selected",
                   )}
                 >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-muted-foreground mr-2">{index + 1}</span>
-                    <span className="truncate">{file.name}</span>
+                  <div className="media-row-main">
+                    <span className="media-row-index">{index + 1}</span>
+                    <span className="media-row-name">{file.name}</span>
                     {Number(file.delay) !== 0 && (
                       <span className="text-xs text-muted-foreground/60">
                         ({Number(file.delay) > 0 ? '+' : ''}{Number(file.delay).toFixed(3)}s)

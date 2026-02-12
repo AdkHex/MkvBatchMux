@@ -130,10 +130,7 @@ export function SourceFilesPanel({
           <div className="grid grid-cols-[auto_1fr_120px_100px_100px_40px] gap-3 px-4 py-2 border-b border-panel-border bg-muted/50 text-xs font-medium text-muted-foreground uppercase tracking-wider">
             <div className="flex items-center">
               <Checkbox 
-                checked={allSelected}
-                ref={(ref) => {
-                  if (ref) (ref as any).indeterminate = someSelected;
-                }}
+                checked={allSelected ? true : someSelected ? "indeterminate" : false}
                 onCheckedChange={toggleAll}
               />
             </div>

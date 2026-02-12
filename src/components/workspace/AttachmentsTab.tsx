@@ -79,9 +79,9 @@ export function AttachmentsTab({
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full p-5 gap-4">
       {/* Attachments Enable Toggle */}
-      <div className="flex items-center gap-2 px-4 py-2.5 bg-panel-header">
+      <div className="panel-card flex items-center gap-2 px-4 py-2.5">
         <Checkbox 
           id="attachments-enabled" 
           checked={attachmentsEnabled}
@@ -212,8 +212,8 @@ export function AttachmentsTab({
         </div>
       </div>
 
-      <div className="control-row">
-        <div className="flex items-center gap-4">
+      <div className="panel-card px-4 py-2.5">
+        <div className="flex items-center gap-6 flex-wrap">
           <div className="flex items-center gap-2">
             <Checkbox
               id="discard-attachments"
@@ -256,13 +256,13 @@ export function AttachmentsTab({
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col rounded-lg border border-panel-border/25 bg-card overflow-hidden">
+      <div className="panel-card flex-1 flex flex-col overflow-hidden">
         {/* Attachments Table Header */}
-        <div className="table-header">
+        <div className="panel-card-header !px-0">
           <div className="grid grid-cols-[1fr_100px_120px] gap-0">
-            <div className="px-4 py-2 text-xs text-muted-foreground">Name</div>
-            <div className="px-4 py-2 text-xs text-center text-muted-foreground">Type</div>
-            <div className="px-4 py-2 text-xs text-right text-muted-foreground">Size</div>
+            <div className="px-4 py-2 panel-card-title">Name</div>
+            <div className="px-4 py-2 text-center panel-card-title">Type</div>
+            <div className="px-4 py-2 text-right panel-card-title">Size</div>
           </div>
         </div>
 
@@ -289,8 +289,8 @@ export function AttachmentsTab({
                 )}
               >
                 <div className="px-4 text-sm truncate font-mono flex items-center">
-                  <span className="text-muted-foreground mr-2">{index + 1}</span>
-                  {file.name}
+                  <span className="media-row-index mr-2">{index + 1}</span>
+                  <span className="media-row-name">{file.name}</span>
                 </div>
                 <div className="px-4 text-sm text-center text-muted-foreground flex items-center justify-center">
                   {file.name.split('.').pop()?.toUpperCase() || 'Unknown'}

@@ -803,10 +803,10 @@ const Index = () => {
   }, []);
 
   const handleNewTrack = useCallback(() => {
-    if (activeTab === "subtitles" && (window as any).__subtitlesAddTrack) {
-      (window as any).__subtitlesAddTrack();
-    } else if (activeTab === "audios" && (window as any).__audiosAddTrack) {
-      (window as any).__audiosAddTrack();
+    if (activeTab === "subtitles" && window.__subtitlesAddTrack) {
+      window.__subtitlesAddTrack();
+    } else if (activeTab === "audios" && window.__audiosAddTrack) {
+      window.__audiosAddTrack();
     }
   }, [activeTab]);
 

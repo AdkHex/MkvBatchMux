@@ -207,7 +207,7 @@ export function SubtitlesTab({
       title: "Track Added",
       description: `Subtitle #${newTrackNumber} has been created.`,
     });
-  }, [subtitleTracks.length]);
+  }, [setActiveSubtitleTrack, setSubtitleTracks, subtitleTracks, updateSubtitleTrackConfig]);
 
   const duplicateTrack = () => {
     const newTrackNumber = (subtitleTracks.length + 1).toString();
@@ -223,10 +223,10 @@ export function SubtitlesTab({
 
   useEffect(() => {
     if (onAddTrack) {
-      (window as any).__subtitlesAddTrack = addNewTrack;
+      window.__subtitlesAddTrack = addNewTrack;
     }
     return () => {
-      delete (window as any).__subtitlesAddTrack;
+      delete window.__subtitlesAddTrack;
     };
   }, [onAddTrack, addNewTrack]);
 
@@ -364,7 +364,7 @@ export function SubtitlesTab({
       isForced: file.isForced || false,
       muxAfter: file.muxAfter || "audio",
       applyDelayToAll: false,
-      includedTrackIds: file.includedTrackIds?.length ? file.includedTrackIds : defaultIncluded,
+      includedTrackIds: file.includedTrackIds !== undefined ? [...file.includedTrackIds] : defaultIncluded,
     });
     setEditDialogOpen(true);
   };
@@ -669,20 +669,20 @@ export function SubtitlesTab({
       {/* Matching Panel */}
       <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
         {/* Video Files Card */}
-        <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
-          <div className="table-header px-4 flex items-center">
+        <div className="panel-card flex flex-col min-h-0 overflow-hidden">
+          <div className="panel-card-header">
             <div className="flex items-center gap-2">
               {canLinkSelection ? (
                 <Button
                   variant="default"
                   size="sm"
-                  className="h-7 px-2 text-[11px]"
+                  className="panel-text-btn"
                   onClick={linkSubtitleToVideo}
                 >
                   Link
                 </Button>
               ) : null}
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Video Files</h4>
+              <h4 className="panel-card-title">Video Files</h4>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
@@ -695,22 +695,24 @@ export function SubtitlesTab({
                   selectedVideoIndex === index && "selected",
                 )}
               >
-                <span className="text-muted-foreground mr-2">{index + 1}</span>
-                <span className="text-foreground/80">{file.name}</span>
+                <div className="media-row-main">
+                  <span className="media-row-index">{index + 1}</span>
+                  <span className="media-row-name">{file.name}</span>
+                </div>
               </div>
             ))}
           </div>
         </div>
 
         {/* Subtitle Files Card */}
-        <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
-          <div className="table-header px-4 flex items-center justify-between">
-            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Subtitle Files</h4>
-            <div className="flex items-center gap-2">
+        <div className="panel-card flex flex-col min-h-0 overflow-hidden">
+          <div className="panel-card-header">
+            <h4 className="panel-card-title">Subtitle Files</h4>
+            <div className="panel-card-actions">
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
+                className="panel-icon-btn"
                 onClick={() =>
                   selectedSubtitleIndex !== null && reorderSubtitleFile(selectedSubtitleIndex, selectedSubtitleIndex - 1)
                 }
@@ -721,7 +723,7 @@ export function SubtitlesTab({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
+                className="panel-icon-btn"
                 onClick={() =>
                   selectedSubtitleIndex !== null && reorderSubtitleFile(selectedSubtitleIndex, selectedSubtitleIndex + 1)
                 }
@@ -732,7 +734,7 @@ export function SubtitlesTab({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-7 px-2 text-xs"
+                className="panel-text-btn"
                 onClick={() => selectedSubtitleIndex !== null && duplicateSubtitleFile(selectedSubtitleIndex)}
                 disabled={selectedSubtitleIndex === null}
               >
@@ -766,21 +768,21 @@ export function SubtitlesTab({
                     draggedIndex === index && "opacity-60"
                   )}
                 >
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="media-row-main">
                     <GripVertical className="w-4 h-4 text-muted-foreground/50 hover:text-muted-foreground cursor-grab active:cursor-grabbing shrink-0" />
-                <span className="text-muted-foreground tabular-nums">{index + 1}</span>
-                <span className="text-foreground/80 truncate">{file.name}</span>
+                    <span className="media-row-index">{index + 1}</span>
+                    <span className="media-row-name">{file.name}</span>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="media-row-actions">
                     {file.tracks && file.tracks.length > 1 && (
-                      <span className="table-chip w-[64px]">
+                      <span className="table-chip">
                         {file.tracks.length} tracks
                       </span>
                     )}
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="panel-icon-btn"
                       onClick={(event) => {
                         event.stopPropagation();
                         openEditDialog(file.id);
@@ -791,7 +793,7 @@ export function SubtitlesTab({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="panel-icon-btn"
                       onClick={(event) => {
                         event.stopPropagation();
                         duplicateSubtitleFile(index);
@@ -802,7 +804,7 @@ export function SubtitlesTab({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                      className="panel-icon-btn"
                       onClick={(event) => {
                         event.stopPropagation();
                         removeSubtitleFile(index);

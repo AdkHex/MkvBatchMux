@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, X, ChevronUp, ChevronDown, RotateCcw, Film, Subtitles, Volume2, Info, GripVertical, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -224,7 +224,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
   const pointerDragActive = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
 
-  const handleDragEnd = () => {
+  const handleDragEnd = useCallback(() => {
     if (
       dragItem.current !== null &&
       dragOverItem.current !== null &&
@@ -242,7 +242,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
     dragOverItem.current = null;
     setDraggedIndex(null);
     setDragOverIndex(null);
-  };
+  }, [setCurrentTracks]);
 
   const startPointerDrag = (event: React.PointerEvent, index: number) => {
     event.preventDefault();
@@ -282,7 +282,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, []);
+  }, [handleDragEnd]);
 
   const applyRowsToVideo = (file: VideoFile, rows: TrackRow[], type: Track["type"]) => {
     const tracks = file.tracks || [];
