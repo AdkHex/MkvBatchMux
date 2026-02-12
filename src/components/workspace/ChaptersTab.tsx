@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { BaseModal } from "@/components/shared/BaseModal";
+import { EmptyState } from "@/components/shared/EmptyState";
 import type { VideoFile, ExternalFile, Preset, MuxSettings } from "@/types";
 import { pickDirectory, scanMedia } from "@/lib/backend";
 import { useTabState } from "@/stores/useTabState";
@@ -238,7 +239,7 @@ export function ChaptersTab({
 
         {/* Settings Row */}
         <div className="grid grid-cols-[1.1fr_1fr_1.2fr] gap-4 items-center">
-          <div className="flex items-center gap-2">
+          <div className="grid grid-cols-[124px_minmax(0,1fr)] items-center gap-2">
             <label className="text-[13px] text-muted-foreground whitespace-nowrap">Chapter Extension</label>
             <Select
               value={extension}
@@ -259,7 +260,7 @@ export function ChaptersTab({
             </Select>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-2">
             <label className="text-[13px] text-muted-foreground whitespace-nowrap">Delay</label>
             <Input
               value={chapterDelay}
@@ -271,7 +272,7 @@ export function ChaptersTab({
           </div>
 
           <div className="flex items-center justify-end gap-4">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 min-w-[220px] justify-end">
               <Checkbox
                 id="discard-chapters"
                 checked={discardOldChapters}
@@ -311,7 +312,7 @@ export function ChaptersTab({
         {/* Video List */}
         <div className="flex-1 flex flex-col border-r border-panel-border/30 bg-card">
           <div className="table-header">
-            <div className="px-4 py-2 text-center">Video Name</div>
+            <div className="px-4 flex items-center min-h-[44px]">Video Name</div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
             {videoFiles.map((file, index) => (
@@ -319,10 +320,8 @@ export function ChaptersTab({
                 key={file.id}
                 onClick={() => setSelectedVideoIndex(index)}
                 className={cn(
-                  "px-4 h-11 text-sm border-b border-panel-border/25 cursor-pointer transition-smooth font-mono flex items-center",
-                  selectedVideoIndex === index 
-                    ? "bg-selection border-l-2 border-l-selection-border" 
-                    : "hover:bg-accent/30"
+                  "table-row px-4 text-sm cursor-pointer transition-smooth font-mono flex items-center",
+                  selectedVideoIndex === index && "selected",
                 )}
               >
                 <span className="text-muted-foreground mr-2">{index + 1}</span>
@@ -394,17 +393,16 @@ export function ChaptersTab({
         {/* Chapter List */}
         <div className="flex-1 flex flex-col bg-card">
           <div className="table-header">
-            <div className="px-4 py-2 text-center">Chapter Name</div>
+            <div className="px-4 flex items-center min-h-[44px]">Chapter Name</div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
             {chapterFiles.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-center py-16">
-                <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-3">
-                  <BookOpen className="w-6 h-6 text-muted-foreground" />
-                </div>
-                <p className="text-muted-foreground text-sm">No chapter files found</p>
-                <p className="text-muted-foreground/60 text-xs mt-1">Enable chapters, then click the folder icon above</p>
-              </div>
+              <EmptyState
+                icon={<BookOpen className="w-5 h-5 text-muted-foreground/65" />}
+                title="No chapter files found"
+                description="Enable chapters, then click the folder icon above"
+                className="h-full"
+              />
             ) : (
               chapterFiles.map((file, index) => (
                 <div
@@ -412,10 +410,8 @@ export function ChaptersTab({
                   onClick={() => setSelectedChapterIndex(index)}
                   onDoubleClick={() => openEditDialog(file.id)}
                   className={cn(
-                    "px-4 h-11 text-sm border-b border-panel-border/25 cursor-pointer transition-smooth font-mono flex items-center justify-between gap-2",
-                    selectedChapterIndex === index 
-                      ? "bg-selection border-l-2 border-l-selection-border" 
-                      : "hover:bg-accent/30"
+                    "table-row px-4 text-sm cursor-pointer transition-smooth font-mono flex items-center justify-between gap-2",
+                    selectedChapterIndex === index && "selected",
                   )}
                 >
                   <div className="flex items-center gap-2 min-w-0">

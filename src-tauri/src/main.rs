@@ -1672,6 +1672,9 @@ fn build_mkvmerge_command(
     for (audio, track_id) in &resolved_external_audios {
         args.push("--no-video".to_string());
         args.push("--no-subtitles".to_string());
+        args.push("--no-chapters".to_string());
+        args.push("--no-attachments".to_string());
+        args.push("--no-global-tags".to_string());
         args.push("--audio-tracks".to_string());
         args.push(track_id.to_string());
         let override_entry = audio.track_overrides.get(&track_id.to_string());
@@ -1716,6 +1719,9 @@ fn build_mkvmerge_command(
     for (subtitle, track_id) in &all_subtitles {
         args.push("--no-video".to_string());
         args.push("--no-audio".to_string());
+        args.push("--no-chapters".to_string());
+        args.push("--no-attachments".to_string());
+        args.push("--no-global-tags".to_string());
         args.push("--subtitle-tracks".to_string());
         args.push(track_id.to_string());
         let override_entry = subtitle.track_overrides.get(&track_id.to_string());
@@ -1957,7 +1963,12 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
         &state.paths,
         &format!("Output path: {}", output_path.to_string_lossy()),
     );
+    // mkvpropedit is in-place metadata editing only.
+    // Allow it only when the user is explicitly overwriting source files.
+    let fast_mux_in_place_allowed =
+        settings.destination_dir.trim().is_empty() && settings.overwrite_source;
     let can_use_mkvpropedit = settings.use_mkvpropedit
+        && fast_mux_in_place_allowed
         && job.audios.is_empty()
         && job.subtitles.is_empty()
         && job.chapters.is_empty()
@@ -1965,7 +1976,10 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
         && (!settings.only_keep_audios_enabled || settings.only_keep_audio_languages.is_empty())
         && (!settings.only_keep_subtitles_enabled || settings.only_keep_subtitle_languages.is_empty());
     if settings.use_mkvpropedit && !can_use_mkvpropedit {
-        let _ = write_log_line(&state.paths, "Fast muxing requested but job requires full mkvmerge.");
+        let _ = write_log_line(
+            &state.paths,
+            "Fast muxing requested but this job requires full mkvmerge (fast mux works only for in-place metadata edits).",
+        );
     }
 
     if can_use_mkvpropedit {

@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronUp, ChevronDown, RotateCcw, Film, Subtitles, Volume2, Info, GripVertical, Trash2, Plus } from "lucide-react";
+import { ChevronUp, ChevronDown, RotateCcw, Film, Subtitles, Volume2, GripVertical, Trash2, Plus, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TextField } from "@/components/shared/Fields";
 import { BaseModal } from "@/components/shared/BaseModal";
 import { LanguageSelect } from "@/components/LanguageSelect";
@@ -22,6 +23,7 @@ interface VideoFileEditDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   videoFile: VideoFile | null;
+  allVideoFiles?: VideoFile[];
   onSave: (updatedFile: VideoFile) => void;
   onAddExternalFiles?: (
     type: "audio" | "subtitle",
@@ -67,6 +69,7 @@ export function VideoFileEditDialog({
   open,
   onOpenChange,
   videoFile,
+  allVideoFiles,
   onSave,
   onAddExternalFiles,
   externalAudioFiles,
@@ -93,6 +96,9 @@ export function VideoFileEditDialog({
     isForced: false,
     muxAfter: "audio",
   });
+  const [importStreamsOpen, setImportStreamsOpen] = useState(false);
+  const [importSourceVideoId, setImportSourceVideoId] = useState("");
+  const [importSelectedTrackIds, setImportSelectedTrackIds] = useState<number[]>([]);
 
   useEffect(() => {
     if (videoFile && open) {
@@ -144,12 +150,27 @@ export function VideoFileEditDialog({
       setAddExternalOpen(false);
       setPendingExternalPaths([]);
       setAddExternalType(null);
+      setImportStreamsOpen(false);
+      setImportSourceVideoId("");
+      setImportSelectedTrackIds([]);
     }
   }, [open]);
 
   const currentTracks = activeTab === "videos" ? videoTracks : activeTab === "subtitles" ? subtitleTracks : audioTracks;
   const setCurrentTracks =
     activeTab === "videos" ? setVideoTracks : activeTab === "subtitles" ? setSubtitleTracks : setAudioTracks;
+  const importableSourceVideos = (allVideoFiles && allVideoFiles.length > 0 ? allVideoFiles : videoFile ? [videoFile] : []).filter(
+    (file) => file.id !== videoFile?.id,
+  );
+  const selectedImportSource = importableSourceVideos.find((file) => file.id === importSourceVideoId) || null;
+  const importStreamType: Track["type"] | null =
+    activeTab === "audios" ? "audio" : activeTab === "subtitles" ? "subtitle" : null;
+  const importableTracks =
+    importStreamType && selectedImportSource
+      ? (selectedImportSource.tracks || []).filter(
+          (track) => track.type === importStreamType && track.action !== "remove",
+        )
+      : [];
   const allCopyChecked = currentTracks.length > 0 && currentTracks.every((track) => track.copyTrack);
   const allDefaultChecked = currentTracks.length > 0 && currentTracks.every((track) => track.setDefault);
   const allForcedChecked = currentTracks.length > 0 && currentTracks.every((track) => track.setForced);
@@ -456,6 +477,62 @@ export function VideoFileEditDialog({
     setAddExternalType(null);
   };
 
+  const handleOpenImportStreams = () => {
+    setImportStreamsOpen(true);
+    setImportSourceVideoId("");
+    setImportSelectedTrackIds([]);
+  };
+
+  const handleConfirmImportStreams = () => {
+    if (!selectedImportSource || !importStreamType || importSelectedTrackIds.length === 0 || !videoFile) return;
+
+    const rows: TrackRow[] = importableTracks
+      .filter((track) => importSelectedTrackIds.includes(Number(track.id)))
+      .map((track, idx) => {
+        const numericId = Number(track.id);
+        const trackLabel =
+          track.name || track.codec || `${importStreamType === "audio" ? "Audio" : "Subtitle"} ${idx + 1}`;
+
+        const externalFile: ExternalFile = {
+          id: `import-${importStreamType}-${selectedImportSource.id}-${track.id}-${Date.now()}-${idx}`,
+          name: selectedImportSource.name,
+          path: selectedImportSource.path,
+          type: importStreamType,
+          source: "per-file",
+          language: track.language || "und",
+          trackName: trackLabel,
+          delay: 0,
+          isDefault: false,
+          isForced: false,
+          matchedVideoId: videoFile.id,
+          tracks: [track],
+          includedTrackIds: Number.isFinite(numericId) ? [numericId] : [],
+        };
+
+        return {
+          id: externalFile.id,
+          trackIndex: 0,
+          copyTrack: true,
+          setDefault: false,
+          setForced: false,
+          trackName: trackLabel,
+          language: track.language || "und",
+          source: "external",
+          externalFile,
+        };
+      });
+
+    if (rows.length === 0) return;
+    if (activeTab === "audios") {
+      setAudioTracks((prev) => [...prev, ...rows]);
+    } else if (activeTab === "subtitles") {
+      setSubtitleTracks((prev) => [...prev, ...rows]);
+    }
+    setImportStreamsOpen(false);
+    setImportSourceVideoId("");
+    setImportSelectedTrackIds([]);
+  };
+
   if (!videoFile) return null;
 
   return (
@@ -540,10 +617,17 @@ export function VideoFileEditDialog({
               Add Audio Track
             </Button>
           )}
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Info className="w-3.5 h-3.5" />
-            Drag to reorder
-          </div>
+          {(activeTab === "audios" || activeTab === "subtitles") && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 px-3"
+              onClick={handleOpenImportStreams}
+            >
+              <Download className="w-4 h-4" />
+              {activeTab === "audios" ? "Import Audio" : "Import Subtitles"}
+            </Button>
+          )}
           <div className="flex items-center">
             <Button
               variant="ghost"
@@ -827,6 +911,133 @@ export function VideoFileEditDialog({
               />
               Forced
             </label>
+          </div>
+        </div>
+      </BaseModal>
+      <BaseModal
+        open={importStreamsOpen}
+        onOpenChange={setImportStreamsOpen}
+        title={activeTab === "audios" ? "Import Audio Streams" : "Import Subtitle Streams"}
+        subtitle="Select a loaded video and choose streams to import."
+        icon={<Download className="w-5 h-5 text-primary" />}
+        className="max-w-xl"
+        bodyClassName="px-5 py-4"
+        footerRight={
+          <>
+            <Button
+              variant="ghost"
+              className="h-9 px-5 text-sm text-muted-foreground hover:text-foreground"
+              onClick={() => setImportStreamsOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="h-9 px-5 text-sm"
+              disabled={!importSourceVideoId || importSelectedTrackIds.length === 0}
+              onClick={handleConfirmImportStreams}
+            >
+              Import
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="grid gap-2">
+            <label className="text-xs uppercase tracking-wide text-muted-foreground">Source Video File</label>
+            <Select
+              value={importSourceVideoId}
+              onValueChange={(value) => {
+                setImportSourceVideoId(value);
+                setImportSelectedTrackIds([]);
+              }}
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Select loaded video file" />
+              </SelectTrigger>
+              <SelectContent>
+                {importableSourceVideos.length === 0 ? (
+                  <SelectItem value="__no_videos" disabled>
+                    No other loaded videos available
+                  </SelectItem>
+                ) : (
+                  importableSourceVideos.map((file) => (
+                    <SelectItem key={file.id} value={file.id}>
+                      {file.name}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {activeTab === "audios" ? "Audio Streams" : "Subtitle Streams"}
+              </div>
+              {importableTracks.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={() =>
+                      setImportSelectedTrackIds(
+                        importableTracks
+                          .map((track) => Number(track.id))
+                          .filter((id) => Number.isFinite(id)),
+                      )
+                    }
+                  >
+                    Select All
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={() => setImportSelectedTrackIds([])}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              )}
+            </div>
+            {!importSourceVideoId ? (
+              <p className="text-xs text-muted-foreground">Choose a source video to load its streams.</p>
+            ) : importableTracks.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No {activeTab === "audios" ? "audio" : "subtitle"} streams found in this file.
+              </p>
+            ) : (
+              <div className="max-h-52 overflow-y-auto pr-1 space-y-2 scrollbar-thin">
+                {importableTracks.map((track, index) => {
+                  const numericTrackId = Number(track.id);
+                  const checked = importSelectedTrackIds.includes(numericTrackId);
+                  return (
+                    <label
+                      key={`${track.id}-${index}`}
+                      className="flex items-center gap-3 text-sm text-foreground/90 cursor-pointer"
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(value) => {
+                          if (!Number.isFinite(numericTrackId)) return;
+                          setImportSelectedTrackIds((prev) => {
+                            if (value) return [...prev, numericTrackId];
+                            return prev.filter((id) => id !== numericTrackId);
+                          });
+                        }}
+                      />
+                      <span className="text-xs text-muted-foreground min-w-[22px]">#{index + 1}</span>
+                      <span className="truncate">
+                        {track.name || track.codec || "Unnamed"}
+                        {track.language ? ` • ${track.language}` : ""}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </BaseModal>

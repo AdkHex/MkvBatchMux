@@ -74,7 +74,7 @@
     --space-5: 20px;
     --space-6: 24px;
 
-    --row-height: 42px;
+    --row-height: 44px;
     --row-height-header: 44px;
     --control-height: 34px;
     --icon-button-size: 34px;
@@ -359,7 +359,8 @@
   }
 
   .data-table__header {
-    @apply bg-table-header text-muted-foreground text-[11px] uppercase tracking-wider border-b border-panel-border;
+    @apply bg-table-header text-muted-foreground text-[10px] font-semibold uppercase border-b border-panel-border;
+    letter-spacing: 0.12em;
     min-height: var(--row-height-header);
   }
 
@@ -373,12 +374,12 @@
   }
 
   .data-table__row:hover {
-    @apply bg-accent/50;
+    background: hsl(var(--primary) / 0.08);
   }
 
   .data-table__row.is-selected {
-    @apply bg-selection;
-    box-shadow: inset 2px 0 0 hsl(var(--selection-border));
+    background: hsl(var(--primary) / 0.12);
+    box-shadow: inset 1px 0 0 hsl(var(--selection-border));
   }
 
   .data-table__row.is-selected .data-table__cell {
@@ -509,6 +510,16 @@
     @apply flex flex-col items-center justify-center text-center text-muted-foreground;
   }
 
+  .empty-state__icon {
+    @apply w-11 h-11 rounded-lg bg-panel-header/60 border border-panel-border flex items-center justify-center mb-3;
+  }
+
+  .table-chip {
+    @apply inline-flex items-center justify-center h-5 min-w-[52px] px-2 rounded-md border border-panel-border/50 bg-panel-header/40;
+    @apply text-[10px] font-medium leading-none text-muted-foreground/90;
+    letter-spacing: 0.04em;
+  }
+
   /* Legacy utility classes mapped to Fluent tokens */
   .control-row {
     @apply flex items-center gap-3 px-4 py-2.5;
@@ -546,7 +557,8 @@
   }
 
   .table-header {
-    @apply bg-table-header text-muted-foreground text-[11px] uppercase tracking-wider border-b border-panel-border;
+    @apply bg-table-header text-muted-foreground text-[10px] font-semibold uppercase border-b border-panel-border;
+    letter-spacing: 0.12em;
     min-height: var(--row-height-header);
   }
 
@@ -556,12 +568,12 @@
   }
 
   .table-row:hover {
-    @apply bg-accent/40;
+    background: hsl(var(--primary) / 0.08);
   }
 
   .table-row.selected {
-    @apply bg-selection;
-    box-shadow: inset 2px 0 0 hsl(var(--selection-border));
+    background: hsl(var(--primary) / 0.12);
+    box-shadow: inset 1px 0 0 hsl(var(--selection-border));
   }
 
   .table-row-alt {

@@ -459,6 +459,7 @@ export function VideosTab({
         open={isEditDialogOpen}
         onOpenChange={setIsEditDialogOpen}
         videoFile={editingFile}
+        allVideoFiles={files}
         onSave={handleSaveFile}
         onAddExternalFiles={onAddExternalFiles}
         externalAudioFiles={editingFile ? externalFilesByVideoId?.[editingFile.id]?.audios : []}

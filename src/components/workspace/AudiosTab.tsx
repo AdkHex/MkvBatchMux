@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { AlertDialogAction, AlertDialogCancel } from "@/components/ui/alert-dialog";
 import { BaseModal } from "@/components/shared/BaseModal";
+import { EmptyState } from "@/components/shared/EmptyState";
 import { LanguageSelect } from "@/components/LanguageSelect";
 import { cn } from "@/lib/utils";
 import type { VideoFile, ExternalFile, Preset } from "@/types";
@@ -691,7 +692,7 @@ export function AudiosTab({
 
         {/* Settings Grid */}
         <div className="grid grid-cols-[1.1fr_1.1fr_1.2fr] gap-4">
-          <div className="flex items-center gap-2">
+          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2">
             <label className="text-[13px] text-muted-foreground">Extension</label>
             <Select value={currentConfig.extension} onValueChange={(v) => updateCurrentConfig({ extension: v })}>
               <SelectTrigger className="h-9 flex-1">
@@ -708,7 +709,7 @@ export function AudiosTab({
             </Select>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2">
             <label className="text-[13px] text-muted-foreground">Language</label>
             <LanguageSelect
               value={currentConfig.language}
@@ -717,7 +718,7 @@ export function AudiosTab({
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2">
             <label className="text-[13px] text-muted-foreground">Track Name</label>
             <Input
               value={currentConfig.trackName}
@@ -730,7 +731,7 @@ export function AudiosTab({
         </div>
 
         <div className="flex flex-wrap items-center gap-6 pt-1">
-          <div className="flex items-center gap-2 min-w-[220px]">
+          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2 min-w-[240px]">
             <label className="text-[13px] text-muted-foreground">Mux After</label>
             <Select value={currentConfig.muxAfter} onValueChange={(v) => updateCurrentConfig({ muxAfter: v })}>
               <SelectTrigger className="h-9 w-40">
@@ -746,7 +747,7 @@ export function AudiosTab({
             </Select>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-2">
             <label className="text-[13px] text-muted-foreground">Delay</label>
             <Input
               value={currentConfig.delay}
@@ -756,7 +757,7 @@ export function AudiosTab({
             <span className="text-[12px] text-muted-foreground">sec</span>
           </div>
 
-          <div className="grid grid-cols-2 gap-14 pl-3">
+          <div className="grid grid-cols-2 gap-14 pl-3 items-center">
             <div className="flex items-center gap-2 min-w-[120px]">
               <Checkbox
                 id="audio-default"
@@ -781,7 +782,7 @@ export function AudiosTab({
       <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
         {/* Video Files Card */}
         <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
-          <div className="px-4 h-10 bg-panel-header/70 border-b border-panel-border/30 flex items-center justify-between">
+          <div className="table-header px-4 flex items-center justify-between">
             <div className="flex items-center gap-2">
               {canLinkSelection ? (
                 <Button
@@ -802,10 +803,8 @@ export function AudiosTab({
                 key={file.id}
                 onClick={() => setSelectedVideoIndex(index)}
                 className={cn(
-                  "px-4 h-11 text-sm border-b border-panel-border/25 cursor-pointer transition-colors font-mono flex items-center",
-                  selectedVideoIndex === index 
-                    ? "bg-selection border-l-2 border-l-selection-border" 
-                    : "hover:bg-accent/30"
+                  "table-row px-4 text-sm cursor-pointer transition-colors font-mono flex items-center",
+                  selectedVideoIndex === index && "selected",
                 )}
               >
                 <span className="text-muted-foreground mr-2 tabular-nums">{index + 1}</span>
@@ -817,7 +816,7 @@ export function AudiosTab({
 
         {/* Audio Files Card */}
         <div className="rounded-lg border border-panel-border/25 bg-card flex flex-col min-h-0 overflow-hidden">
-          <div className="px-4 h-10 bg-panel-header/70 border-b border-panel-border/30 flex items-center justify-between">
+          <div className="table-header px-4 flex items-center justify-between">
             <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Audio Files</h4>
             <div className="flex items-center gap-2">
               <Button
@@ -869,13 +868,12 @@ export function AudiosTab({
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
             {audioFiles.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-center py-12">
-                <div className="w-12 h-12 rounded-xl bg-muted/50 flex items-center justify-center mb-3">
-                  <AudioLines className="w-6 h-6 text-muted-foreground/50" />
-                </div>
-                <p className="text-muted-foreground text-sm">No audio files</p>
-                <p className="text-muted-foreground/60 text-xs mt-1">Click the folder icon above or drag & drop files here</p>
-              </div>
+              <EmptyState
+                icon={<AudioLines className="w-5 h-5 text-muted-foreground/65" />}
+                title="No audio files found"
+                description="Click the folder icon above or drag and drop files here"
+                className="h-full"
+              />
             ) : (
               audioFiles.map((file, index) => (
                 <div
@@ -888,10 +886,8 @@ export function AudiosTab({
                   onClick={() => setSelectedAudioIndex(index)}
                   onDoubleClick={() => openEditDialog(file.id)}
                   className={cn(
-                    "px-4 h-11 text-sm border-b border-panel-border/25 cursor-pointer transition-colors font-mono flex items-center justify-between gap-3",
-                    selectedAudioIndex === index 
-                      ? "bg-selection border-l-2 border-l-selection-border" 
-                      : "hover:bg-accent/30",
+                    "table-row px-4 text-sm cursor-pointer transition-colors font-mono flex items-center justify-between gap-3",
+                    selectedAudioIndex === index && "selected",
                     draggedIndex === index && "opacity-60"
                   )}
                 >
@@ -900,9 +896,9 @@ export function AudiosTab({
                     <span className="text-muted-foreground">{index + 1}</span>
                     <span className="text-foreground/80 truncate">{file.name}</span>
                   </div>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     {file.tracks && file.tracks.length > 1 && (
-                      <span className="text-[10px] font-medium tracking-wide text-muted-foreground/80 px-2 py-0.5 rounded-md border border-panel-border/60 bg-panel-header/50">
+                      <span className="table-chip w-[64px]">
                         {file.tracks.length} tracks
                       </span>
                     )}
