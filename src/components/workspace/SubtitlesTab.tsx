@@ -102,7 +102,6 @@ export function SubtitlesTab({
   }));
   const [selectedVideoIndex, setSelectedVideoIndex] = useState<number | null>(null);
   const [selectedSubtitleIndex, setSelectedSubtitleIndex] = useState<number | null>(null);
-  const canLinkSelection = selectedVideoIndex !== null && selectedSubtitleIndex !== null;
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [trackToDelete, setTrackToDelete] = useState<string | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -111,6 +110,12 @@ export function SubtitlesTab({
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
   const subtitleFilesCache = useRef<Record<string, ExternalFile[]>>({});
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkSelectedVideoIds, setBulkSelectedVideoIds] = useState<string[]>([]);
+  const [bulkSelectedSubtitleIds, setBulkSelectedSubtitleIds] = useState<string[]>([]);
+  const [bulkIncludeMode, setBulkIncludeMode] = useState<"all" | "first">("all");
+  const [bulkFirstCount, setBulkFirstCount] = useState("2");
+  const [bulkReplaceExisting, setBulkReplaceExisting] = useState(false);
   const [trackEditOpen, setTrackEditOpen] = useState(false);
   const [trackEditTarget, setTrackEditTarget] = useState<{
     fileId: string;
@@ -121,6 +126,9 @@ export function SubtitlesTab({
     delay: "0.000",
     trackName: "",
   });
+  const [importStreamsOpen, setImportStreamsOpen] = useState(false);
+  const [importSourceVideoId, setImportSourceVideoId] = useState("");
+  const [importSelectedTrackKeys, setImportSelectedTrackKeys] = useState<string[]>([]);
   const [editForm, setEditForm] = useState({
     trackName: "",
     language: "und",
@@ -134,6 +142,10 @@ export function SubtitlesTab({
 
   const currentConfig = subtitleTrackConfigs[activeSubtitleTrack] || defaultTrackConfig;
   const editingFile = subtitleFiles.find((file) => file.id === editingFileId) || null;
+  const createExternalId = () =>
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const muxAfterOptions = useMemo(() => {
     const primaryTracks = videoFiles[0]?.tracks || [];
     const trackCount =
@@ -149,6 +161,22 @@ export function SubtitlesTab({
     options.push({ value: "end", label: "End" });
     return options;
   }, [videoFiles]);
+
+  const selectedImportSource = useMemo(
+    () => videoFiles.find((file) => file.id === importSourceVideoId) || null,
+    [videoFiles, importSourceVideoId],
+  );
+
+  const importableTracks = useMemo(
+    () =>
+      selectedImportSource
+        ? (selectedImportSource.tracks || []).filter(
+            (track) => track.type === "subtitle" && track.action !== "remove",
+          )
+        : [],
+    [selectedImportSource],
+  );
+  const getImportTrackKey = (trackIndex: number, trackId: string) => `${trackIndex}:${trackId}`;
 
   const updateCurrentConfig = (updates: Partial<TrackConfig>) => {
     updateSubtitleTrackConfig(activeSubtitleTrack, updates);
@@ -450,9 +478,78 @@ export function SubtitlesTab({
     setSelectedSubtitleIndex(null);
   };
 
-  const linkSubtitleToVideo = () => {
-    if (selectedVideoIndex === null || selectedSubtitleIndex === null) return;
-    reorderSubtitleFile(selectedSubtitleIndex, selectedVideoIndex);
+  const applyBulkMapping = () => {
+    if (bulkSelectedVideoIds.length === 0 || bulkSelectedSubtitleIds.length === 0) {
+      toast({
+        title: "Bulk Apply",
+        description: "Select at least one video and one subtitle file.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const firstCount = Math.max(1, Math.floor(Number(bulkFirstCount) || 1));
+    const selectedSubtitles = subtitleFiles.filter((file) => bulkSelectedSubtitleIds.includes(file.id));
+    if (selectedSubtitles.length === 0) {
+      toast({
+        title: "Bulk Apply",
+        description: "Selected subtitle files are not available.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const remaining = bulkReplaceExisting
+      ? subtitleFiles.filter((file) => !bulkSelectedVideoIds.includes(file.matchedVideoId || ""))
+      : [...subtitleFiles];
+
+    const nextFiles = bulkSelectedVideoIds.reduce<ExternalFile[]>((acc, videoId) => {
+      selectedSubtitles.forEach((file) => {
+        const available =
+          file.tracks && file.tracks.length > 0
+            ? file.tracks.map((track) => Number(track.id)).filter((id) => Number.isFinite(id))
+            : file.includedTrackIds || [];
+        let includedTrackIds: number[] | undefined;
+        if (bulkIncludeMode === "first" && available.length > 0) {
+          includedTrackIds = available.slice(0, Math.min(firstCount, available.length));
+        } else if (bulkIncludeMode === "all" && available.length > 0) {
+          includedTrackIds = available;
+        }
+
+        const existingIndex = remaining.findIndex(
+          (entry) => entry.matchedVideoId === videoId && entry.path === file.path,
+        );
+        if (existingIndex !== -1) {
+          const existing = remaining[existingIndex];
+          remaining[existingIndex] = {
+            ...existing,
+            includedTrackIds,
+            trackName: file.trackName ?? existing.trackName,
+            language: file.language ?? existing.language,
+            delay: file.delay ?? existing.delay,
+            isDefault: file.isDefault ?? existing.isDefault,
+            isForced: file.isForced ?? existing.isForced,
+            muxAfter: file.muxAfter ?? existing.muxAfter,
+            tracks: file.tracks ?? existing.tracks,
+          };
+        } else {
+          acc.push({
+            ...file,
+            id: createExternalId(),
+            matchedVideoId: videoId,
+            includedTrackIds,
+          });
+        }
+      });
+      return acc;
+    }, []);
+
+    onSubtitleFilesChange([...remaining, ...nextFiles]);
+    setBulkOpen(false);
+    toast({
+      title: "Bulk Apply Complete",
+      description: `Applied ${selectedSubtitles.length} subtitle file(s) to ${bulkSelectedVideoIds.length} video(s).`,
+    });
   };
 
   const confirmDeleteTrack = (trackId: string) => {
@@ -483,14 +580,98 @@ export function SubtitlesTab({
     });
   };
 
+  const handleImportSubtitles = async () => {
+    if (videoFiles.length === 0) {
+      toast({
+        title: "No Videos Loaded",
+        description: "Load video files first, then import subtitle streams.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (selectedVideoIndex === null) {
+      setSelectedVideoIndex(0);
+    }
+    setImportSourceVideoId(videoFiles[0]?.id || "");
+    setImportSelectedTrackKeys([]);
+    setImportStreamsOpen(true);
+  };
+
+  const handleConfirmImportSubtitles = () => {
+    const targetIndex = selectedVideoIndex ?? 0;
+    const targetVideo = videoFiles[targetIndex];
+    if (!targetVideo || !selectedImportSource || importSelectedTrackKeys.length === 0) {
+      toast({
+        title: "Import Failed",
+        description: "Select at least one subtitle stream and a valid target video.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const selectedTrackKeySet = new Set(importSelectedTrackKeys);
+    const selectedTracks = importableTracks.filter((track, trackIndex) =>
+      selectedTrackKeySet.has(getImportTrackKey(trackIndex, String(track.id))),
+    );
+    if (selectedTracks.length === 0) return;
+
+    const existingAtTarget = subtitleFiles[targetIndex];
+    const existingTracks = existingAtTarget?.tracks?.filter((track) => track.type === "subtitle") || [];
+    const mergedTracks = [...existingTracks];
+    selectedTracks.forEach((track) => {
+      if (!mergedTracks.some((entry) => String(entry.id) === String(track.id))) {
+        mergedTracks.push(track);
+      }
+    });
+
+    const mergedIncludedTrackIds = mergedTracks
+      .map((track) => Number(track.id))
+      .filter((id) => Number.isFinite(id));
+
+    const importedFile: ExternalFile = {
+      id: createExternalId(),
+      name: selectedImportSource.name,
+      path: selectedImportSource.path,
+      type: "subtitle",
+      source: "per-file",
+      language: currentConfig.language,
+      trackName: currentConfig.trackName,
+      delay: Number(currentConfig.delay) || 0,
+      isDefault: currentConfig.isDefault,
+      isForced: currentConfig.isForced,
+      muxAfter: currentConfig.muxAfter,
+      matchedVideoId: targetVideo.id,
+      tracks: mergedTracks,
+      includedTrackIds: mergedIncludedTrackIds,
+    };
+
+    const updated = [...subtitleFiles];
+    const existingByVideoIndex = updated.findIndex((file) => file.matchedVideoId === targetVideo.id);
+    if (existingByVideoIndex >= 0) {
+      updated[existingByVideoIndex] = importedFile;
+    } else if (targetIndex <= updated.length) {
+      updated.splice(targetIndex, 0, importedFile);
+    } else {
+      updated.push(importedFile);
+    }
+    onSubtitleFilesChange(syncSubtitleLinks(updated));
+    setSelectedSubtitleIndex(targetIndex);
+    setSelectedVideoIndex(targetIndex);
+    setImportStreamsOpen(false);
+    toast({
+      title: "Subtitle Streams Imported",
+      description: `Imported ${selectedTracks.length} stream${selectedTracks.length > 1 ? "s" : ""} to Video #${targetIndex + 1}.`,
+    });
+  };
+
   return (
-    <div className="flex flex-col h-full p-5 gap-4">
+    <div className="flex flex-col h-full p-5 gap-4 bg-background">
       {/* Track Selector Card */}
-      <div className="fluent-surface p-4 min-h-[56px]">
+      <div className="track-selector-bar">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-12 pl-4">
+          <div className="flex items-center gap-3">
             <Select value={activeSubtitleTrack} onValueChange={setActiveSubtitleTrack}>
-              <SelectTrigger className="w-32 h-9 bg-secondary text-secondary-foreground border border-panel-border font-medium">
+              <SelectTrigger className="w-36 h-8 bg-panel-header text-secondary-foreground border border-panel-border font-medium">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -503,18 +684,26 @@ export function SubtitlesTab({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-9 w-9 text-destructive hover:text-destructive hover:bg-destructive/10"
+                className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
                 onClick={() => confirmDeleteTrack(activeSubtitleTrack)}
               >
                 <Trash2 className="w-4 h-4" />
               </Button>
             )}
           </div>
-          <div className="flex items-center gap-2 mr-3">
+          <div className="track-selector-actions">
             <Button
               variant="outline"
               size="sm"
-              className="h-9 gap-2"
+              className="h-8 gap-2"
+              onClick={handleImportSubtitles}
+            >
+              Import Subtitles
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-2"
               onClick={duplicateTrack}
             >
               <Copy className="w-4 h-4" />
@@ -523,7 +712,7 @@ export function SubtitlesTab({
             <Button
               variant="default"
               size="sm"
-              className="h-9 gap-2"
+              className="h-8 gap-2"
               onClick={addNewTrack}
             >
               <Plus className="w-4 h-4" />
@@ -534,23 +723,23 @@ export function SubtitlesTab({
       </div>
 
       {/* Track Configuration Card */}
-      <div className="fluent-surface p-3 space-y-2.5 min-h-[188px]">
-        <h3 className="text-sm font-semibold text-foreground">Track Configuration</h3>
+      <div className="config-card space-y-4 min-h-[188px]">
+        <h3 className="text-[12px] uppercase tracking-[0.5px] text-muted-foreground font-semibold">Track Configuration</h3>
         
         {/* Source Folder */}
         <div className="flex items-center gap-3">
-          <label className="text-[13px] text-muted-foreground w-28 shrink-0">Source Folder</label>
+          <label className="config-label">Source Folder</label>
           <div className="flex-1 flex items-center gap-2">
             <Input
               value={currentConfig.sourceFolder}
               onChange={(e) => updateCurrentConfig({ sourceFolder: e.target.value })}
               placeholder="Select subtitle folder path..."
-              className="h-9 flex-1"
+              className="h-8 flex-1 font-mono"
             />
             <Button
               variant="outline"
               size="icon"
-              className="h-9 w-9"
+              className="h-8 w-8"
               onClick={async () => {
                 const folder = await pickDirectory();
                 if (folder) {
@@ -564,7 +753,7 @@ export function SubtitlesTab({
             <Button
               variant="ghost"
               size="icon"
-              className="h-9 w-9 bg-primary/10 text-primary hover:bg-primary/20"
+              className="h-8 w-8 bg-primary/10 text-primary hover:bg-primary/20"
               onClick={() => scanSubtitles(currentConfig.sourceFolder)}
             >
               <RefreshCw className="w-4 h-4" />
@@ -572,7 +761,7 @@ export function SubtitlesTab({
             <Button
               variant="ghost"
               size="icon"
-              className="h-9 w-9 bg-destructive/10 text-destructive hover:bg-destructive/20"
+              className="h-8 w-8 bg-destructive/10 text-destructive hover:bg-destructive/20"
               onClick={() => {
                 updateCurrentConfig({ sourceFolder: '' });
                 onSubtitleFilesChange([]);
@@ -584,11 +773,11 @@ export function SubtitlesTab({
         </div>
 
         {/* Settings Grid */}
-        <div className="grid grid-cols-[1.1fr_1.1fr_1.2fr] gap-4">
-          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2">
-            <label className="text-[13px] text-muted-foreground">Extension</label>
+        <div className="grid grid-cols-[1.1fr_1.1fr_1.2fr] gap-3">
+          <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2">
+            <label className="config-label">Extension</label>
             <Select value={currentConfig.extension} onValueChange={(v) => updateCurrentConfig({ extension: v })}>
-              <SelectTrigger className="h-9 flex-1">
+              <SelectTrigger className="h-8 flex-1">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -602,32 +791,32 @@ export function SubtitlesTab({
             </Select>
           </div>
 
-          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2">
-            <label className="text-[13px] text-muted-foreground">Language</label>
+          <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2">
+            <label className="config-label">Language</label>
             <LanguageSelect
               value={currentConfig.language}
               onChange={(v) => updateCurrentConfig({ language: v })}
-              className="h-9 flex-1"
+              className="h-8 flex-1"
             />
           </div>
 
-          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2">
-            <label className="text-[13px] text-muted-foreground">Track Name</label>
+          <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2">
+            <label className="config-label">Track Name</label>
             <Input
               value={currentConfig.trackName}
               onChange={(e) => updateCurrentConfig({ trackName: e.target.value })}
               placeholder="Enter name"
-              className="h-9 flex-1"
+              className="h-8 flex-1"
             />
           </div>
 
         </div>
 
-        <div className="flex flex-wrap items-center gap-6 pt-1">
-          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2 min-w-[240px]">
-            <label className="text-[13px] text-muted-foreground">Mux After</label>
+        <div className="flex flex-wrap items-center gap-5">
+          <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2 min-w-[240px]">
+            <label className="config-label">Mux After</label>
             <Select value={currentConfig.muxAfter} onValueChange={(v) => updateCurrentConfig({ muxAfter: v })}>
-              <SelectTrigger className="h-9 w-40">
+              <SelectTrigger className="h-8 w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -640,12 +829,12 @@ export function SubtitlesTab({
             </Select>
           </div>
 
-          <div className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-2">
-            <label className="text-[13px] text-muted-foreground">Delay</label>
+          <div className="grid grid-cols-[100px_minmax(0,1fr)_auto] items-center gap-2">
+            <label className="config-label">Delay</label>
             <Input
               value={currentConfig.delay}
               onChange={(e) => updateCurrentConfig({ delay: e.target.value })}
-              className="h-9 w-24 text-center font-mono"
+              className="h-8 w-20 text-center font-mono"
             />
             <span className="text-[12px] text-muted-foreground">sec</span>
           </div>
@@ -672,38 +861,27 @@ export function SubtitlesTab({
       </div>
 
       {/* Matching Panel */}
-      <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
+      <div className="workspace-split flex-1 grid grid-cols-[minmax(400px,1fr)_minmax(400px,1fr)] gap-4 min-h-0 overflow-x-auto">
         {/* Video Files Card */}
         <div className="panel-card flex flex-col min-h-0 overflow-hidden">
           <div className="panel-card-header">
             <div className="flex items-center gap-2">
-              {canLinkSelection ? (
-                <Button
-                  variant="default"
-                  size="sm"
-                  className="panel-text-btn"
-                  onClick={linkSubtitleToVideo}
-                >
-                  Link
-                </Button>
-              ) : null}
               <h4 className="panel-card-title">Video Files</h4>
+              <span className="text-[11px] font-mono text-muted-foreground">{videoFiles.length}</span>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="flex-1 overflow-auto scrollbar-thin">
             {videoFiles.map((file, index) => (
               <div
                 key={file.id}
                 onClick={() => setSelectedVideoIndex(index)}
                 className={cn(
-                  "table-row px-4 text-sm cursor-pointer transition-colors font-mono flex items-center",
+                  "file-item-video",
                   selectedVideoIndex === index && "selected",
                 )}
               >
-                <div className="media-row-main">
-                  <span className="media-row-index">{index + 1}</span>
-                  <span className="media-row-name">{file.name}</span>
-                </div>
+                <span className="media-row-index">{`${index + 1}.`}</span>
+                <span className="media-row-name">{file.name}</span>
               </div>
             ))}
           </div>
@@ -746,9 +924,22 @@ export function SubtitlesTab({
                 <Copy className="w-3 h-3 mr-1" />
                 Duplicate
               </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="panel-text-btn"
+                onClick={() => {
+                  setBulkSelectedVideoIds(videoFiles.map((file) => file.id));
+                  setBulkSelectedSubtitleIds(subtitleFiles.map((file) => file.id));
+                  setBulkOpen(true);
+                }}
+                disabled={videoFiles.length === 0 || subtitleFiles.length === 0}
+              >
+                Bulk Apply
+              </Button>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="flex-1 overflow-auto scrollbar-thin">
             {subtitleFiles.length === 0 ? (
               <EmptyState
                 icon={<FileText className="w-5 h-5 text-muted-foreground/65" />}
@@ -767,27 +958,29 @@ export function SubtitlesTab({
                   onDragOver={(e) => e.preventDefault()}
                   onClick={() => setSelectedSubtitleIndex(index)}
                   onDoubleClick={() => openEditDialog(file.id)}
-                  className={cn(
-                    "table-row px-4 text-sm cursor-pointer transition-colors font-mono flex items-center justify-between gap-3",
-                    selectedSubtitleIndex === index && "selected",
-                    draggedIndex === index && "opacity-60"
-                  )}
+                  className={cn("file-item-audio", selectedSubtitleIndex === index && "selected", draggedIndex === index && "opacity-60")}
                 >
-                  <div className="media-row-main">
-                    <GripVertical className="w-4 h-4 text-muted-foreground/50 hover:text-muted-foreground cursor-grab active:cursor-grabbing shrink-0" />
-                    <span className="media-row-index">{index + 1}</span>
-                    <span className="media-row-name">{file.name}</span>
-                  </div>
+                  <span className="media-row-handle">
+                    <GripVertical className="w-4 h-4" />
+                  </span>
+                  <span className="media-row-index">{`${index + 1}.`}</span>
+                  <span className="media-row-name">{file.name}</span>
                   <div className="media-row-actions">
-                    {file.tracks && file.tracks.length > 1 && (
-                      <span className="table-chip">
-                        {file.tracks.length} tracks
-                      </span>
-                    )}
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="panel-icon-btn"
+                      className="file-action-btn file-action-btn--delete"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        removeSubtitleFile(index);
+                      }}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="file-action-btn file-action-btn--muted"
                       onClick={(event) => {
                         event.stopPropagation();
                         openEditDialog(file.id);
@@ -798,24 +991,13 @@ export function SubtitlesTab({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="panel-icon-btn"
+                      className="file-action-btn file-action-btn--muted"
                       onClick={(event) => {
                         event.stopPropagation();
                         duplicateSubtitleFile(index);
                       }}
                     >
                       <Copy className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="panel-icon-btn"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        removeSubtitleFile(index);
-                      }}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
                     </Button>
                   </div>
                 </div>
@@ -824,6 +1006,183 @@ export function SubtitlesTab({
           </div>
         </div>
       </div>
+
+      <BaseModal
+        open={importStreamsOpen}
+        onOpenChange={setImportStreamsOpen}
+        title="Import Subtitle Streams"
+        subtitle="Import specific subtitle streams from loaded video files."
+        icon={<FileText className="w-5 h-5 text-primary" />}
+        className="max-w-2xl"
+        footerRight={
+          <>
+            <Button variant="ghost" onClick={() => setImportStreamsOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmImportSubtitles} disabled={!importSourceVideoId || importSelectedTrackKeys.length === 0}>
+              Import
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Source Video</label>
+            <Select value={importSourceVideoId} onValueChange={(value) => {
+              setImportSourceVideoId(value);
+              setImportSelectedTrackKeys([]);
+            }}>
+              <SelectTrigger className="h-8">
+                <SelectValue placeholder="Choose source video" />
+              </SelectTrigger>
+              <SelectContent>
+                {videoFiles.map((file) => (
+                  <SelectItem key={file.id} value={file.id}>
+                    {file.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Subtitle Streams</label>
+            <div className="max-h-56 overflow-y-auto rounded border border-panel-border/60 p-2 space-y-2">
+              {importableTracks.length === 0 ? (
+                <div className="text-xs text-muted-foreground px-1 py-2">No subtitle streams available in selected video.</div>
+              ) : (
+                importableTracks.map((track, idx) => {
+                  const trackKey = getImportTrackKey(idx, String(track.id));
+                  const checked = importSelectedTrackKeys.includes(trackKey);
+                  return (
+                    <label key={`${track.id}-${idx}`} className="flex items-center gap-2 px-1 py-1 cursor-pointer text-sm">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(value) => {
+                          setImportSelectedTrackKeys((prev) =>
+                            value
+                              ? Array.from(new Set([...prev, trackKey]))
+                              : prev.filter((id) => id !== trackKey),
+                          );
+                        }}
+                      />
+                      <span className="font-mono text-xs text-muted-foreground">
+                        #{idx + 1}
+                      </span>
+                      <span className="truncate">
+                        {track.name || track.codec || `Subtitle ${idx + 1}`}
+                        {track.language ? ` • ${track.language}` : ""}
+                      </span>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      </BaseModal>
+
+      <BaseModal
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        title="Bulk Apply Subtitle Files"
+        subtitle="Apply selected subtitle files to selected videos with a track subset."
+        icon={<FileText className="w-5 h-5 text-primary" />}
+        className="max-w-2xl"
+        bodyClassName="px-5 py-4"
+        footerRight={
+          <>
+            <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setBulkOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={applyBulkMapping}>Apply</Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-2 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Videos</div>
+              <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                {videoFiles.map((file) => {
+                  const checked = bulkSelectedVideoIds.includes(file.id);
+                  return (
+                    <label key={file.id} className="flex items-center gap-2 text-xs text-foreground/80 cursor-pointer">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(value) => {
+                          setBulkSelectedVideoIds((prev) =>
+                            value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
+                          );
+                        }}
+                      />
+                      <span className="truncate">{file.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-2 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Subtitle Files</div>
+              <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                {subtitleFiles.map((file) => {
+                  const checked = bulkSelectedSubtitleIds.includes(file.id);
+                  const trackCount = file.tracks?.length || file.includedTrackIds?.length || 0;
+                  return (
+                    <label key={file.id} className="flex items-center gap-2 text-xs text-foreground/80 cursor-pointer">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(value) => {
+                          setBulkSelectedSubtitleIds((prev) =>
+                            value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
+                          );
+                        }}
+                      />
+                      <span className="truncate">{file.name}</span>
+                      {trackCount > 1 && (
+                        <span className="ml-auto text-[10px] text-muted-foreground/70">{trackCount} tracks</span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-2 space-y-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Track Subset</div>
+            <div className="flex items-center gap-4 text-xs">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Checkbox
+                  checked={bulkIncludeMode === "all"}
+                  onCheckedChange={(value) => value && setBulkIncludeMode("all")}
+                />
+                All tracks
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Checkbox
+                  checked={bulkIncludeMode === "first"}
+                  onCheckedChange={(value) => value && setBulkIncludeMode("first")}
+                />
+                First
+                <Input
+                  value={bulkFirstCount}
+                  onChange={(event) => setBulkFirstCount(event.target.value)}
+                  className="h-7 w-12 text-center font-mono"
+                />
+                tracks
+              </label>
+            </div>
+          </div>
+          <div className="flex items-center justify-between rounded-md border border-panel-border/50 bg-panel-header/30 px-3 py-2">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+              <Checkbox
+                checked={bulkReplaceExisting}
+                onCheckedChange={(value) => setBulkReplaceExisting(value as boolean)}
+              />
+              Replace existing bulk subtitle mappings for selected videos
+            </label>
+          </div>
+        </div>
+      </BaseModal>
 
       <BaseModal
         open={editDialogOpen}

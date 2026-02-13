@@ -26,6 +26,12 @@ interface ChaptersTabProps {
   onMuxSettingsChange: (settings: Partial<MuxSettings>) => void;
 }
 
+const truncateMiddle = (value: string, maxLength = 52) => {
+  if (!value || value.length <= maxLength) return value;
+  const side = Math.floor((maxLength - 3) / 2);
+  return `${value.slice(0, side)}...${value.slice(value.length - side)}`;
+};
+
 export function ChaptersTab({
   chapterFiles,
   videoFiles,
@@ -168,7 +174,7 @@ export function ChaptersTab({
   };
 
   return (
-    <div className="flex flex-col h-full p-5 gap-4">
+    <div className="flex flex-col h-full p-5 gap-4 bg-background">
       {/* Chapters Enable Toggle */}
       <div className="panel-card flex items-center gap-2 px-4 py-2.5">
         <Checkbox 
@@ -185,17 +191,17 @@ export function ChaptersTab({
         <label htmlFor="chapters-enabled" className="text-sm font-medium cursor-pointer">Chapters</label>
       </div>
 
-      <div className="fluent-surface p-3 space-y-2.5">
+      <div className="config-card space-y-4">
         {/* Controls Row 1 */}
         <div className="control-row">
-          <label className="text-sm text-muted-foreground whitespace-nowrap min-w-[140px]">
+          <label className="config-label w-[140px]">
             Chapter Source Folder:
           </label>
           <Input
             value={sourceFolder}
             onChange={(e) => updateChapterTabState({ sourceFolder: e.target.value })}
             placeholder="Enter Chapter Folder Path"
-            className="app-input flex-1"
+            className="app-input flex-1 font-mono"
             disabled={!chaptersEnabled}
           />
           <div className="flex items-center gap-1">
@@ -239,15 +245,15 @@ export function ChaptersTab({
         </div>
 
         {/* Settings Row */}
-        <div className="grid grid-cols-[1.1fr_1fr_1.2fr] gap-4 items-center">
+        <div className="grid grid-cols-[1.1fr_1fr_1.2fr] gap-3 items-center">
           <div className="grid grid-cols-[124px_minmax(0,1fr)] items-center gap-2">
-            <label className="text-[13px] text-muted-foreground whitespace-nowrap">Chapter Extension</label>
+            <label className="config-label whitespace-nowrap">Chapter Extension</label>
             <Select
               value={extension}
               onValueChange={(v) => updateChapterTabState({ extension: v })}
               disabled={!chaptersEnabled}
             >
-              <SelectTrigger className="h-9 w-32">
+              <SelectTrigger className="h-8 w-32">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -261,12 +267,12 @@ export function ChaptersTab({
             </Select>
           </div>
 
-          <div className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-2">
-            <label className="text-[13px] text-muted-foreground whitespace-nowrap">Delay</label>
+          <div className="grid grid-cols-[100px_minmax(0,1fr)_auto] items-center gap-2">
+            <label className="config-label whitespace-nowrap">Delay</label>
             <Input
               value={chapterDelay}
               onChange={(e) => updateChapterTabState({ delay: e.target.value })}
-              className="h-9 w-28 text-center font-mono"
+              className="h-8 w-20 text-center font-mono"
               disabled={!chaptersEnabled}
             />
             <span className="text-[12px] text-muted-foreground">sec</span>
@@ -309,9 +315,9 @@ export function ChaptersTab({
       </div>
 
       {/* Dual Panel Matching */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="workspace-split flex-1 flex overflow-hidden gap-4">
         {/* Video List */}
-        <div className="panel-card flex-1 flex flex-col border-r border-panel-border/30 overflow-hidden">
+        <div className="panel-card flex-1 flex flex-col overflow-hidden">
           <div className="panel-card-header">
             <div className="panel-card-title">Video Name</div>
           </div>
@@ -321,13 +327,13 @@ export function ChaptersTab({
                 key={file.id}
                 onClick={() => setSelectedVideoIndex(index)}
                 className={cn(
-                    "table-row px-4 text-sm cursor-pointer transition-smooth font-mono flex items-center",
+                    "file-item-video",
                     selectedVideoIndex === index && "selected",
                   )}
               >
                 <div className="media-row-main">
                   <span className="media-row-index">{index + 1}</span>
-                  <span className="media-row-name">{file.name}</span>
+                  <span className="media-row-name">{truncateMiddle(file.name)}</span>
                 </div>
               </div>
             ))}
@@ -335,7 +341,7 @@ export function ChaptersTab({
         </div>
 
         {/* Reorder Controls */}
-        <div className="flex flex-col items-center justify-center gap-2 px-3 py-4 bg-panel-header rounded-md border border-panel-border/25">
+        <div className="flex flex-col items-center justify-center gap-2 px-2 py-4 bg-panel-header rounded-md border border-panel-border">
           <Button
             variant="secondary"
             size="sm"
@@ -412,14 +418,14 @@ export function ChaptersTab({
                   key={file.id}
                   onClick={() => setSelectedChapterIndex(index)}
                   onDoubleClick={() => openEditDialog(file.id)}
-                  className={cn(
-                    "table-row px-4 text-sm cursor-pointer transition-smooth font-mono flex items-center justify-between gap-2",
+                className={cn(
+                    "file-item-audio",
                     selectedChapterIndex === index && "selected",
                   )}
-                >
-                  <div className="media-row-main">
-                    <span className="media-row-index">{index + 1}</span>
-                    <span className="media-row-name">{file.name}</span>
+              >
+                <div className="media-row-main">
+                  <span className="media-row-index">{index + 1}</span>
+                    <span className="media-row-name">{truncateMiddle(file.name)}</span>
                     {Number(file.delay) !== 0 && (
                       <span className="text-xs text-muted-foreground/60">
                         ({Number(file.delay) > 0 ? '+' : ''}{Number(file.delay).toFixed(3)}s)

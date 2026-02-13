@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, RefreshCw, FolderOpen, Film, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,7 +9,14 @@ import {
 import { ModifyTracksDialog } from "./ModifyTracksDialog";
 import { VideoFileEditDialog } from "./VideoFileEditDialog";
 import type { Preset, VideoFile, ExternalFile } from "@/types";
-import { pickDirectory, scanMedia, inspectPaths } from "@/lib/backend";
+import {
+  pickDirectory,
+  scanMedia,
+  inspectPathsStream,
+  listenInspectPathsStreamChunk,
+  listenInspectPathsStreamDone,
+  listenInspectPathsStreamError,
+} from "@/lib/backend";
 import { open as openExternal } from "@tauri-apps/api/shell";
 import { VIDEO_EXTENSIONS } from "@/lib/extensions";
 import { PageLayout } from "@/components/shared/PageLayout";
@@ -77,6 +84,37 @@ export function VideosTab({
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const scanTokenRef = useRef(0);
   const scanAbortRef = useRef(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+
+  const ROW_HEIGHT = 44;
+  const OVERSCAN_ROWS = 8;
+  const shouldVirtualize = files.length > 120;
+
+  const virtualRange = useMemo(() => {
+    if (!shouldVirtualize) {
+      return {
+        startIndex: 0,
+        endIndex: files.length,
+        topSpacer: 0,
+        bottomSpacer: 0,
+      };
+    }
+    const visibleRows = Math.ceil(viewportHeight / ROW_HEIGHT);
+    const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN_ROWS);
+    const endIndex = Math.min(files.length, startIndex + visibleRows + OVERSCAN_ROWS * 2);
+    return {
+      startIndex,
+      endIndex,
+      topSpacer: startIndex * ROW_HEIGHT,
+      bottomSpacer: Math.max(0, (files.length - endIndex) * ROW_HEIGHT),
+    };
+  }, [files.length, scrollTop, viewportHeight, shouldVirtualize]);
+
+  const visibleFiles = shouldVirtualize
+    ? files.slice(virtualRange.startIndex, virtualRange.endIndex)
+    : files;
 
   const updateFiles = (next: VideoFile[]) => {
     startTransition(() => {
@@ -178,6 +216,17 @@ export function VideosTab({
     }
   }, [preset]);
 
+  useEffect(() => {
+    const element = bodyRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => {
+      setViewportHeight(element.clientHeight);
+    });
+    observer.observe(element);
+    setViewportHeight(element.clientHeight);
+    return () => observer.disconnect();
+  }, []);
+
   const cancelScan = () => {
     scanAbortRef.current = true;
     setIsScanning(false);
@@ -196,6 +245,8 @@ export function VideosTab({
     setIsScanning(true);
     setShowScanOverlay(true);
     setScanProgress({ current: 0, total: 0 });
+    const scanStartedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+    let firstChunkAt: number | null = null;
     const extensions = videoExtension === "all" ? [...videoExtensions] : [videoExtension];
     try {
       const results = (await scanMedia({
@@ -216,27 +267,78 @@ export function VideosTab({
       const paths = currentFiles.map((file) => file.path);
       setScanProgress({ current: 0, total: paths.length });
 
-      const batchSize = 8;
+      const byPath = new Map(currentFiles.map((file) => [file.path, file]));
       let processed = 0;
-      for (let i = 0; i < paths.length; i += batchSize) {
-        if (scanAbortRef.current || scanTokenRef.current !== scanToken) return;
-        const batch = paths.slice(i, i + batchSize);
-        const inspected = (await inspectPaths({
-          paths: batch,
-          type: "video",
-          include_tracks: true,
-        })) as VideoFile[];
+      let updateQueued = false;
+      const queueUiUpdate = () => {
+        if (updateQueued) return;
+        updateQueued = true;
+        requestAnimationFrame(() => {
+          updateQueued = false;
+          if (scanAbortRef.current || scanTokenRef.current !== scanToken) return;
+          currentFiles = Array.from(byPath.values());
+          updateFiles(currentFiles);
+          setScanProgress({ current: processed, total: paths.length });
+        });
+      };
 
+      const streamId = `video-scan-${scanToken}`;
+      let resolveDone: () => void = () => undefined;
+      let rejectDone: (error: Error) => void = () => undefined;
+      const donePromise = new Promise<void>((resolve, reject) => {
+        resolveDone = resolve;
+        rejectDone = reject;
+      });
+
+      const unlistenChunk = await listenInspectPathsStreamChunk((payload) => {
+        if (payload.scanId !== streamId) return;
         if (scanAbortRef.current || scanTokenRef.current !== scanToken) return;
-        const byPath = new Map(currentFiles.map((file) => [file.path, file]));
-        for (const item of inspected) {
+        if (firstChunkAt === null) {
+          firstChunkAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+        }
+        for (const item of payload.items as VideoFile[]) {
           byPath.set(item.path, item);
         }
+        processed = payload.processed;
+        queueUiUpdate();
+      });
+      const unlistenDone = await listenInspectPathsStreamDone((payload) => {
+        if (payload.scanId !== streamId) return;
+        resolveDone();
+      });
+      const unlistenError = await listenInspectPathsStreamError((payload) => {
+        if (payload.scanId !== streamId) return;
+        rejectDone(new Error(payload.message || "Scan stream failed."));
+      });
+
+      try {
+        await inspectPathsStream({
+          scan_id: streamId,
+          paths,
+          type: "video",
+          include_tracks: true,
+          batch_size: 24,
+        });
+        await donePromise;
+      } finally {
+        unlistenChunk();
+        unlistenDone();
+        unlistenError();
+      }
+
+      if (scanAbortRef.current || scanTokenRef.current !== scanToken) return;
+      if (!updateQueued) {
         currentFiles = Array.from(byPath.values());
         updateFiles(currentFiles);
+        setScanProgress({ current: paths.length, total: paths.length });
+      }
 
-        processed += inspected.length;
-        setScanProgress({ current: processed, total: paths.length });
+      if (import.meta.env.DEV) {
+        const completedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+        const firstPaintMs = firstChunkAt ? Math.round(firstChunkAt - scanStartedAt) : -1;
+        const totalMs = Math.round(completedAt - scanStartedAt);
+        // eslint-disable-next-line no-console
+        console.info(`[perf] video scan first-chunk=${firstPaintMs}ms total=${totalMs}ms files=${paths.length}`);
       }
     } finally {
       if (scanTokenRef.current === scanToken) {
@@ -389,7 +491,14 @@ export function VideosTab({
             <DataTableCell className="right">Size</DataTableCell>
           </DataTableHeader>
 
-          <DataTableBody className="flex-1">
+          <DataTableBody
+            ref={bodyRef}
+            className="flex-1"
+            onScroll={(event) => {
+              if (!shouldVirtualize) return;
+              setScrollTop(event.currentTarget.scrollTop);
+            }}
+          >
             {files.length === 0 ? (
               <EmptyState
                 icon={
@@ -407,13 +516,19 @@ export function VideosTab({
                 }
               />
             ) : (
-              files.map((file, index) => (
+              <>
+                {virtualRange.topSpacer > 0 && <div style={{ height: virtualRange.topSpacer }} />}
+                {visibleFiles.map((file, visibleIndex) => {
+                  const index = shouldVirtualize
+                    ? virtualRange.startIndex + visibleIndex
+                    : visibleIndex;
+                  return (
                 <DataTableRow
                   key={file.id}
                   selected={selectedFileIds.includes(file.id)}
                   onClick={(event) => handleRowClick(event, index, file.id)}
                   onDoubleClick={() => handleDoubleClick(file)}
-                  className="group grid grid-cols-[1fr_90px_120px_140px] items-center cursor-pointer"
+                  className="group grid grid-cols-[1fr_90px_120px_140px] items-center cursor-pointer h-[44px]"
                 >
                   <DataTableCell className="font-mono text-foreground/85">{file.name}</DataTableCell>
                   <DataTableCell className="right muted tabular-nums">{formatFps(file.fps)}</DataTableCell>
@@ -422,7 +537,10 @@ export function VideosTab({
                     {formatFileSize(file.size)}
                   </DataTableCell>
                 </DataTableRow>
-              ))
+                  );
+                })}
+                {virtualRange.bottomSpacer > 0 && <div style={{ height: virtualRange.bottomSpacer }} />}
+              </>
             )}
           </DataTableBody>
           <div className="flex items-center justify-between px-3 py-2 border-t border-panel-border/40 bg-panel-header/40">

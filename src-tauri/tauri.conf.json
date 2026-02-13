@@ -24,6 +24,9 @@
       },
       "shell": {
         "open": true
+      },
+      "window": {
+        "all": true
       }
     },
     "bundle": {
@@ -47,7 +50,7 @@
         "fullscreen": false,
         "maximized": false,
         "resizable": true,
-        "decorations": true,
+        "decorations": false,
         "transparent": false
       }
     ]

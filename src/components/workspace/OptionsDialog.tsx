@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FolderOpen, Settings, Info, Heart, RotateCcw, Download, Copy, Moon, X, SlidersHorizontal, Folder, FileType2, Languages, Plug } from "lucide-react";
+import { FolderOpen, Settings, Info, RotateCcw, Download, Copy, Moon, X, SlidersHorizontal, Folder, FileType2, Languages, Plug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectItem, SelectValue } from "@/components/ui/select";
 import type { OptionsData, Preset } from "@/types";
@@ -521,16 +521,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
               variant="ghost"
               size="sm"
               className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
-              onClick={() => openExternal("https://github.com/yaser01/mkv-muxing-batch-gui#donate")}
-            >
-              <Heart className="w-3.5 h-3.5 text-destructive" />
-              Donate
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
-              onClick={() => openExternal("https://github.com/yaser01/mkv-muxing-batch-gui")}
+              onClick={() => openExternal("https://github.com/AdkHex/MkvBatchMux")}
             >
               <Info className="w-3.5 h-3.5 text-primary" />
               About Ionicboy

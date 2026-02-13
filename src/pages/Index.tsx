@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Settings,
-  Keyboard,
   Video,
   Subtitles,
   AudioLines,
@@ -9,6 +8,7 @@ import {
   Paperclip,
   SlidersHorizontal,
   Film,
+  LayoutGrid,
 } from "lucide-react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { VideosTab } from "@/components/workspace/VideosTab";
@@ -198,6 +198,7 @@ const Index = () => {
         const now = Date.now();
         return prev.map((job) => {
           if (job.id !== payload.job_id) return job;
+          if (job.status === "stopped") return job;
           const status = payload.status as MuxJob["status"];
           const startedAt = job.startedAt ?? (status === "processing" ? now : job.startedAt);
           let etaSeconds = job.etaSeconds;
@@ -763,7 +764,7 @@ const Index = () => {
     setJobs((prev) =>
       prev.map((job) =>
         job.status === "processing" || job.status === "queued"
-          ? { ...job, status: "error", errorMessage: "Stopped by user." }
+          ? { ...job, status: "stopped", errorMessage: "Stopped by user." }
           : job,
       ),
     );
@@ -1014,18 +1015,13 @@ const Index = () => {
             collapsed={sidebarCollapsed}
             onSelect={(id) => setActiveTab(id as TabId)}
             onToggleCollapse={toggleSidebar}
-            brand={
-              <>
-                <div className="w-8 h-8 rounded-md bg-primary flex items-center justify-center shrink-0">
-                  <Film className="w-4 h-4 text-primary-foreground" />
-                </div>
-                {!sidebarCollapsed && (
-                  <h1 className="text-sm font-semibold text-foreground tracking-tight">MKV Batch</h1>
-                )}
-              </>
+                brand={
+                  <div className="w-9 h-9 rounded-lg bg-accent/20 border border-accent/40 flex items-center justify-center shrink-0">
+                    <Film className="w-4 h-4 text-primary" />
+                  </div>
+                }
+              />
             }
-          />
-        }
         topbar={
           <CommandBar
             title={activeNavItem?.label || "Videos"}
@@ -1035,7 +1031,7 @@ const Index = () => {
                   <Settings />
                 </IconButton>
                 <IconButton onClick={() => setIsShortcutsOpen(true)} aria-label="Keyboard shortcuts">
-                  <Keyboard />
+                  <LayoutGrid />
                 </IconButton>
               </>
             }

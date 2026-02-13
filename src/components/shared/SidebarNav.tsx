@@ -20,12 +20,21 @@ interface SidebarNavProps {
 
 export function SidebarNav({ items, activeId, collapsed, onSelect, onToggleCollapse, brand }: SidebarNavProps) {
   return (
-    <aside className={cn("fluent-sidebar flex flex-col shrink-0 transition-all duration-300", collapsed ? "w-14" : "w-48")}>
-      <div className={cn("h-14 flex items-center gap-2.5 shrink-0", collapsed ? "justify-center px-2" : "px-4")}>
+    <aside
+      className={cn(
+        "fluent-sidebar flex flex-col shrink-0 transition-all duration-200 ease-out",
+        "w-12",
+      )}
+    >
+      <div
+        className={cn(
+          "h-12 flex items-center justify-center shrink-0",
+        )}
+      >
         {brand}
       </div>
 
-      <nav className={cn("flex-1 py-2", collapsed ? "px-2" : "px-3")}>
+      <nav className="flex-1 py-2 px-1.5">
         <div className="space-y-1">
           {items.map((item) => {
             const Icon = item.icon;
@@ -36,55 +45,38 @@ export function SidebarNav({ items, activeId, collapsed, onSelect, onToggleColla
                 onClick={() => onSelect(item.id)}
                 className={cn(
                   "fluent-sidebar-item border border-transparent",
-                  collapsed ? "justify-center px-0" : "px-3",
+                  "min-h-10 px-0",
                   isActive && "is-active",
                 )}
+                aria-label={item.label}
               >
-                <Icon className="w-4 h-4 shrink-0" />
-                {!collapsed && <span>{item.label}</span>}
+                <Icon className="w-[18px] h-[18px] shrink-0" />
               </button>
             );
 
-            if (collapsed) {
-              return (
-                <Tooltip key={item.id}>
-                  <TooltipTrigger asChild>{button}</TooltipTrigger>
-                  <TooltipContent side="right" className="text-xs">
-                    {item.label}
-                  </TooltipContent>
-                </Tooltip>
-              );
-            }
-
-            return button;
+            return (
+              <Tooltip key={item.id}>
+                <TooltipTrigger asChild>{button}</TooltipTrigger>
+                <TooltipContent side="right" className="text-xs">
+                  {item.label}
+                </TooltipContent>
+              </Tooltip>
+            );
           })}
         </div>
       </nav>
 
-      <div className={cn("py-3 border-t border-sidebar-border", collapsed ? "px-2" : "px-3")}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={onToggleCollapse}
-              className={cn(
-                "flex items-center gap-2 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors w-full",
-                collapsed ? "justify-center" : "px-3",
-              )}
-            >
-              {collapsed ? (
-                <PanelLeft className="w-4 h-4" />
-              ) : (
-                <>
-                  <PanelLeftClose className="w-4 h-4" />
-                  <span>Collapse</span>
-                </>
-              )}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right" className="text-xs">
-            {collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          </TooltipContent>
-        </Tooltip>
+      <div className="py-2 border-t border-sidebar-border px-1.5">
+        <button
+          onClick={onToggleCollapse}
+          className={cn(
+            "fluent-sidebar-item border border-transparent",
+            "min-h-10 px-0",
+          )}
+          aria-label="Toggle sidebar"
+        >
+          {collapsed ? <PanelLeft className="w-[18px] h-[18px]" /> : <PanelLeftClose className="w-[18px] h-[18px]" />}
+        </button>
       </div>
     </aside>
   );

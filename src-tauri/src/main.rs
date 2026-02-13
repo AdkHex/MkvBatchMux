@@ -2,16 +2,17 @@
 
 use crc32fast::Hasher;
 use fs2::available_space;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::sync::{Arc, Mutex, mpsc};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
@@ -19,6 +20,9 @@ use walkdir::WalkDir;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+static MEDIAINFO_AVAILABLE: OnceLock<bool> = OnceLock::new();
+static MKVMERGE_AVAILABLE: OnceLock<bool> = OnceLock::new();
+static FILE_INFO_CACHE: OnceLock<Mutex<HashMap<String, serde_json::Value>>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Preset {
@@ -197,6 +201,39 @@ struct InspectRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+struct InspectStreamRequest {
+    scan_id: String,
+    paths: Vec<String>,
+    #[serde(rename = "type")]
+    file_type: String,
+    include_tracks: bool,
+    batch_size: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InspectStreamChunkEvent {
+    scan_id: String,
+    processed: usize,
+    total: usize,
+    items: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InspectStreamDoneEvent {
+    scan_id: String,
+    total: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InspectStreamErrorEvent {
+    scan_id: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct MuxSettings {
     destination_dir: String,
@@ -308,7 +345,8 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
 
 fn read_options(path: &Path) -> Result<OptionsData, String> {
     if path.exists() {
-        let content = fs::read_to_string(path).map_err(|e| format!("Failed to read options: {e}"))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("Failed to read options: {e}"))?;
         serde_json::from_str(&content).map_err(|e| format!("Failed to parse options JSON: {e}"))
     } else {
         Ok(OptionsData::default())
@@ -316,11 +354,12 @@ fn read_options(path: &Path) -> Result<OptionsData, String> {
 }
 
 fn write_options(path: &Path, options: &OptionsData) -> Result<(), String> {
-    let content = serde_json::to_string_pretty(options).map_err(|e| format!("Failed to encode options: {e}"))?;
+    let content = serde_json::to_string_pretty(options)
+        .map_err(|e| format!("Failed to encode options: {e}"))?;
     fs::write(path, content).map_err(|e| format!("Failed to write options: {e}"))
 }
 
-fn normalize_extension_list(extensions: &[String]) -> Vec<String> {
+fn normalize_extension_list(extensions: &[String]) -> HashSet<String> {
     extensions
         .iter()
         .map(|ext| ext.trim_start_matches('.').to_ascii_lowercase())
@@ -328,8 +367,8 @@ fn normalize_extension_list(extensions: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn should_include_file(path: &Path, allowed_extensions: &[String]) -> bool {
-    if allowed_extensions.is_empty() || allowed_extensions.iter().any(|ext| ext == "all") {
+fn should_include_file(path: &Path, allowed_extensions: &HashSet<String>) -> bool {
+    if allowed_extensions.is_empty() || allowed_extensions.contains("all") {
         return true;
     }
     path.extension()
@@ -352,16 +391,6 @@ fn hidden_command(program: &str) -> Command {
     }
 }
 
-fn mediainfo_available() -> bool {
-    hidden_command("mediainfo")
-        .arg("--Version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
 fn tool_available(tool: &str, version_arg: &str) -> bool {
     hidden_command(tool)
         .arg(version_arg)
@@ -372,8 +401,55 @@ fn tool_available(tool: &str, version_arg: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn mediainfo_available() -> bool {
+    *MEDIAINFO_AVAILABLE.get_or_init(|| tool_available("mediainfo", "--Version"))
+}
+
+fn mkvmerge_available() -> bool {
+    *MKVMERGE_AVAILABLE.get_or_init(|| tool_available("mkvmerge", "-V"))
+}
+
+fn file_info_cache() -> &'static Mutex<HashMap<String, serde_json::Value>> {
+    FILE_INFO_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn build_file_cache_key(
+    path: &Path,
+    metadata: &fs::Metadata,
+    file_type: &str,
+    include_tracks: bool,
+) -> String {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|timestamp| timestamp.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    format!(
+        "{}|{}|{}|{}|{}",
+        path.to_string_lossy(),
+        metadata.len(),
+        modified,
+        file_type,
+        include_tracks
+    )
+}
+
+fn get_cached_file_info(cache_key: &str) -> Option<serde_json::Value> {
+    file_info_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(cache_key).cloned())
+}
+
+fn put_cached_file_info(cache_key: String, value: &serde_json::Value) {
+    if let Ok(mut cache) = file_info_cache().lock() {
+        cache.insert(cache_key, value.clone());
+    }
+}
+
 fn get_mkvmerge_info(path: &Path) -> Option<serde_json::Value> {
-    if !tool_available("mkvmerge", "-V") {
+    if !mkvmerge_available() {
         return None;
     }
     let output = hidden_command("mkvmerge")
@@ -412,15 +488,15 @@ fn parse_mkvmerge_duration(mkvmerge: &serde_json::Value) -> Option<String> {
     } else {
         return None;
     };
-    
+
     // Convert nanoseconds to seconds
     let seconds = nanoseconds / 1_000_000_000.0;
-    
+
     // Ensure seconds is reasonable (not negative, not more than 24 hours for most videos)
     if seconds < 0.0 || !seconds.is_finite() || seconds > 86400.0 * 365.0 {
         return None;
     }
-    
+
     let total_seconds = seconds.round() as u64;
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
@@ -434,7 +510,10 @@ fn parse_mkvmerge_tracks(mkvmerge: &serde_json::Value) -> Vec<TrackInfo> {
         return tracks;
     };
     for track in track_items {
-        let track_type = track.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
+        let track_type = track
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("unknown");
         let mapped_type = match track_type {
             "video" => "video",
             "audio" => "audio",
@@ -448,7 +527,10 @@ fn parse_mkvmerge_tracks(mkvmerge: &serde_json::Value) -> Vec<TrackInfo> {
             .get("id")
             .map(|value| value.to_string())
             .unwrap_or_else(|| "0".to_string());
-        let codec = track.get("codec").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let codec = track
+            .get("codec")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let properties = track.get("properties");
         let language = properties
             .and_then(|p| p.get("language"))
@@ -464,7 +546,7 @@ fn parse_mkvmerge_tracks(mkvmerge: &serde_json::Value) -> Vec<TrackInfo> {
         let is_forced = properties
             .and_then(|p| p.get("forced_track"))
             .and_then(|v| v.as_bool());
-        
+
         // Extract bitrate (in bits per second) - mkvmerge may use different field names
         // Try multiple possible field names: bit_rate, tag_bps, or calculate from properties
         let bitrate = properties.and_then(|p| {
@@ -494,15 +576,20 @@ fn parse_mkvmerge_tracks(mkvmerge: &serde_json::Value) -> Vec<TrackInfo> {
             }
             // For audio tracks, try calculating from audio properties if available
             if mapped_type == "audio" {
-                let bits_per_sample = p.get("audio_bits_per_sample")
+                let bits_per_sample = p
+                    .get("audio_bits_per_sample")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(16);
-                let sample_rate = p.get("audio_sampling_frequency")
+                let sample_rate = p
+                    .get("audio_sampling_frequency")
                     .and_then(|v| v.as_u64())
-                    .or_else(|| p.get("audio_sampling_frequency").and_then(|v| v.as_f64()).map(|f| f as u64));
-                let channels = p.get("audio_channels")
-                    .and_then(|v| v.as_u64());
-                
+                    .or_else(|| {
+                        p.get("audio_sampling_frequency")
+                            .and_then(|v| v.as_f64())
+                            .map(|f| f as u64)
+                    });
+                let channels = p.get("audio_channels").and_then(|v| v.as_u64());
+
                 if let (Some(sr), Some(ch)) = (sample_rate, channels) {
                     // Calculate raw PCM bitrate (not compressed, but gives an estimate)
                     return Some(bits_per_sample * sr * ch);
@@ -548,7 +635,7 @@ fn parse_duration(mediainfo: &serde_json::Value) -> Option<String> {
             if let Some(duration) = track.get("Duration") {
                 // mediainfo JSON output returns duration in seconds as a string (e.g., "7749.320")
                 let duration_str = duration.as_str()?;
-                
+
                 // First try parsing as seconds (most common for mediainfo JSON)
                 if let Ok(seconds) = duration_str.trim().parse::<f64>() {
                     let total_seconds = seconds.round() as u64;
@@ -557,7 +644,7 @@ fn parse_duration(mediainfo: &serde_json::Value) -> Option<String> {
                     let secs = total_seconds % 60;
                     return Some(format!("{:02}:{:02}:{:02}", hours, minutes, secs));
                 }
-                
+
                 // Try parsing as HH:MM:SS.mmm format
                 if duration_str.contains(':') {
                     let parts: Vec<&str> = duration_str.split(':').collect();
@@ -586,7 +673,10 @@ fn parse_video_fps(mediainfo: &serde_json::Value) -> Option<f64> {
                 .or_else(|| track.get("FrameRate_Original"))
                 .or_else(|| track.get("FrameRate_Nominal"));
             if let Some(v) = value.and_then(|v| v.as_str()) {
-                let cleaned: String = v.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+                let cleaned: String = v
+                    .chars()
+                    .filter(|c| c.is_ascii_digit() || *c == '.')
+                    .collect();
                 if let Ok(parsed) = cleaned.parse::<f64>() {
                     return Some(parsed);
                 }
@@ -599,7 +689,6 @@ fn parse_video_fps(mediainfo: &serde_json::Value) -> Option<f64> {
     }
     None
 }
-
 
 fn parse_bitrate_value(value: &serde_json::Value) -> Option<u64> {
     if let Some(v) = value.as_u64() {
@@ -627,7 +716,11 @@ fn parse_bitrate_value(value: &serde_json::Value) -> Option<u64> {
 
 fn parse_tracks(mediainfo: &serde_json::Value) -> Vec<TrackInfo> {
     let mut tracks = Vec::new();
-    let Some(track_items) = mediainfo.get("media").and_then(|m| m.get("track")).and_then(|t| t.as_array()) else {
+    let Some(track_items) = mediainfo
+        .get("media")
+        .and_then(|m| m.get("track"))
+        .and_then(|t| t.as_array())
+    else {
         return tracks;
     };
 
@@ -646,9 +739,18 @@ fn parse_tracks(mediainfo: &serde_json::Value) -> Vec<TrackInfo> {
         if mapped_type == "unknown" {
             continue;
         }
-        let codec = track.get("Format").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let language = track.get("Language").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let name = track.get("Title").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let codec = track
+            .get("Format")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let language = track
+            .get("Language")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let name = track
+            .get("Title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let is_default = track
             .get("Default")
             .and_then(|v| v.as_str())
@@ -657,7 +759,7 @@ fn parse_tracks(mediainfo: &serde_json::Value) -> Vec<TrackInfo> {
             .get("Forced")
             .and_then(|v| v.as_str())
             .map(|v| v.eq_ignore_ascii_case("Yes"));
-        
+
         // Extract bitrate from mediainfo (in bits per second)
         // mediainfo can provide bitrate as "BitRate" or "BitRate_Mode" + "BitRate"
         let bitrate = track
@@ -811,27 +913,40 @@ fn scan_files(request: &ScanRequest) -> Result<Vec<PathBuf>, String> {
     Ok(results)
 }
 
-fn build_file_info(path: &Path, file_type: &str, include_tracks: bool) -> Result<serde_json::Value, String> {
-    // Safely get file metadata - return error if file doesn't exist or can't be read
-    let metadata = fs::metadata(path).map_err(|e| format!("Failed to read metadata for {:?}: {e}", path))?;
+fn build_file_info(
+    path: &Path,
+    file_type: &str,
+    include_tracks: bool,
+) -> Result<serde_json::Value, String> {
+    let metadata =
+        fs::metadata(path).map_err(|e| format!("Failed to read metadata for {:?}: {e}", path))?;
+    let cache_key = build_file_cache_key(path, &metadata, file_type, include_tracks);
+    if let Some(cached) = get_cached_file_info(&cache_key) {
+        return Ok(cached);
+    }
     let size = metadata.len();
-    
-    // Safely extract file name - use a fallback if name can't be determined
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            // Fallback: use the full path as name if filename extraction fails
-            path.to_string_lossy().to_string()
-        });
-    
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
     let full_path = path.to_string_lossy().to_string();
     let id = generate_id(file_type);
 
-    if file_type == "video" {
+    let value = if file_type == "video" && !include_tracks {
+        let video = VideoFileInfo {
+            id,
+            name,
+            path: full_path,
+            size,
+            duration: None,
+            fps: None,
+            status: "pending".to_string(),
+            tracks: Vec::new(),
+        };
+        serde_json::to_value(video).map_err(|e| format!("Serialize error: {e}"))?
+    } else if file_type == "video" {
         let mkvmerge_info = get_mkvmerge_info(path);
-        // Always try to get mediainfo for supplementary data (like bitrate)
         let mediainfo = get_mediainfo(path);
         let duration = mkvmerge_info
             .as_ref()
@@ -847,20 +962,22 @@ fn build_file_info(path: &Path, file_type: &str, include_tracks: bool) -> Result
         } else {
             Vec::new()
         };
-        
+
         // If we have mediainfo, supplement missing bitrate data for audio tracks
         if let Some(mi) = mediainfo.as_ref() {
             let mi_tracks = parse_tracks(mi);
-            let mi_audio_tracks: Vec<_> = mi_tracks.iter()
+            let mi_audio_tracks: Vec<_> = mi_tracks
+                .iter()
                 .filter(|t| t.track_type == "audio")
                 .collect();
-            
+
             // Build a list of audio track IDs first to avoid borrow conflicts
-            let audio_track_ids: Vec<String> = tracks.iter()
+            let audio_track_ids: Vec<String> = tracks
+                .iter()
                 .filter(|t| t.track_type == "audio")
                 .map(|t| t.id.clone())
                 .collect();
-            
+
             // Prefer mediainfo bitrate for audio tracks (more accurate for VBR)
             for track in tracks.iter_mut() {
                 if track.track_type == "audio" {
@@ -874,7 +991,7 @@ fn build_file_info(path: &Path, file_type: &str, include_tracks: bool) -> Result
                 }
             }
         }
-        
+
         let video = VideoFileInfo {
             id,
             name,
@@ -885,21 +1002,21 @@ fn build_file_info(path: &Path, file_type: &str, include_tracks: bool) -> Result
             status: "pending".to_string(),
             tracks,
         };
-        serde_json::to_value(video).map_err(|e| format!("Serialize error: {e}"))
+        serde_json::to_value(video).map_err(|e| format!("Serialize error: {e}"))?
     } else {
-        // For non-video files (chapter, attachment, audio, subtitle)
-        // Ensure file_type is valid and matches expected values
         let normalized_file_type = match file_type {
             "chapter" | "attachment" | "audio" | "subtitle" => file_type.to_string(),
             _ => {
-                // If file_type is unexpected, default based on file extension or use provided type
-                // This prevents crashes from invalid file_type values
-                eprintln!("Warning: Unexpected file_type '{}' for file {:?}, using as-is", file_type, path);
+                eprintln!(
+                    "Warning: Unexpected file_type '{}' for file {:?}, using as-is",
+                    file_type, path
+                );
                 file_type.to_string()
             }
         };
-        
-        let mkvmerge_info = if normalized_file_type == "audio" || normalized_file_type == "subtitle" {
+
+        let mkvmerge_info = if normalized_file_type == "audio" || normalized_file_type == "subtitle"
+        {
             get_mkvmerge_info(path)
         } else {
             None
@@ -983,8 +1100,12 @@ fn build_file_info(path: &Path, file_type: &str, include_tracks: bool) -> Result
             track_overrides: HashMap::new(),
             apply_language: true,
         };
-        serde_json::to_value(external).map_err(|e| format!("Serialize error for {:?}: {e}", path))
-    }
+        serde_json::to_value(external)
+            .map_err(|e| format!("Serialize error for {:?}: {e}", path))?
+    };
+
+    put_cached_file_info(cache_key, &value);
+    Ok(value)
 }
 
 #[tauri::command]
@@ -1007,39 +1128,109 @@ fn save_options(state: State<AppState>, options: OptionsData) -> Result<(), Stri
 #[tauri::command]
 fn scan_media(request: ScanRequest) -> Result<Vec<serde_json::Value>, String> {
     let files = scan_files(&request)?;
-    let mut results = Vec::new();
-
-    for path in files {
-        match build_file_info(&path, &request.file_type, request.include_tracks) {
-            Ok(file_info) => results.push(file_info),
-            Err(e) => {
-                // Log error but continue processing other files
-                eprintln!("Failed to process file {:?}: {}", path, e);
-                // Optionally, you could add a log entry here if logging is set up
+    let results = files
+        .par_iter()
+        .filter_map(|path| {
+            match build_file_info(path, &request.file_type, request.include_tracks) {
+                Ok(file_info) => Some(file_info),
+                Err(error) => {
+                    eprintln!("Failed to process file {:?}: {}", path, error);
+                    None
+                }
             }
-        }
-    }
-
+        })
+        .collect();
     Ok(results)
 }
 
 #[tauri::command]
 fn inspect_paths(request: InspectRequest) -> Result<Vec<serde_json::Value>, String> {
-    let mut results = Vec::new();
-    for path_str in request.paths {
-        let path = PathBuf::from(path_str);
-        if path.is_file() {
-            match build_file_info(&path, &request.file_type, request.include_tracks) {
-                Ok(file_info) => results.push(file_info),
-                Err(e) => {
-                    // Log error but continue processing other files
-                    eprintln!("Failed to inspect file {:?}: {}", path, e);
-                    // Optionally, you could add a log entry here if logging is set up
+    let paths: Vec<PathBuf> = request.paths.into_iter().map(PathBuf::from).collect();
+    let results = paths
+        .par_iter()
+        .filter(|path| path.is_file())
+        .filter_map(|path| {
+            match build_file_info(path, &request.file_type, request.include_tracks) {
+                Ok(file_info) => Some(file_info),
+                Err(error) => {
+                    eprintln!("Failed to inspect file {:?}: {}", path, error);
+                    None
                 }
             }
+        })
+        .collect();
+    Ok(results)
+}
+
+#[tauri::command]
+fn inspect_paths_stream(
+    window: tauri::Window,
+    request: InspectStreamRequest,
+) -> Result<(), String> {
+    let scan_id = request.scan_id.clone();
+    let file_type = request.file_type.clone();
+    let include_tracks = request.include_tracks;
+    let total = request.paths.len();
+    if total == 0 {
+        let payload = InspectStreamChunkEvent {
+            scan_id: scan_id.clone(),
+            processed: 0,
+            total: 0,
+            items: Vec::new(),
+        };
+        let _ = window.emit("inspect-paths-stream-chunk", payload);
+        let _ = window.emit(
+            "inspect-paths-stream-done",
+            InspectStreamDoneEvent { scan_id, total: 0 },
+        );
+        return Ok(());
+    }
+
+    let batch_size = request.batch_size.unwrap_or(24).max(1);
+    let all_paths: Vec<PathBuf> = request.paths.into_iter().map(PathBuf::from).collect();
+    let mut processed = 0usize;
+
+    for chunk in all_paths.chunks(batch_size) {
+        let items: Vec<serde_json::Value> = chunk
+            .par_iter()
+            .filter(|path| path.is_file())
+            .filter_map(
+                |path| match build_file_info(path, &file_type, include_tracks) {
+                    Ok(file_info) => Some(file_info),
+                    Err(error) => {
+                        eprintln!("Failed to inspect file {:?}: {}", path, error);
+                        None
+                    }
+                },
+            )
+            .collect();
+
+        processed = (processed + chunk.len()).min(total);
+        let payload = InspectStreamChunkEvent {
+            scan_id: scan_id.clone(),
+            processed,
+            total,
+            items,
+        };
+        if let Err(error) = window.emit("inspect-paths-stream-chunk", payload) {
+            let message = format!("Failed to emit scan chunk: {error}");
+            let _ = window.emit(
+                "inspect-paths-stream-error",
+                InspectStreamErrorEvent {
+                    scan_id: scan_id.clone(),
+                    message: message.clone(),
+                },
+            );
+            return Err(message);
         }
     }
-    Ok(results)
+
+    let _ = window.emit(
+        "inspect-paths-stream-done",
+        InspectStreamDoneEvent { scan_id, total },
+    );
+
+    Ok(())
 }
 
 fn write_log_line(paths: &AppPaths, line: &str) -> Result<(), String> {
@@ -1064,7 +1255,10 @@ fn get_output_paths(job: &MuxJobRequest, settings: &MuxSettings) -> (PathBuf, Pa
     } else {
         PathBuf::from(&settings.destination_dir)
     };
-    let file_stem = video_path.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+    let file_stem = video_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
     let overwrite_mode = settings.destination_dir.trim().is_empty() || settings.overwrite_source;
 
     if overwrite_mode {
@@ -1087,7 +1281,9 @@ fn compute_crc(path: &Path) -> Result<String, String> {
     let mut hasher = Hasher::new();
     let mut buffer = [0u8; 8192];
     loop {
-        let read = file.read(&mut buffer).map_err(|e| format!("Failed to read file: {e}"))?;
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read file: {e}"))?;
         if read == 0 {
             break;
         }
@@ -1097,13 +1293,19 @@ fn compute_crc(path: &Path) -> Result<String, String> {
 }
 
 fn file_name_with_crc(path: &Path, crc: &str) -> PathBuf {
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("output.mkv");
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output.mkv");
     let file_stem = file_name.trim_end_matches(".mkv");
     path.with_file_name(format!("{} [{}].mkv", file_stem, crc))
 }
 
 fn file_name_without_crc(path: &Path) -> PathBuf {
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("output.mkv");
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output.mkv");
     let cleaned = file_name.replace(".mkv", "");
     let sanitized = if let Some(index) = cleaned.rfind('[') {
         cleaned[..index].trim().to_string()
@@ -1116,19 +1318,29 @@ fn file_name_without_crc(path: &Path) -> PathBuf {
 fn check_free_space(path: &Path, required_bytes: u64) -> Result<(), String> {
     let available = available_space(path).map_err(|e| format!("Failed to read free space: {e}"))?;
     if available < required_bytes {
-        return Err(format!("Not enough free space. Required: {} bytes", required_bytes));
+        return Err(format!(
+            "Not enough free space. Required: {} bytes",
+            required_bytes
+        ));
     }
     Ok(())
 }
 
-fn collect_track_ids_by_language(tracks: &[TrackInfo], track_type: &str, languages: &[String]) -> Vec<usize> {
+fn collect_track_ids_by_language(
+    tracks: &[TrackInfo],
+    track_type: &str,
+    languages: &[String],
+) -> Vec<usize> {
     let mut ids = Vec::new();
     for (index, track) in tracks.iter().enumerate() {
         if track.track_type != track_type {
             continue;
         }
         if let Some(language) = &track.language {
-            if languages.iter().any(|lang| lang.eq_ignore_ascii_case(language)) {
+            if languages
+                .iter()
+                .any(|lang| lang.eq_ignore_ascii_case(language))
+            {
                 if let Ok(parsed) = track.id.parse::<usize>() {
                     ids.push(parsed);
                 } else {
@@ -1217,22 +1429,28 @@ fn apply_track_selection(
         _ => return,
     };
     args.push(flag.to_string());
-    args.push(selected.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","));
+    args.push(
+        selected
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
 }
 
 fn build_mkvpropedit_args(job: &MuxJobRequest) -> Vec<String> {
     let mut args = Vec::new();
-    
+
     // Apply track modifications: name, language, default, forced flags
     // For Fast Mux, we apply edits for all tracks that have any properties set
     for (index, track) in job.video.tracks.iter().enumerate() {
         if is_track_removed(track) {
             continue;
         }
-        
+
         // mkvpropedit uses 1-based track IDs, so add 1 to the parsed track ID
         let track_id = parse_track_id(track, index) + 1;
-        
+
         // Track name - apply if set (even if empty, to clear it)
         if let Some(name) = &track.name {
             args.push("--edit".to_string());
@@ -1240,7 +1458,7 @@ fn build_mkvpropedit_args(job: &MuxJobRequest) -> Vec<String> {
             args.push("--set".to_string());
             args.push(format!("name={}", name.trim()));
         }
-        
+
         // Language - apply if set
         if let Some(language) = &track.language {
             args.push("--edit".to_string());
@@ -1248,22 +1466,28 @@ fn build_mkvpropedit_args(job: &MuxJobRequest) -> Vec<String> {
             args.push("--set".to_string());
             args.push(format!("language={}", language));
         }
-        
+
         // Default flag - apply if explicitly set (Some(true) or Some(false))
         if let Some(is_default) = track.is_default {
             args.push("--edit".to_string());
             args.push(format!("track:{}", track_id));
             args.push("--set".to_string());
-            args.push(format!("flag-default={}", if is_default { "1" } else { "0" }));
+            args.push(format!(
+                "flag-default={}",
+                if is_default { "1" } else { "0" }
+            ));
         }
-        
+
         // Forced flag (for subtitles, use flag-forced-display)
         if track.track_type == "subtitle" {
             if let Some(is_forced) = track.is_forced {
                 args.push("--edit".to_string());
                 args.push(format!("track:{}", track_id));
                 args.push("--set".to_string());
-                args.push(format!("flag-forced-display={}", if is_forced { "1" } else { "0" }));
+                args.push(format!(
+                    "flag-forced-display={}",
+                    if is_forced { "1" } else { "0" }
+                ));
             }
         } else if track.track_type == "audio" || track.track_type == "video" {
             if let Some(is_forced) = track.is_forced {
@@ -1274,7 +1498,7 @@ fn build_mkvpropedit_args(job: &MuxJobRequest) -> Vec<String> {
             }
         }
     }
-    
+
     args
 }
 
@@ -1481,8 +1705,8 @@ fn build_mkvmerge_command(
     }
 
     let external_audio_present = !resolved_external_audios.is_empty();
-    let external_subtitle_present =
-        !resolved_external_subtitles.is_empty() || !resolved_external_subtitles_from_audio.is_empty();
+    let external_subtitle_present = !resolved_external_subtitles.is_empty()
+        || !resolved_external_subtitles_from_audio.is_empty();
 
     let external_audio_default = resolved_external_audios
         .iter()
@@ -1527,25 +1751,27 @@ fn build_mkvmerge_command(
         }
     }
 
-    let audio_keep_ids = if settings.only_keep_audios_enabled && !settings.only_keep_audio_languages.is_empty() {
-        Some(collect_track_ids_by_language(
-            &job.video.tracks,
-            "audio",
-            &settings.only_keep_audio_languages,
-        ))
-    } else {
-        None
-    };
-    let subtitle_keep_ids =
-        if settings.only_keep_subtitles_enabled && !settings.only_keep_subtitle_languages.is_empty() {
+    let audio_keep_ids =
+        if settings.only_keep_audios_enabled && !settings.only_keep_audio_languages.is_empty() {
             Some(collect_track_ids_by_language(
                 &job.video.tracks,
-                "subtitle",
-                &settings.only_keep_subtitle_languages,
+                "audio",
+                &settings.only_keep_audio_languages,
             ))
         } else {
             None
         };
+    let subtitle_keep_ids = if settings.only_keep_subtitles_enabled
+        && !settings.only_keep_subtitle_languages.is_empty()
+    {
+        Some(collect_track_ids_by_language(
+            &job.video.tracks,
+            "subtitle",
+            &settings.only_keep_subtitle_languages,
+        ))
+    } else {
+        None
+    };
 
     apply_track_selection(&mut args, &job.video.tracks, "video", None);
     apply_track_selection(&mut args, &job.video.tracks, "audio", audio_keep_ids);
@@ -1558,7 +1784,7 @@ fn build_mkvmerge_command(
             continue;
         }
         let track_id = parse_track_id(track, index);
-        
+
         // Track name (skip if empty)
         if let Some(name) = &track.name {
             if !name.trim().is_empty() {
@@ -1566,25 +1792,33 @@ fn build_mkvmerge_command(
                 args.push(format!("{}:{}", track_id, name));
             }
         }
-        
+
         // Language
         if let Some(language) = &track.language {
             args.push("--language".to_string());
             args.push(format!("{}:{}", track_id, language));
         }
-        
+
         // Default flag - apply individual track defaults from ModifyTracksDialog
         // These override the bulk operations (external defaults, language filters) for specific tracks
         if let Some(is_default) = track.is_default {
             args.push("--default-track-flag".to_string());
-            args.push(format!("{}:{}", track_id, if is_default { "yes" } else { "no" }));
+            args.push(format!(
+                "{}:{}",
+                track_id,
+                if is_default { "yes" } else { "no" }
+            ));
         }
-        
+
         // Forced flag for subtitles (use forced-display-flag)
         if track.track_type == "subtitle" {
             if let Some(is_forced) = track.is_forced {
                 args.push("--forced-display-flag".to_string());
-                args.push(format!("{}:{}", track_id, if is_forced { "yes" } else { "no" }));
+                args.push(format!(
+                    "{}:{}",
+                    track_id,
+                    if is_forced { "yes" } else { "no" }
+                ));
             }
         }
     }
@@ -1685,7 +1919,13 @@ fn build_mkvmerge_command(
         let override_entry = audio.track_overrides.get(&track_id.to_string());
         let language = override_entry
             .and_then(|entry| entry.language.clone())
-            .or_else(|| if audio.apply_language { audio.language.clone() } else { None });
+            .or_else(|| {
+                if audio.apply_language {
+                    audio.language.clone()
+                } else {
+                    None
+                }
+            });
         if let Some(language) = language {
             args.push("--language".to_string());
             args.push(format!("{}:{}", track_id, language));
@@ -1708,7 +1948,11 @@ fn build_mkvmerge_command(
         }
         if let Some(is_default) = audio.is_default {
             args.push("--default-track-flag".to_string());
-            args.push(format!("{}:{}", track_id, if is_default { "yes" } else { "no" }));
+            args.push(format!(
+                "{}:{}",
+                track_id,
+                if is_default { "yes" } else { "no" }
+            ));
         }
         if let Some(_is_forced) = audio.is_forced {
             // mkvmerge versions in the wild often do not support forced flag for audio tracks.
@@ -1732,7 +1976,13 @@ fn build_mkvmerge_command(
         let override_entry = subtitle.track_overrides.get(&track_id.to_string());
         let language = override_entry
             .and_then(|entry| entry.language.clone())
-            .or_else(|| if subtitle.apply_language { subtitle.language.clone() } else { None });
+            .or_else(|| {
+                if subtitle.apply_language {
+                    subtitle.language.clone()
+                } else {
+                    None
+                }
+            });
         if let Some(language) = language {
             args.push("--language".to_string());
             args.push(format!("{}:{}", track_id, language));
@@ -1755,11 +2005,19 @@ fn build_mkvmerge_command(
         }
         if let Some(is_default) = subtitle.is_default {
             args.push("--default-track-flag".to_string());
-            args.push(format!("{}:{}", track_id, if is_default { "yes" } else { "no" }));
+            args.push(format!(
+                "{}:{}",
+                track_id,
+                if is_default { "yes" } else { "no" }
+            ));
         }
         if let Some(is_forced) = subtitle.is_forced {
             args.push("--forced-display-flag".to_string());
-            args.push(format!("{}:{}", track_id, if is_forced { "yes" } else { "no" }));
+            args.push(format!(
+                "{}:{}",
+                track_id,
+                if is_forced { "yes" } else { "no" }
+            ));
         }
         args.push(subtitle.path.clone());
     }
@@ -1953,7 +2211,9 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
                 progress: 0,
                 message: Some("Destination folder required".to_string()),
                 size_after: None,
-                error_message: Some("Set a destination folder or enable overwrite source.".to_string()),
+                error_message: Some(
+                    "Set a destination folder or enable overwrite source.".to_string(),
+                ),
             },
         );
         if settings.abort_on_errors {
@@ -1979,7 +2239,8 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
         && job.chapters.is_empty()
         && job.attachments.is_empty()
         && (!settings.only_keep_audios_enabled || settings.only_keep_audio_languages.is_empty())
-        && (!settings.only_keep_subtitles_enabled || settings.only_keep_subtitle_languages.is_empty());
+        && (!settings.only_keep_subtitles_enabled
+            || settings.only_keep_subtitle_languages.is_empty());
     if settings.use_mkvpropedit && !can_use_mkvpropedit {
         let _ = write_log_line(
             &state.paths,
@@ -2050,18 +2311,18 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
 
             match status {
                 Some(code) if code == 0 => {
-                        let final_size = fs::metadata(&job.video.path).ok().map(|m| m.len());
-                        emit_progress(
-                            app,
-                            MuxProgressEvent {
-                                job_id: job.id.clone(),
-                                status: "completed".to_string(),
-                                progress: 100,
-                                message: Some("Fast mux completed".to_string()),
-                                size_after: final_size,
-                                error_message: None,
-                            },
-                        );
+                    let final_size = fs::metadata(&job.video.path).ok().map(|m| m.len());
+                    emit_progress(
+                        app,
+                        MuxProgressEvent {
+                            job_id: job.id.clone(),
+                            status: "completed".to_string(),
+                            progress: 100,
+                            message: Some("Fast mux completed".to_string()),
+                            size_after: final_size,
+                            error_message: None,
+                        },
+                    );
                 }
                 Some(code) => {
                     let error_output = format!("mkvpropedit exited with code: {code}");
@@ -2168,25 +2429,25 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
                 &format!("Job {} completed with warnings (exit code 1)", job.id),
             );
         } else {
-        let _ = write_log_line(
-            &state.paths,
-            &format!("Job {} failed with exit code {}", job.id, exit_code),
-        );
-        emit_progress(
-            app,
-            MuxProgressEvent {
-                job_id: job.id.clone(),
-                status: "error".to_string(),
-                progress: 0,
-                message: Some("Muxing failed".to_string()),
-                size_after: None,
-                error_message: Some(format!("Process exited with code {exit_code}")),
-            },
-        );
-        if settings.abort_on_errors {
-            let mut mux_state = state.mux_state.lock().unwrap();
-            mux_state.pause = true;
-        }
+            let _ = write_log_line(
+                &state.paths,
+                &format!("Job {} failed with exit code {}", job.id, exit_code),
+            );
+            emit_progress(
+                app,
+                MuxProgressEvent {
+                    job_id: job.id.clone(),
+                    status: "error".to_string(),
+                    progress: 0,
+                    message: Some("Muxing failed".to_string()),
+                    size_after: None,
+                    error_message: Some(format!("Process exited with code {exit_code}")),
+                },
+            );
+            if settings.abort_on_errors {
+                let mut mux_state = state.mux_state.lock().unwrap();
+                mux_state.pause = true;
+            }
             return;
         }
     }
@@ -2228,7 +2489,10 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
     );
 
     if settings.keep_log_file && !settings.destination_dir.trim().is_empty() {
-        let _ = fs::copy(&state.paths.log_path, output_dir.join("muxing_log_file.txt"));
+        let _ = fs::copy(
+            &state.paths.log_path,
+            output_dir.join("muxing_log_file.txt"),
+        );
     }
 }
 
@@ -2237,7 +2501,9 @@ fn run_mux_queue(app: AppHandle, state: AppState) {
         let mux_state = state.mux_state.lock().unwrap();
         mux_state.settings.clone()
     };
-    let Some(settings) = settings else { return; };
+    let Some(settings) = settings else {
+        return;
+    };
 
     let jobs = {
         let mux_state = state.mux_state.lock().unwrap();
@@ -2295,7 +2561,11 @@ fn run_mux_queue(app: AppHandle, state: AppState) {
 }
 
 #[tauri::command]
-fn start_muxing(app: AppHandle, state: State<AppState>, request: MuxStartRequest) -> Result<(), String> {
+fn start_muxing(
+    app: AppHandle,
+    state: State<AppState>,
+    request: MuxStartRequest,
+) -> Result<(), String> {
     clear_log(&state.paths)?;
     write_log_line(&state.paths, "Starting muxing session")?;
 
@@ -2318,7 +2588,10 @@ fn start_muxing(app: AppHandle, state: State<AppState>, request: MuxStartRequest
 }
 
 #[tauri::command]
-fn preview_mux(state: State<AppState>, request: MuxStartRequest) -> Result<Vec<MuxPreviewResult>, String> {
+fn preview_mux(
+    state: State<AppState>,
+    request: MuxStartRequest,
+) -> Result<Vec<MuxPreviewResult>, String> {
     let settings = request.settings;
     let mut results = Vec::new();
 
@@ -2405,13 +2678,7 @@ fn open_log_file(app: AppHandle, state: State<AppState>) -> Result<(), String> {
             .map_err(|e| format!("Failed to create log file: {e}"))?;
     }
     let path_string = state.paths.log_path.to_string_lossy().to_string();
-    if tauri::api::shell::open(
-        &app.shell_scope(),
-        path_string.clone(),
-        None,
-    )
-    .is_ok()
-    {
+    if tauri::api::shell::open(&app.shell_scope(), path_string.clone(), None).is_ok() {
         return Ok(());
     }
 
@@ -2475,6 +2742,7 @@ fn main() {
             save_options,
             scan_media,
             inspect_paths,
+            inspect_paths_stream,
             start_muxing,
             preview_mux,
             pause_muxing,

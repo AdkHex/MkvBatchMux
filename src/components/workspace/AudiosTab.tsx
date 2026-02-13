@@ -103,7 +103,6 @@ export function AudiosTab({
   }));
   const [selectedVideoIndex, setSelectedVideoIndex] = useState<number | null>(null);
   const [selectedAudioIndex, setSelectedAudioIndex] = useState<number | null>(null);
-  const canLinkSelection = selectedVideoIndex !== null && selectedAudioIndex !== null;
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [trackToDelete, setTrackToDelete] = useState<string | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -129,6 +128,9 @@ export function AudiosTab({
     delay: "0.000",
     trackName: "",
   });
+  const [importStreamsOpen, setImportStreamsOpen] = useState(false);
+  const [importSourceVideoId, setImportSourceVideoId] = useState("");
+  const [importSelectedTrackKeys, setImportSelectedTrackKeys] = useState<string[]>([]);
   const [editForm, setEditForm] = useState({
     trackName: "",
     language: "und",
@@ -164,6 +166,22 @@ export function AudiosTab({
     options.push({ value: "end", label: "End" });
     return options;
   }, [videoFiles]);
+
+  const selectedImportSource = useMemo(
+    () => videoFiles.find((file) => file.id === importSourceVideoId) || null,
+    [videoFiles, importSourceVideoId],
+  );
+
+  const importableTracks = useMemo(
+    () =>
+      selectedImportSource
+        ? (selectedImportSource.tracks || []).filter(
+            (track) => track.type === "audio" && track.action !== "remove",
+          )
+        : [],
+    [selectedImportSource],
+  );
+  const getImportTrackKey = (trackIndex: number, trackId: string) => `${trackIndex}:${trackId}`;
 
   const getAudioTrackIds = (file: ExternalFile) =>
     file.tracks
@@ -496,11 +514,6 @@ export function AudiosTab({
     });
   };
 
-  const linkAudioToVideo = () => {
-    if (selectedVideoIndex === null || selectedAudioIndex === null) return;
-    reorderAudioFile(selectedAudioIndex, selectedVideoIndex);
-  };
-
   useEffect(() => {
     if (onAddTrack) {
       window.__audiosAddTrack = addNewTrack;
@@ -597,14 +610,90 @@ export function AudiosTab({
     });
   };
 
+  const handleImportAudios = async () => {
+    if (videoFiles.length === 0) {
+      toast({
+        title: "No Videos Loaded",
+        description: "Load video files first, then import audio streams.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (selectedVideoIndex === null) {
+      setSelectedVideoIndex(0);
+    }
+    setImportSourceVideoId(videoFiles[0]?.id || "");
+    setImportSelectedTrackKeys([]);
+    setImportStreamsOpen(true);
+  };
+
+  const handleConfirmImportAudios = () => {
+    const targetIndex = selectedVideoIndex ?? 0;
+    const targetVideo = videoFiles[targetIndex];
+    if (!targetVideo || !selectedImportSource || importSelectedTrackKeys.length === 0) return;
+
+    const selectedTrackKeySet = new Set(importSelectedTrackKeys);
+    const selectedTracks = importableTracks.filter((track, trackIndex) =>
+      selectedTrackKeySet.has(getImportTrackKey(trackIndex, String(track.id))),
+    );
+    if (selectedTracks.length === 0) return;
+
+    const existingAtTarget = audioFiles[targetIndex];
+    const existingTracks = existingAtTarget?.tracks?.filter((track) => track.type === "audio") || [];
+    const mergedTracks = [...existingTracks];
+    selectedTracks.forEach((track) => {
+      if (!mergedTracks.some((entry) => String(entry.id) === String(track.id))) {
+        mergedTracks.push(track);
+      }
+    });
+
+    const mergedIncludedTrackIds = mergedTracks
+      .map((track) => Number(track.id))
+      .filter((id) => Number.isFinite(id));
+
+    const importedFile: ExternalFile = {
+      id: createExternalId(),
+      name: selectedImportSource.name,
+      path: selectedImportSource.path,
+      type: "audio",
+      source: "per-file",
+      language: currentConfig.language,
+      trackName: currentConfig.trackName,
+      delay: Number(currentConfig.delay) || 0,
+      isDefault: currentConfig.isDefault,
+      isForced: currentConfig.isForced,
+      muxAfter: currentConfig.muxAfter,
+      matchedVideoId: targetVideo.id,
+      tracks: mergedTracks,
+      includedTrackIds: mergedIncludedTrackIds,
+      includeSubtitles: false,
+      includedSubtitleTrackIds: [],
+    };
+
+    const updated = [...audioFiles];
+    if (targetIndex < updated.length) {
+      updated[targetIndex] = importedFile;
+    } else {
+      updated.push(importedFile);
+    }
+    onAudioFilesChange(syncAudioLinks(updated));
+    setSelectedAudioIndex(targetIndex);
+    setSelectedVideoIndex(targetIndex);
+    setImportStreamsOpen(false);
+    toast({
+      title: "Audio Streams Imported",
+      description: `Imported ${selectedTracks.length} stream${selectedTracks.length > 1 ? "s" : ""} to Video #${targetIndex + 1}.`,
+    });
+  };
+
   return (
-    <div className="flex flex-col h-full p-5 gap-4">
+    <div className="flex flex-col h-full p-5 gap-4 bg-background">
       {/* Track Selector Card */}
-      <div className="fluent-surface p-4 min-h-[56px]">
+      <div className="track-selector-bar">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-12 pl-4">
+          <div className="flex items-center gap-3">
             <Select value={activeAudioTrack} onValueChange={setActiveAudioTrack}>
-              <SelectTrigger className="w-32 h-9 bg-secondary text-secondary-foreground border border-panel-border font-medium">
+              <SelectTrigger className="w-36 h-8 bg-panel-header text-secondary-foreground border border-panel-border font-medium">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -617,18 +706,26 @@ export function AudiosTab({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-9 w-9 text-destructive hover:text-destructive hover:bg-destructive/10"
+                className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
                 onClick={() => confirmDeleteTrack(activeAudioTrack)}
               >
                 <Trash2 className="w-4 h-4" />
               </Button>
             )}
           </div>
-          <div className="flex items-center gap-2 mr-3">
+          <div className="track-selector-actions">
             <Button
               variant="outline"
               size="sm"
-              className="h-9 gap-2"
+              className="h-8 gap-2"
+              onClick={handleImportAudios}
+            >
+              Import Audios
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-2"
               onClick={duplicateTrack}
             >
               <Copy className="w-4 h-4" />
@@ -637,7 +734,7 @@ export function AudiosTab({
             <Button
               variant="default"
               size="sm"
-              className="h-9 gap-2"
+              className="h-8 gap-2"
               onClick={addNewTrack}
             >
               <Plus className="w-4 h-4" />
@@ -648,23 +745,23 @@ export function AudiosTab({
       </div>
 
       {/* Track Configuration Card */}
-      <div className="fluent-surface p-3 space-y-2.5 min-h-[188px]">
-        <h3 className="text-sm font-semibold text-foreground">Track Configuration</h3>
+      <div className="config-card space-y-4 min-h-[188px]">
+        <h3 className="text-[12px] uppercase tracking-[0.5px] text-muted-foreground font-semibold">Track Configuration</h3>
         
         {/* Source Folder */}
         <div className="flex items-center gap-3">
-          <label className="text-[13px] text-muted-foreground w-28 shrink-0">Source Folder</label>
+          <label className="config-label">Source Folder</label>
           <div className="flex-1 flex items-center gap-2">
             <Input
               value={currentConfig.sourceFolder}
               onChange={(e) => updateCurrentConfig({ sourceFolder: e.target.value })}
               placeholder="Select audio folder path..."
-              className="h-9 flex-1"
+              className="h-8 flex-1 font-mono"
             />
             <Button
               variant="outline"
               size="icon"
-              className="h-9 w-9"
+              className="h-8 w-8"
               onClick={async () => {
                 const folder = await pickDirectory();
                 if (folder) {
@@ -678,7 +775,7 @@ export function AudiosTab({
             <Button
               variant="ghost"
               size="icon"
-              className="h-9 w-9 bg-primary/10 text-primary hover:bg-primary/20"
+              className="h-8 w-8 bg-primary/10 text-primary hover:bg-primary/20"
               onClick={() => scanAudios(currentConfig.sourceFolder)}
             >
               <RefreshCw className="w-4 h-4" />
@@ -686,7 +783,7 @@ export function AudiosTab({
             <Button
               variant="ghost"
               size="icon"
-              className="h-9 w-9 bg-destructive/10 text-destructive hover:bg-destructive/20"
+              className="h-8 w-8 bg-destructive/10 text-destructive hover:bg-destructive/20"
               onClick={() => {
                 updateCurrentConfig({ sourceFolder: '' });
                 onAudioFilesChange([]);
@@ -698,11 +795,11 @@ export function AudiosTab({
         </div>
 
         {/* Settings Grid */}
-        <div className="grid grid-cols-[1.1fr_1.1fr_1.2fr] gap-4">
-          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2">
-            <label className="text-[13px] text-muted-foreground">Extension</label>
+        <div className="grid grid-cols-[1.1fr_1.1fr_1.2fr] gap-3">
+          <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2">
+            <label className="config-label">Extension</label>
             <Select value={currentConfig.extension} onValueChange={(v) => updateCurrentConfig({ extension: v })}>
-              <SelectTrigger className="h-9 flex-1">
+              <SelectTrigger className="h-8 flex-1">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -716,32 +813,32 @@ export function AudiosTab({
             </Select>
           </div>
 
-          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2">
-            <label className="text-[13px] text-muted-foreground">Language</label>
+          <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2">
+            <label className="config-label">Language</label>
             <LanguageSelect
               value={currentConfig.language}
               onChange={(v) => updateCurrentConfig({ language: v })}
-              className="h-9 flex-1"
+              className="h-8 flex-1"
             />
           </div>
 
-          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2">
-            <label className="text-[13px] text-muted-foreground">Track Name</label>
+          <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2">
+            <label className="config-label">Track Name</label>
             <Input
               value={currentConfig.trackName}
               onChange={(e) => updateCurrentConfig({ trackName: e.target.value })}
               placeholder="Enter name"
-              className="h-9 flex-1"
+              className="h-8 flex-1"
             />
           </div>
 
         </div>
 
-        <div className="flex flex-wrap items-center gap-6 pt-1">
-          <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-2 min-w-[240px]">
-            <label className="text-[13px] text-muted-foreground">Mux After</label>
+        <div className="flex flex-wrap items-center gap-5">
+          <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2 min-w-[240px]">
+            <label className="config-label">Mux After</label>
             <Select value={currentConfig.muxAfter} onValueChange={(v) => updateCurrentConfig({ muxAfter: v })}>
-              <SelectTrigger className="h-9 w-40">
+              <SelectTrigger className="h-8 w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -754,12 +851,12 @@ export function AudiosTab({
             </Select>
           </div>
 
-          <div className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-2">
-            <label className="text-[13px] text-muted-foreground">Delay</label>
+          <div className="grid grid-cols-[100px_minmax(0,1fr)_auto] items-center gap-2">
+            <label className="config-label">Delay</label>
             <Input
               value={currentConfig.delay}
               onChange={(e) => updateCurrentConfig({ delay: e.target.value })}
-              className="h-9 w-24 text-center font-mono"
+              className="h-8 w-20 text-center font-mono"
             />
             <span className="text-[12px] text-muted-foreground">sec</span>
           </div>
@@ -786,38 +883,27 @@ export function AudiosTab({
       </div>
 
       {/* Matching Panel */}
-      <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
+      <div className="workspace-split flex-1 grid grid-cols-[minmax(400px,1fr)_minmax(400px,1fr)] gap-4 min-h-0 overflow-x-auto">
         {/* Video Files Card */}
         <div className="panel-card flex flex-col min-h-0 overflow-hidden">
           <div className="panel-card-header">
             <div className="flex items-center gap-2">
-              {canLinkSelection ? (
-                <Button
-                  variant="default"
-                  size="sm"
-                  className="panel-text-btn"
-                  onClick={linkAudioToVideo}
-                >
-                  Link
-                </Button>
-              ) : null}
               <h4 className="panel-card-title">Video Files</h4>
+              <span className="text-[11px] font-mono text-muted-foreground">{videoFiles.length}</span>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="flex-1 overflow-auto scrollbar-thin">
             {videoFiles.map((file, index) => (
               <div
                 key={file.id}
                 onClick={() => setSelectedVideoIndex(index)}
                 className={cn(
-                  "table-row px-4 text-sm cursor-pointer transition-colors font-mono flex items-center",
+                  "file-item-video",
                   selectedVideoIndex === index && "selected",
                 )}
               >
-                <div className="media-row-main">
-                  <span className="media-row-index">{index + 1}</span>
-                  <span className="media-row-name">{file.name}</span>
-                </div>
+                <span className="media-row-index">{`${index + 1}.`}</span>
+                <span className="media-row-name">{file.name}</span>
               </div>
             ))}
           </div>
@@ -875,7 +961,7 @@ export function AudiosTab({
               </Button>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="flex-1 overflow-auto scrollbar-thin">
             {audioFiles.length === 0 ? (
               <EmptyState
                 icon={<AudioLines className="w-5 h-5 text-muted-foreground/65" />}
@@ -894,56 +980,18 @@ export function AudiosTab({
                   onDragOver={(e) => e.preventDefault()}
                   onClick={() => setSelectedAudioIndex(index)}
                   onDoubleClick={() => openEditDialog(file.id)}
-                  className={cn(
-                    "table-row px-4 text-sm cursor-pointer transition-colors font-mono flex items-center justify-between gap-3",
-                    selectedAudioIndex === index && "selected",
-                    draggedIndex === index && "opacity-60"
-                  )}
+                  className={cn("file-item-audio", selectedAudioIndex === index && "selected", draggedIndex === index && "opacity-60")}
                 >
-                  <div className="media-row-main">
-                    <GripVertical className="w-4 h-4 text-muted-foreground/50 hover:text-muted-foreground cursor-grab active:cursor-grabbing shrink-0" />
-                    <span className="media-row-index">{index + 1}</span>
-                    <span className="media-row-name">{file.name}</span>
-                  </div>
+                  <span className="media-row-handle">
+                    <GripVertical className="w-4 h-4" />
+                  </span>
+                  <span className="media-row-index">{`${index + 1}.`}</span>
+                  <span className="media-row-name">{file.name}</span>
                   <div className="media-row-actions">
-                    {file.tracks && file.tracks.length > 1 && (
-                      <span className="table-chip">
-                        {file.tracks.length} tracks
-                      </span>
-                    )}
-                    {file.tracks && file.tracks.some((track) => track.type === "subtitle") && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                      className={cn(
-                          "h-7 px-2 text-[10px] uppercase tracking-wide rounded-md",
-                          file.includeSubtitles
-                            ? "text-primary border border-primary/40 bg-primary/10"
-                            : "text-muted-foreground border border-panel-border/50"
-                        )}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          const subtitleIds = getSubtitleTrackIds(file);
-                          const nextInclude = !file.includeSubtitles;
-                          const updated = audioFiles.map((entry) =>
-                            entry.id === file.id
-                              ? {
-                                  ...entry,
-                                  includeSubtitles: nextInclude,
-                                  includedSubtitleTrackIds: subtitleIds.length ? subtitleIds : entry.includedSubtitleTrackIds,
-                                }
-                              : entry,
-                          );
-                          onAudioFilesChange(updated);
-                        }}
-                      >
-                        Subs {getSubtitleTrackIds(file).length}
-                      </Button>
-                    )}
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="panel-icon-btn"
+                      className="file-action-btn file-action-btn--delete"
                       onClick={(event) => {
                         event.stopPropagation();
                         removeAudioFile(index);
@@ -954,7 +1002,7 @@ export function AudiosTab({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="panel-icon-btn"
+                      className="file-action-btn file-action-btn--muted"
                       onClick={(event) => {
                         event.stopPropagation();
                         openEditDialog(file.id);
@@ -965,7 +1013,7 @@ export function AudiosTab({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="panel-icon-btn"
+                      className="file-action-btn file-action-btn--muted"
                       onClick={(event) => {
                         event.stopPropagation();
                         duplicateAudioFile(index);
@@ -980,6 +1028,80 @@ export function AudiosTab({
           </div>
         </div>
       </div>
+
+      <BaseModal
+        open={importStreamsOpen}
+        onOpenChange={setImportStreamsOpen}
+        title="Import Audio Streams"
+        subtitle="Import specific audio streams from loaded video files."
+        icon={<AudioLines className="w-5 h-5 text-primary" />}
+        className="max-w-2xl"
+        footerRight={
+          <>
+            <Button variant="ghost" onClick={() => setImportStreamsOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmImportAudios} disabled={!importSourceVideoId || importSelectedTrackKeys.length === 0}>
+              Import
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Source Video</label>
+            <Select value={importSourceVideoId} onValueChange={(value) => {
+              setImportSourceVideoId(value);
+              setImportSelectedTrackKeys([]);
+            }}>
+              <SelectTrigger className="h-8">
+                <SelectValue placeholder="Choose source video" />
+              </SelectTrigger>
+              <SelectContent>
+                {videoFiles.map((file) => (
+                  <SelectItem key={file.id} value={file.id}>
+                    {file.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Audio Streams</label>
+            <div className="max-h-56 overflow-y-auto rounded border border-panel-border/60 p-2 space-y-2">
+              {importableTracks.length === 0 ? (
+                <div className="text-xs text-muted-foreground px-1 py-2">No audio streams available in selected video.</div>
+              ) : (
+                importableTracks.map((track, idx) => {
+                  const trackKey = getImportTrackKey(idx, String(track.id));
+                  const checked = importSelectedTrackKeys.includes(trackKey);
+                  return (
+                    <label key={`${track.id}-${idx}`} className="flex items-center gap-2 px-1 py-1 cursor-pointer text-sm">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(value) => {
+                          setImportSelectedTrackKeys((prev) =>
+                            value
+                              ? Array.from(new Set([...prev, trackKey]))
+                              : prev.filter((id) => id !== trackKey),
+                          );
+                        }}
+                      />
+                      <span className="font-mono text-xs text-muted-foreground">
+                        #{idx + 1}
+                      </span>
+                      <span className="truncate">
+                        {track.name || track.codec || `Audio ${idx + 1}`}
+                        {track.language ? ` • ${track.language}` : ""}
+                      </span>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      </BaseModal>
 
       <BaseModal
         open={bulkOpen}

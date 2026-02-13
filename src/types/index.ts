@@ -59,7 +59,7 @@ export interface OutputSettings {
 export interface MuxJob {
   id: string;
   videoFile: VideoFile;
-  status: 'queued' | 'processing' | 'completed' | 'error';
+  status: 'queued' | 'processing' | 'completed' | 'error' | 'stopped';
   progress: number;
   errorMessage?: string;
   sizeBefore?: number;

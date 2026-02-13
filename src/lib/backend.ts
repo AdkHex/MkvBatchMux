@@ -53,6 +53,31 @@ export interface InspectRequest {
   include_tracks: boolean;
 }
 
+export interface InspectStreamRequest {
+  scan_id: string;
+  paths: string[];
+  type: "video" | "audio" | "subtitle" | "chapter" | "attachment";
+  include_tracks: boolean;
+  batch_size?: number;
+}
+
+export interface InspectStreamChunkEvent {
+  scanId: string;
+  processed: number;
+  total: number;
+  items: (VideoFile | ExternalFile)[];
+}
+
+export interface InspectStreamDoneEvent {
+  scanId: string;
+  total: number;
+}
+
+export interface InspectStreamErrorEvent {
+  scanId: string;
+  message: string;
+}
+
 export interface MuxProgressEvent {
   job_id: string;
   status: "queued" | "processing" | "completed" | "error";
@@ -80,6 +105,10 @@ export async function scanMedia(request: ScanRequest) {
 
 export async function inspectPaths(request: InspectRequest) {
   return invoke<(VideoFile | ExternalFile)[]>("inspect_paths", { request });
+}
+
+export async function inspectPathsStream(request: InspectStreamRequest) {
+  return invoke<void>("inspect_paths_stream", { request });
 }
 
 export async function startMuxing(request: MuxStartRequest) {
@@ -128,4 +157,28 @@ export function listenMuxProgress(handler: (payload: MuxProgressEvent) => void) 
 
 export function listenMuxLog(handler: (payload: { job_id: string; line: string }) => void) {
   return listen<{ job_id: string; line: string }>("mux-log", (event) => handler(event.payload));
+}
+
+export function listenInspectPathsStreamChunk(
+  handler: (payload: InspectStreamChunkEvent) => void,
+) {
+  return listen<InspectStreamChunkEvent>("inspect-paths-stream-chunk", (event) =>
+    handler(event.payload),
+  );
+}
+
+export function listenInspectPathsStreamDone(
+  handler: (payload: InspectStreamDoneEvent) => void,
+) {
+  return listen<InspectStreamDoneEvent>("inspect-paths-stream-done", (event) =>
+    handler(event.payload),
+  );
+}
+
+export function listenInspectPathsStreamError(
+  handler: (payload: InspectStreamErrorEvent) => void,
+) {
+  return listen<InspectStreamErrorEvent>("inspect-paths-stream-error", (event) =>
+    handler(event.payload),
+  );
 }

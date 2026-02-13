@@ -104,7 +104,8 @@ export function MuxSettingTab({
   const isProcessing = jobs.some((job) => job.status === 'processing');
   const hasJobs = jobs.length > 0;
   const completedJobs = jobs.filter((job) => job.status === 'completed').length;
-  const statusLabel = isProcessing ? "Running" : "Idle";
+  const stoppedJobs = jobs.filter((job) => job.status === 'stopped').length;
+  const statusLabel = isProcessing ? "Running" : stoppedJobs > 0 ? "Stopped" : "Idle";
   const selectedJob = selectedJobIndex !== null ? jobs[selectedJobIndex] : null;
   const warningCount = useMemo(
     () => Object.values(previewResults).reduce((acc, result) => acc + result.warnings.length, 0),
@@ -612,10 +613,11 @@ export function MuxSettingTab({
                       "text-[10px] font-medium px-2 py-0.5 rounded",
                       job.status === 'completed' && "bg-success/20 text-success",
                       job.status === 'error' && "bg-destructive/20 text-destructive",
+                      job.status === 'stopped' && "bg-warning/20 text-warning",
                       job.status === 'processing' && "bg-primary/20 text-primary",
                       job.status === 'queued' && "bg-muted text-muted-foreground"
                     )}>
-                      {job.status === 'queued' ? 'Queued' : job.status}
+                      {job.status === 'queued' ? 'Queued' : job.status === 'stopped' ? 'Stopped' : job.status}
                     </span>
                   </div>
                   <div className="px-3 text-xs text-center text-muted-foreground font-mono flex items-center justify-center">
@@ -638,6 +640,8 @@ export function MuxSettingTab({
                           <span>ETA —</span>
                         </div>
                       </div>
+                    ) : job.status === 'stopped' ? (
+                      <div className="w-full text-[10px] text-warning text-center font-medium">Stopped</div>
                     ) : null}
                   </div>
                   <div className="px-3 text-xs text-center text-muted-foreground font-mono flex items-center justify-center">

@@ -29,6 +29,12 @@ function formatFileSize(bytes: number): string {
   return bytes + ' B';
 }
 
+function truncateMiddle(value: string, maxLength = 56): string {
+  if (!value || value.length <= maxLength) return value;
+  const side = Math.floor((maxLength - 3) / 2);
+  return `${value.slice(0, side)}...${value.slice(value.length - side)}`;
+}
+
 export function AttachmentsTab({
   attachmentFiles,
   onAttachmentFilesChange,
@@ -79,7 +85,7 @@ export function AttachmentsTab({
   };
 
   return (
-    <div className="flex flex-col h-full p-5 gap-4">
+    <div className="flex flex-col h-full p-5 gap-4 bg-background">
       {/* Attachments Enable Toggle */}
       <div className="panel-card flex items-center gap-2 px-4 py-2.5">
         <Checkbox 
@@ -96,17 +102,17 @@ export function AttachmentsTab({
         <label htmlFor="attachments-enabled" className="text-sm font-medium cursor-pointer">Attachments</label>
       </div>
 
-      <div className="fluent-surface p-3 space-y-2.5">
+      <div className="config-card space-y-4">
         {/* Controls Row 1 */}
         <div className="control-row">
-          <label className="text-sm text-muted-foreground whitespace-nowrap min-w-[160px]">
+          <label className="config-label w-[160px]">
             Attachments Source Folder:
           </label>
           <Input
             value={sourceFolder}
             onChange={(e) => updateAttachmentTabState({ sourceFolder: e.target.value })}
             placeholder="Enter Attachments Folder Path"
-            className="app-input flex-1"
+            className="app-input flex-1 font-mono"
             disabled={!attachmentsEnabled}
           />
           <div className="flex items-center gap-1">
@@ -151,9 +157,9 @@ export function AttachmentsTab({
 
         {/* Controls Row 2 */}
         <div className="control-row">
-          <label className="text-sm text-muted-foreground whitespace-nowrap">Attachment Extension:</label>
+          <label className="config-label whitespace-nowrap w-auto">Attachment Extension:</label>
           <Select value={extension} onValueChange={(v) => updateAttachmentTabState({ extension: v })} disabled={!attachmentsEnabled}>
-            <SelectTrigger className="w-40 h-8 bg-input border-0 text-sm">
+            <SelectTrigger className="w-40 h-8 bg-input border border-panel-border text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -212,7 +218,7 @@ export function AttachmentsTab({
         </div>
       </div>
 
-      <div className="panel-card px-4 py-2.5">
+      <div className="panel-card px-4 py-3">
         <div className="flex items-center gap-6 flex-wrap">
           <div className="flex items-center gap-2">
             <Checkbox
@@ -256,7 +262,7 @@ export function AttachmentsTab({
         </div>
       </div>
 
-      <div className="panel-card flex-1 flex flex-col overflow-hidden">
+      <div className="panel-card workspace-split flex-1 flex flex-col overflow-hidden">
         {/* Attachments Table Header */}
         <div className="panel-card-header !px-0">
           <div className="grid grid-cols-[1fr_100px_120px] gap-0">
@@ -282,15 +288,13 @@ export function AttachmentsTab({
                 key={file.id}
                 onClick={() => setSelectedIndex(index)}
                 className={cn(
-                  "grid grid-cols-[1fr_100px_120px] gap-0 h-11 border-b border-panel-border/25 cursor-pointer transition-smooth",
-                  selectedIndex === index
-                    ? "bg-selection border-l-2 border-l-selection-border"
-                    : "hover:bg-accent/30"
+                  "table-row grid grid-cols-[1fr_100px_120px] gap-0 h-10 cursor-pointer transition-smooth",
+                  selectedIndex === index && "selected"
                 )}
               >
                 <div className="px-4 text-sm truncate font-mono flex items-center">
                   <span className="media-row-index mr-2">{index + 1}</span>
-                  <span className="media-row-name">{file.name}</span>
+                  <span className="media-row-name">{truncateMiddle(file.name)}</span>
                 </div>
                 <div className="px-4 text-sm text-center text-muted-foreground flex items-center justify-center">
                   {file.name.split('.').pop()?.toUpperCase() || 'Unknown'}

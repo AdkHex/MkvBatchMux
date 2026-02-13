@@ -21,6 +21,10 @@ export function DataTableCell({ className, ...props }: React.HTMLAttributes<HTML
   return <div className={cn("data-table__cell", className)} {...props} />;
 }
 
-export function DataTableBody({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("overflow-y-auto scrollbar-thin", className)} {...props} />;
-}
+export const DataTableBody = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  ({ className, ...props }, ref) => {
+    return <div ref={ref} className={cn("overflow-y-auto scrollbar-thin", className)} {...props} />;
+  },
+);
+
+DataTableBody.displayName = "DataTableBody";
