@@ -202,15 +202,16 @@ export function SubtitlesTab({
     lastAppliedConfig.current = { ...currentConfig };
     const delayValue = Number(currentConfig.delay) || 0;
     const updatedFiles = subtitleFiles.map((file) => ({
+      ...file,
+      // Global default/forced toggles must always apply from Track Configuration.
+      isDefault: currentConfig.isDefault,
+      isForced: currentConfig.isForced,
       ...(file.isManuallyEdited
-        ? file
+        ? {}
         : {
-            ...file,
             language: currentConfig.language,
             trackName: currentConfig.trackName,
             delay: delayValue,
-            isDefault: currentConfig.isDefault,
-            isForced: currentConfig.isForced,
             muxAfter: currentConfig.muxAfter,
           }),
     }));
