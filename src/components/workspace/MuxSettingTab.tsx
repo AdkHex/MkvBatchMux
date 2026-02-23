@@ -123,7 +123,8 @@ export function MuxSettingTab({
   const reportData = reportJobId && getJobReport ? getJobReport(reportJobId) : null;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="px-5 pt-2">
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-panel-border/30 bg-panel-header/50 px-4 py-2">
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -714,6 +715,7 @@ export function MuxSettingTab({
             Start Muxing
           </Button>
         </div>
+      </div>
       </div>
 
       <BaseModal
