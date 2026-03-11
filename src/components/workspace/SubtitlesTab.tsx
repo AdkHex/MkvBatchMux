@@ -20,6 +20,7 @@ import type { VideoFile, ExternalFile, Preset } from "@/types";
 import { pickDirectory, scanMedia } from "@/lib/backend";
 import { useTabState } from "@/stores/useTabState";
 import { SUBTITLE_EXTENSIONS } from "@/lib/extensions";
+import { matchExternalToVideos } from "@/lib/matchUtils";
 import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/data/languages-iso6393";
 
 interface SubtitlesTabProps {
@@ -72,12 +73,8 @@ export function SubtitlesTab({
   preset,
 }: SubtitlesTabProps) {
   const syncSubtitleLinks = useCallback(
-    (files: ExternalFile[]) =>
-      files.map((file, index) => ({
-        ...file,
-        matchedVideoId: videoFiles[index]?.id,
-      })),
-    [videoFiles]
+    (files: ExternalFile[]) => matchExternalToVideos(files, videoFiles),
+    [videoFiles],
   );
   const {
     subtitleTracks,
@@ -126,6 +123,10 @@ export function SubtitlesTab({
     delay: "0.000",
     trackName: "",
   });
+  const [multiDelayOpen, setMultiDelayOpen] = useState(false);
+  const [multiDelayFileId, setMultiDelayFileId] = useState<string | null>(null);
+  const [multiDelayValues, setMultiDelayValues] = useState<Record<number, string>>({});
+  const [multiDelayBulkValue, setMultiDelayBulkValue] = useState("0.000");
   const [importStreamsOpen, setImportStreamsOpen] = useState(false);
   const [importSourceVideoId, setImportSourceVideoId] = useState("");
   const [importSelectedTrackKeys, setImportSelectedTrackKeys] = useState<string[]>([]);
@@ -137,11 +138,13 @@ export function SubtitlesTab({
     isForced: false,
     muxAfter: "audio",
     applyDelayToAll: false,
+    applyToAllFiles: false,
     includedTrackIds: [] as number[],
   });
 
   const currentConfig = subtitleTrackConfigs[activeSubtitleTrack] || defaultTrackConfig;
   const editingFile = subtitleFiles.find((file) => file.id === editingFileId) || null;
+  const multiDelayFile = subtitleFiles.find((file) => file.id === multiDelayFileId) || null;
   const createExternalId = () =>
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -312,13 +315,15 @@ export function SubtitlesTab({
 
   useEffect(() => {
     if (subtitleFiles.length === 0) return;
-    const isSynced = subtitleFiles.every(
-      (file, index) => file.matchedVideoId === videoFiles[index]?.id
+    // Re-match only when some file's matchedVideoId is missing or points to a removed video
+    const videoIdSet = new Set(videoFiles.map((v) => v.id));
+    const needsRematch = subtitleFiles.some(
+      (f) => !f.matchedVideoId || !videoIdSet.has(f.matchedVideoId),
     );
-    if (!isSynced) {
-      onSubtitleFilesChange(syncSubtitleLinks(subtitleFiles));
+    if (needsRematch) {
+      onSubtitleFilesChange(matchExternalToVideos(subtitleFiles, videoFiles));
     }
-  }, [onSubtitleFilesChange, subtitleFiles, syncSubtitleLinks, videoFiles]);
+  }, [onSubtitleFilesChange, subtitleFiles, videoFiles]);
 
   const reorderSubtitleFile = (fromIndex: number, toIndex: number) => {
     if (toIndex < 0 || toIndex >= subtitleFiles.length) return;
@@ -402,10 +407,62 @@ export function SubtitlesTab({
     setEditDialogOpen(true);
   };
 
+  const applyTrackChangesToDuplicateFiles = useCallback(
+    (fileId: string, updater: (file: ExternalFile, isTarget: boolean) => ExternalFile) => {
+      const target = subtitleFiles.find((entry) => entry.id === fileId);
+      if (!target) return;
+      const updated = subtitleFiles.map((file) => {
+        if (file.path !== target.path) return file;
+        return updater(file, file.id === fileId);
+      });
+      onSubtitleFilesChange(updated);
+    },
+    [subtitleFiles, onSubtitleFilesChange],
+  );
+
   const applyEditChanges = () => {
     if (!editingFileId) return;
     const delayValue = Number(editForm.delay) || 0;
-    const updated = subtitleFiles.map((file) => {
+
+    if (editForm.applyToAllFiles) {
+      // Compute which track INDICES are selected in the editing file, then mirror to all files
+      const editingFileData = subtitleFiles.find((f) => f.id === editingFileId);
+      const srcTracks = (editingFileData?.tracks || []).filter((t) => t.type === "subtitle");
+      const selIdx = new Set(
+        srcTracks
+          .map((t, i) => ({ i, id: Number(t.id) }))
+          .filter(({ id }) => editForm.includedTrackIds.includes(id))
+          .map(({ i }) => i),
+      );
+
+      const updated = subtitleFiles.map((file) => {
+        const fileTracks = (file.tracks || []).filter((t) => t.type === "subtitle");
+        const newIds = fileTracks
+          .map((t, i) => ({ i, id: Number(t.id) }))
+          .filter(({ i }) => selIdx.has(i))
+          .map(({ id }) => id)
+          .filter((id) => Number.isFinite(id));
+        return {
+          ...file,
+          language: editForm.language,
+          trackName: editForm.trackName,
+          delay: delayValue,
+          isDefault: editForm.isDefault,
+          isForced: editForm.isForced,
+          muxAfter: editForm.muxAfter,
+          includedTrackIds: fileTracks.length > 0 ? newIds : file.includedTrackIds,
+          isManuallyEdited: true,
+        };
+      });
+
+      onSubtitleFilesChange(updated);
+      setEditDialogOpen(false);
+      setEditingFileId(null);
+      toast({ title: "Applied to All Files", description: `Settings applied to all ${subtitleFiles.length} subtitle file(s).` });
+      return;
+    }
+
+    let updated = subtitleFiles.map((file) => {
       if (file.id === editingFileId) {
         return {
           ...file,
@@ -425,6 +482,19 @@ export function SubtitlesTab({
       }
       return file;
     });
+    const editedTarget = updated.find((file) => file.id === editingFileId);
+    if (editedTarget) {
+      updated = updated.map((file) => {
+        if (file.id === editingFileId) return file;
+        if (file.path !== editedTarget.path) return file;
+        return {
+          ...file,
+          includedTrackIds: [...editForm.includedTrackIds],
+          trackOverrides: { ...(file.trackOverrides || {}) },
+          isManuallyEdited: true,
+        };
+      });
+    }
     onSubtitleFilesChange(updated);
     setEditDialogOpen(false);
     setEditingFileId(null);
@@ -444,6 +514,24 @@ export function SubtitlesTab({
     setTrackEditOpen(true);
   };
 
+  const openMultiDelayDialog = (fileId: string) => {
+    const file = subtitleFiles.find((entry) => entry.id === fileId);
+    if (!file) return;
+    const targetTracks = (file.tracks || []).filter((track) => track.type === "subtitle");
+    if (targetTracks.length === 0) return;
+    const initial: Record<number, string> = {};
+    targetTracks.forEach((track) => {
+      const trackId = Number(track.id);
+      if (!Number.isFinite(trackId)) return;
+      const delay = file.trackOverrides?.[trackId]?.delay ?? file.delay ?? 0;
+      initial[trackId] = delay.toFixed(3);
+    });
+    setMultiDelayFileId(fileId);
+    setMultiDelayValues(initial);
+    setMultiDelayBulkValue((file.delay ?? 0).toFixed(3));
+    setMultiDelayOpen(true);
+  };
+
   const applyTrackEdit = () => {
     if (!trackEditTarget) return;
     setTrackEditOpen(false);
@@ -460,8 +548,7 @@ export function SubtitlesTab({
     const nextName =
       updates.trackName !== undefined ? updates.trackName : trackEditForm.trackName;
 
-    const updated = subtitleFiles.map((file) => {
-      if (file.id !== fileId) return file;
+    applyTrackChangesToDuplicateFiles(fileId, (file) => {
       const nextOverrides = { ...(file.trackOverrides || {}) };
       nextOverrides[trackId] = {
         language: nextLanguage || undefined,
@@ -470,7 +557,28 @@ export function SubtitlesTab({
       };
       return { ...file, trackOverrides: nextOverrides, isManuallyEdited: true };
     });
-    onSubtitleFilesChange(updated);
+  };
+
+  const applyMultiDelayChanges = () => {
+    if (!multiDelayFileId) return;
+    applyTrackChangesToDuplicateFiles(multiDelayFileId, (file) => {
+      const targetTracks = (file.tracks || []).filter((track) => track.type === "subtitle");
+      const nextOverrides = { ...(file.trackOverrides || {}) };
+      targetTracks.forEach((track) => {
+        const trackId = Number(track.id);
+        if (!Number.isFinite(trackId)) return;
+        const nextDelay = Number(multiDelayValues[trackId]) || 0;
+        const prev = nextOverrides[trackId] || {};
+        nextOverrides[trackId] = { ...prev, delay: nextDelay };
+      });
+      return { ...file, trackOverrides: nextOverrides, isManuallyEdited: true };
+    });
+    setMultiDelayOpen(false);
+    setMultiDelayFileId(null);
+    toast({
+      title: "Track Delays Updated",
+      description: "Applied per-track delay values for selected subtitle tracks.",
+    });
   };
 
   const removeSubtitleFile = (index: number) => {
@@ -1128,21 +1236,34 @@ export function SubtitlesTab({
                 {subtitleFiles.map((file) => {
                   const checked = bulkSelectedSubtitleIds.includes(file.id);
                   const trackCount = file.tracks?.length || file.includedTrackIds?.length || 0;
+                  const subtitleTrackCount = (file.tracks || []).filter((track) => track.type === "subtitle").length;
                   return (
-                    <label key={file.id} className="flex items-center gap-2 text-xs text-foreground/80 cursor-pointer">
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={(value) => {
-                          setBulkSelectedSubtitleIds((prev) =>
-                            value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
-                          );
-                        }}
-                      />
-                      <span className="truncate">{file.name}</span>
-                      {trackCount > 1 && (
-                        <span className="ml-auto text-[10px] text-muted-foreground/70">{trackCount} tracks</span>
+                    <div key={file.id} className="flex items-center gap-2 text-xs text-foreground/80">
+                      <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(value) => {
+                            setBulkSelectedSubtitleIds((prev) =>
+                              value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
+                            );
+                          }}
+                        />
+                        <span className="truncate">{file.name}</span>
+                      </label>
+                      {subtitleTrackCount > 1 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => openEditDialog(file.id)}
+                        >
+                          Tracks
+                        </Button>
                       )}
-                    </label>
+                      {trackCount > 1 && (
+                        <span className="text-[10px] text-muted-foreground/70 shrink-0">{trackCount} tracks</span>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -1253,34 +1374,35 @@ export function SubtitlesTab({
             </div>
           </div>
 
-          <div className="rounded-md border border-panel-border/60 bg-panel/40 px-3 py-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Track Flags</div>
-            <div className="flex items-center justify-between gap-6">
-              <div className="flex items-center gap-3">
-                <Checkbox
-                  id="sub-edit-default"
-                  checked={editForm.isDefault}
-                  onCheckedChange={(checked) =>
-                    setEditForm((prev) => ({ ...prev, isDefault: checked as boolean }))
-                  }
-                />
-                <label htmlFor="sub-edit-default" className="text-sm">
-                  Default
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] items-start gap-3">
+            <div className="rounded-md border border-panel-border/60 bg-panel/40 px-3 py-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Track Flags</div>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                <label className="inline-flex items-center gap-3 cursor-pointer">
+                  <Checkbox
+                    id="sub-edit-default"
+                    checked={editForm.isDefault}
+                    onCheckedChange={(checked) =>
+                      setEditForm((prev) => ({ ...prev, isDefault: checked as boolean }))
+                    }
+                  />
+                  <span className="text-sm">Default</span>
+                </label>
+                <label className="inline-flex items-center gap-3 cursor-pointer">
+                  <Checkbox
+                    id="sub-edit-forced"
+                    checked={editForm.isForced}
+                    onCheckedChange={(checked) =>
+                      setEditForm((prev) => ({ ...prev, isForced: checked as boolean }))
+                    }
+                  />
+                  <span className="text-sm">Forced</span>
                 </label>
               </div>
-              <div className="flex items-center gap-3">
-                <Checkbox
-                  id="sub-edit-forced"
-                  checked={editForm.isForced}
-                  onCheckedChange={(checked) =>
-                    setEditForm((prev) => ({ ...prev, isForced: checked as boolean }))
-                  }
-                />
-                <label htmlFor="sub-edit-forced" className="text-sm">
-                  Forced
-                </label>
-              </div>
-              <div className="flex items-center gap-3">
+            </div>
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/30 px-4 py-3 space-y-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Bulk Action</div>
+              <label className="inline-flex items-center gap-3 cursor-pointer">
                 <Checkbox
                   id="sub-edit-delay-all"
                   checked={editForm.applyDelayToAll}
@@ -1288,20 +1410,41 @@ export function SubtitlesTab({
                     setEditForm((prev) => ({ ...prev, applyDelayToAll: checked as boolean }))
                   }
                 />
-                <label htmlFor="sub-edit-delay-all" className="text-sm">
-                  Apply delay to all
-                </label>
-              </div>
+                <span className="text-sm">Apply delay to all</span>
+              </label>
+              <label className="inline-flex items-center gap-3 cursor-pointer">
+                <Checkbox
+                  id="sub-edit-apply-all"
+                  checked={editForm.applyToAllFiles}
+                  onCheckedChange={(checked) =>
+                    setEditForm((prev) => ({ ...prev, applyToAllFiles: checked as boolean }))
+                  }
+                />
+                <div className="flex flex-col">
+                  <span className="text-sm">Apply to all files</span>
+                  <span className="text-[11px] text-muted-foreground leading-tight">Track selection applied by position</span>
+                </div>
+              </label>
             </div>
           </div>
 
           {editingFile?.tracks && editingFile.tracks.length > 1 && (
             <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Included Tracks
-                </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Included Tracks
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {editingFile.tracks.filter((track) => track.type === "subtitle").length > 1 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => openMultiDelayDialog(editingFile.id)}
+                      >
+                        Track Delays
+                      </Button>
+                    )}
                   <Button
                     variant="ghost"
                     size="sm"
@@ -1374,6 +1517,106 @@ export function SubtitlesTab({
               </div>
             </div>
           )}
+        </div>
+      </BaseModal>
+
+      <BaseModal
+        open={multiDelayOpen}
+        onOpenChange={(open) => {
+          setMultiDelayOpen(open);
+          if (!open) {
+            setMultiDelayFileId(null);
+            setMultiDelayValues({});
+          }
+        }}
+        title="Edit Multi-Track Subtitle Delays"
+        subtitle={multiDelayFile?.name || "Set separate delays for each subtitle track"}
+        icon={<FileText className="w-5 h-5 text-primary" />}
+        className="max-w-xl"
+        bodyClassName="px-5 py-4"
+        footerRight={
+          <>
+            <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setMultiDelayOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={applyMultiDelayChanges}>Save Delays</Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="rounded-md border border-panel-border/50 bg-panel-header/30 px-4 py-3 space-y-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Bulk Fill</div>
+            <div className="flex items-center gap-2">
+              <Input
+                value={multiDelayBulkValue}
+                onChange={(event) => setMultiDelayBulkValue(event.target.value)}
+                className="h-9 font-mono"
+                placeholder="0.000"
+              />
+              <Button
+                variant="outline"
+                onClick={() =>
+                  setMultiDelayValues((prev) => {
+                    if (!multiDelayFile) return prev;
+                    const next = { ...prev };
+                    (multiDelayFile.tracks || [])
+                      .filter((track) => track.type === "subtitle")
+                      .forEach((track) => {
+                        const trackId = Number(track.id);
+                        if (!Number.isFinite(trackId)) return;
+                        next[trackId] = multiDelayBulkValue;
+                      });
+                    return next;
+                  })
+                }
+              >
+                Apply To All Subtitle Tracks
+              </Button>
+            </div>
+            <div className="text-[11px] text-muted-foreground/70">
+              Use positive values to delay subtitles and negative values to make them earlier.
+            </div>
+          </div>
+
+          <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Per-Track Delays</div>
+            <div className="max-h-72 overflow-y-auto pr-1 space-y-2 scrollbar-thin">
+              {(multiDelayFile?.tracks || [])
+                .filter((track) => track.type === "subtitle")
+                .map((track, index) => {
+                  const trackId = Number(track.id);
+                  const includedIds = multiDelayFile?.includedTrackIds;
+                  const isIncluded = !includedIds || includedIds.length === 0 ? true : includedIds.includes(trackId);
+                  return (
+                    <div
+                      key={`${track.id}-${index}`}
+                      className="grid grid-cols-[1fr_120px] items-center gap-3 rounded-md border border-panel-border/40 bg-card/40 px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm text-foreground truncate">
+                          Track {index + 1}
+                          {track.language ? ` • ${track.language}` : ""}
+                          {track.name ? ` • ${track.name}` : ""}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground/70">
+                          ID {track.id}
+                          {isIncluded ? " • Included" : " • Not included"}
+                        </div>
+                      </div>
+                      <Input
+                        value={Number.isFinite(trackId) ? (multiDelayValues[trackId] ?? "0.000") : "0.000"}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          if (!Number.isFinite(trackId)) return;
+                          setMultiDelayValues((prev) => ({ ...prev, [trackId]: value }));
+                        }}
+                        className="h-8 font-mono text-right"
+                      />
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
         </div>
       </BaseModal>
 

@@ -16,6 +16,7 @@ uuid = { version = "1", features = ["v4"] }
 crc32fast = "1"
 fs2 = "0.4"
 rayon = "1.10"
+tempfile = "3.10"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

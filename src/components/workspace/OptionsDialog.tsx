@@ -19,6 +19,7 @@ interface OptionsDialogProps {
 export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDialogProps) {
   const [presetIndex, setPresetIndex] = useState(0);
   const [askForPreset, setAskForPreset] = useState(false);
+  const [showSessionRecovery, setShowSessionRecovery] = useState(true);
   const [darkMode, setDarkMode] = useState(false);
   const [videosDir, setVideosDir] = useState("");
   const [subtitlesDir, setSubtitlesDir] = useState("");
@@ -39,6 +40,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
     const preset = options.Presets[index] || options.Presets[0];
     setPresetIndex(index);
     setAskForPreset(Boolean(options.Choose_Preset_On_Startup));
+    setShowSessionRecovery(options.Show_Session_Recovery_Dialog !== false);
     setDarkMode(Boolean(options.Dark_Mode));
     hydrateFromPreset(preset);
   }, [options]);
@@ -208,11 +210,13 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
               const updatedPresets = [...options.Presets];
               const target = updatedPresets[presetIndex];
               updatedPresets[presetIndex] = buildPreset(target);
+              localStorage.setItem("session-recovery-dialog-disabled", showSessionRecovery ? "0" : "1");
               onSave({
                 ...options,
                 Presets: updatedPresets,
                 FavoritePresetId: presetIndex,
                 Choose_Preset_On_Startup: askForPreset,
+                Show_Session_Recovery_Dialog: showSessionRecovery,
                 Dark_Mode: darkMode,
               });
               onOpenChange(false);
@@ -271,10 +275,12 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                 const updatedPresets = [...options.Presets];
                 const target = updatedPresets[presetIndex];
                 updatedPresets[presetIndex] = buildPreset(target);
+                localStorage.setItem("session-recovery-dialog-disabled", showSessionRecovery ? "0" : "1");
                 onSave({
                   ...options,
                   Presets: updatedPresets,
                   Choose_Preset_On_Startup: askForPreset,
+                  Show_Session_Recovery_Dialog: showSessionRecovery,
                   Dark_Mode: darkMode,
                 });
               }}
@@ -287,10 +293,12 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
               className="text-muted-foreground hover:text-foreground"
               onClick={() => {
                 if (!options) return;
+                localStorage.setItem("session-recovery-dialog-disabled", showSessionRecovery ? "0" : "1");
                 onSave({
                   ...options,
                   FavoritePresetId: presetIndex,
                   Choose_Preset_On_Startup: askForPreset,
+                  Show_Session_Recovery_Dialog: showSessionRecovery,
                   Dark_Mode: darkMode,
                 });
               }}
@@ -324,6 +332,17 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
               />
               <label htmlFor="ask-preset" className="text-xs text-muted-foreground cursor-pointer">
                 Ask on startup
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <CheckboxField
+                id="show-session-recovery"
+                checked={showSessionRecovery}
+                onCheckedChange={(checked) => setShowSessionRecovery(checked as boolean)}
+                className="h-3.5 w-7"
+              />
+              <label htmlFor="show-session-recovery" className="text-xs text-muted-foreground cursor-pointer">
+                Session recovery popup
               </label>
             </div>
           </div>

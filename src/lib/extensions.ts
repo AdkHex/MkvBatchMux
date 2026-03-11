@@ -45,8 +45,10 @@ export const AUDIO_EXTENSIONS = [
   "flac",
   "mp3",
   "m4a",
-  "mp4", // audio-only MP4
+  "mp4", // audio-only MP4 or video container with audio tracks
+  "m4v",
   "mka",
+  "mkv", // MKV container — load specific audio tracks from it
   "ogg",
   "opus",
   "wav",
@@ -55,6 +57,11 @@ export const AUDIO_EXTENSIONS = [
   "tak",
   "tta",
   "wv",
+  "avi",
+  "webm",
+  "ts",
+  "m2ts",
+  "mts",
 ] as const;
 
 export const SUBTITLE_EXTENSIONS = [
@@ -69,6 +76,8 @@ export const SUBTITLE_EXTENSIONS = [
   "mks",
   "usf",
   "xml", // for subtitle XML
+  "mkv", // MKV container — load specific subtitle tracks from it
+  "mp4", // MP4 container with embedded subtitles
 ] as const;
 
 export const CHAPTER_EXTENSIONS = [

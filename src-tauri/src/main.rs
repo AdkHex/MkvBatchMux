@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod session;
+
 use crc32fast::Hasher;
 use fs2::available_space;
 use rayon::prelude::*;
@@ -80,6 +82,10 @@ impl Default for Preset {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct OptionsData {
     #[serde(rename = "Presets")]
@@ -92,6 +98,8 @@ struct OptionsData {
     attachment_expert_mode_info_message_show: bool,
     #[serde(rename = "Choose_Preset_On_Startup")]
     choose_preset_on_startup: bool,
+    #[serde(rename = "Show_Session_Recovery_Dialog", default = "default_true")]
+    show_session_recovery_dialog: bool,
 }
 
 impl Default for OptionsData {
@@ -102,6 +110,7 @@ impl Default for OptionsData {
             dark_mode: false,
             attachment_expert_mode_info_message_show: true,
             choose_preset_on_startup: false,
+            show_session_recovery_dialog: true,
         }
     }
 }
@@ -946,8 +955,10 @@ fn build_file_info(
         };
         serde_json::to_value(video).map_err(|e| format!("Serialize error: {e}"))?
     } else if file_type == "video" {
-        let mkvmerge_info = get_mkvmerge_info(path);
-        let mediainfo = get_mediainfo(path);
+        let (mkvmerge_info, mediainfo) = rayon::join(
+            || get_mkvmerge_info(path),
+            || get_mediainfo(path),
+        );
         let duration = mkvmerge_info
             .as_ref()
             .and_then(parse_mkvmerge_duration)
@@ -1015,16 +1026,13 @@ fn build_file_info(
             }
         };
 
-        let mkvmerge_info = if normalized_file_type == "audio" || normalized_file_type == "subtitle"
-        {
-            get_mkvmerge_info(path)
+        let (mkvmerge_info, mediainfo) = if normalized_file_type == "audio" || normalized_file_type == "subtitle" {
+            rayon::join(
+                || get_mkvmerge_info(path),
+                || get_mediainfo(path),
+            )
         } else {
-            None
-        };
-        let mediainfo = if normalized_file_type == "audio" || normalized_file_type == "subtitle" {
-            get_mediainfo(path)
-        } else {
-            None
+            (None, None)
         };
         let (bitrate, duration, track_id) = if let Some(mi) = mediainfo.as_ref() {
             let tracks = parse_tracks(mi);
@@ -1186,7 +1194,7 @@ fn inspect_paths_stream(
         return Ok(());
     }
 
-    let batch_size = request.batch_size.unwrap_or(24).max(1);
+    let batch_size = request.batch_size.unwrap_or(8).max(1);
     let all_paths: Vec<PathBuf> = request.paths.into_iter().map(PathBuf::from).collect();
     let mut processed = 0usize;
 
@@ -2749,6 +2757,9 @@ fn main() {
             resume_muxing,
             stop_muxing,
             open_log_file,
+            session::save_session,
+            session::load_session,
+            session::clear_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

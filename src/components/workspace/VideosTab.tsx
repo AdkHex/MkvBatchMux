@@ -337,7 +337,6 @@ export function VideosTab({
         const completedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
         const firstPaintMs = firstChunkAt ? Math.round(firstChunkAt - scanStartedAt) : -1;
         const totalMs = Math.round(completedAt - scanStartedAt);
-        // eslint-disable-next-line no-console
         console.info(`[perf] video scan first-chunk=${firstPaintMs}ms total=${totalMs}ms files=${paths.length}`);
       }
     } finally {

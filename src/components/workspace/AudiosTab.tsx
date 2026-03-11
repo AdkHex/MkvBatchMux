@@ -20,6 +20,7 @@ import type { VideoFile, ExternalFile, Preset } from "@/types";
 import { pickDirectory, scanMedia } from "@/lib/backend";
 import { useTabState } from "@/stores/useTabState";
 import { AUDIO_EXTENSIONS } from "@/lib/extensions";
+import { matchExternalToVideos } from "@/lib/matchUtils";
 import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/data/languages-iso6393";
 
 interface AudiosTabProps {
@@ -62,6 +63,19 @@ const normalizeLanguage = (value: string) => {
 
 const audioExtensions = [...AUDIO_EXTENSIONS];
 
+const getAudioTrackIds = (file: ExternalFile) =>
+  file.tracks
+    ? file.tracks.filter((t) => t.type === "audio").map((t) => Number(t.id)).filter((id) => Number.isFinite(id))
+    : [];
+
+const getSubtitleTrackIds = (file: ExternalFile) =>
+  file.tracks
+    ? file.tracks.filter((t) => t.type === "subtitle").map((t) => Number(t.id)).filter((id) => Number.isFinite(id))
+    : [];
+
+const getDefaultIncludeSubtitles = (file: ExternalFile) =>
+  file.includeSubtitles !== undefined ? file.includeSubtitles : getSubtitleTrackIds(file).length > 0;
+
 
 export function AudiosTab({
   audioFiles,
@@ -72,12 +86,8 @@ export function AudiosTab({
   preset,
 }: AudiosTabProps) {
   const syncAudioLinks = useCallback(
-    (files: ExternalFile[]) =>
-      files.map((file, index) => ({
-        ...file,
-        matchedVideoId: videoFiles[index]?.id,
-      })),
-    [videoFiles]
+    (files: ExternalFile[]) => matchExternalToVideos(files, videoFiles),
+    [videoFiles],
   );
 
   const {
@@ -128,6 +138,11 @@ export function AudiosTab({
     delay: "0.000",
     trackName: "",
   });
+  const [multiDelayOpen, setMultiDelayOpen] = useState(false);
+  const [multiDelayFileId, setMultiDelayFileId] = useState<string | null>(null);
+  const [multiDelayTrackType, setMultiDelayTrackType] = useState<"audio" | "subtitle">("audio");
+  const [multiDelayValues, setMultiDelayValues] = useState<Record<number, string>>({});
+  const [multiDelayBulkValue, setMultiDelayBulkValue] = useState("0.000");
   const [importStreamsOpen, setImportStreamsOpen] = useState(false);
   const [importSourceVideoId, setImportSourceVideoId] = useState("");
   const [importSelectedTrackKeys, setImportSelectedTrackKeys] = useState<string[]>([]);
@@ -139,6 +154,7 @@ export function AudiosTab({
     isForced: false,
     muxAfter: "video",
     applyDelayToAll: false,
+    applyToAllFiles: false,
     includedTrackIds: [] as number[],
     includeSubtitles: false,
     includedSubtitleTrackIds: [] as number[],
@@ -146,6 +162,7 @@ export function AudiosTab({
 
   const currentConfig = audioTrackConfigs[activeAudioTrack] || defaultTrackConfig;
   const editingFile = audioFiles.find((file) => file.id === editingFileId) || null;
+  const multiDelayFile = audioFiles.find((file) => file.id === multiDelayFileId) || null;
   const createExternalId = () =>
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -183,21 +200,6 @@ export function AudiosTab({
   );
   const getImportTrackKey = (trackIndex: number, trackId: string) => `${trackIndex}:${trackId}`;
 
-  const getAudioTrackIds = (file: ExternalFile) =>
-    file.tracks
-      ? file.tracks
-          .filter((track) => track.type === "audio")
-          .map((track) => Number(track.id))
-          .filter((id) => Number.isFinite(id))
-      : [];
-
-  const getSubtitleTrackIds = (file: ExternalFile) =>
-    file.tracks
-      ? file.tracks
-          .filter((track) => track.type === "subtitle")
-          .map((track) => Number(track.id))
-          .filter((id) => Number.isFinite(id))
-      : [];
 
   const updateCurrentConfig = (updates: Partial<TrackConfig>) => {
     updateAudioTrackConfig(activeAudioTrack, updates);
@@ -359,7 +361,7 @@ export function AudiosTab({
       muxAfter: file.muxAfter || "video",
       applyDelayToAll: false,
       includedTrackIds: file.includedTrackIds !== undefined ? [...file.includedTrackIds] : defaultIncluded,
-      includeSubtitles: file.includeSubtitles || false,
+      includeSubtitles: getDefaultIncludeSubtitles(file),
       includedSubtitleTrackIds:
         file.includedSubtitleTrackIds !== undefined
           ? [...file.includedSubtitleTrackIds]
@@ -368,10 +370,80 @@ export function AudiosTab({
     setEditDialogOpen(true);
   };
 
+  const applyTrackChangesToDuplicateFiles = useCallback(
+    (
+      fileId: string,
+      updater: (file: ExternalFile, isTarget: boolean) => ExternalFile,
+    ) => {
+      const target = audioFiles.find((entry) => entry.id === fileId);
+      if (!target) return;
+      const updated = audioFiles.map((file) => {
+        if (file.path !== target.path) return file;
+        return updater(file, file.id === fileId);
+      });
+      onAudioFilesChange(updated);
+    },
+    [audioFiles, onAudioFilesChange],
+  );
+
   const applyEditChanges = () => {
     if (!editingFileId) return;
     const delayValue = Number(editForm.delay) || 0;
-    const updated = audioFiles.map((file) => {
+
+    if (editForm.applyToAllFiles) {
+      // Compute which track INDICES are selected in the editing file, then mirror to all files
+      const editingFileData = audioFiles.find((f) => f.id === editingFileId);
+      const srcAudioTracks = (editingFileData?.tracks || []).filter((t) => t.type === "audio");
+      const srcSubTracks = (editingFileData?.tracks || []).filter((t) => t.type === "subtitle");
+      const selAudioIdx = new Set(
+        srcAudioTracks
+          .map((t, i) => ({ i, id: Number(t.id) }))
+          .filter(({ id }) => editForm.includedTrackIds.includes(id))
+          .map(({ i }) => i),
+      );
+      const selSubIdx = new Set(
+        srcSubTracks
+          .map((t, i) => ({ i, id: Number(t.id) }))
+          .filter(({ id }) => editForm.includedSubtitleTrackIds.includes(id))
+          .map(({ i }) => i),
+      );
+
+      const updated = audioFiles.map((file) => {
+        const fileAudioTracks = (file.tracks || []).filter((t) => t.type === "audio");
+        const fileSubTracks = (file.tracks || []).filter((t) => t.type === "subtitle");
+        const newAudioIds = fileAudioTracks
+          .map((t, i) => ({ i, id: Number(t.id) }))
+          .filter(({ i }) => selAudioIdx.has(i))
+          .map(({ id }) => id)
+          .filter((id) => Number.isFinite(id));
+        const newSubIds = fileSubTracks
+          .map((t, i) => ({ i, id: Number(t.id) }))
+          .filter(({ i }) => selSubIdx.has(i))
+          .map(({ id }) => id)
+          .filter((id) => Number.isFinite(id));
+        return {
+          ...file,
+          language: editForm.language,
+          trackName: editForm.trackName,
+          delay: delayValue,
+          isDefault: editForm.isDefault,
+          isForced: editForm.isForced,
+          muxAfter: editForm.muxAfter,
+          includedTrackIds: fileAudioTracks.length > 0 ? newAudioIds : file.includedTrackIds,
+          includeSubtitles: editForm.includeSubtitles,
+          includedSubtitleTrackIds: fileSubTracks.length > 0 ? newSubIds : file.includedSubtitleTrackIds,
+          isManuallyEdited: true,
+        };
+      });
+
+      onAudioFilesChange(updated);
+      setEditDialogOpen(false);
+      setEditingFileId(null);
+      toast({ title: "Applied to All Files", description: `Settings applied to all ${audioFiles.length} audio file(s).` });
+      return;
+    }
+
+    let updated = audioFiles.map((file) => {
       if (file.id === editingFileId) {
         return {
           ...file,
@@ -393,6 +465,23 @@ export function AudiosTab({
       }
       return file;
     });
+
+    const editedTarget = updated.find((file) => file.id === editingFileId);
+    if (editedTarget) {
+      updated = updated.map((file) => {
+        if (file.id === editingFileId) return file;
+        if (file.path !== editedTarget.path) return file;
+        return {
+          ...file,
+          includedTrackIds: [...editForm.includedTrackIds],
+          includeSubtitles: editForm.includeSubtitles,
+          includedSubtitleTrackIds: [...editForm.includedSubtitleTrackIds],
+          trackOverrides: { ...(file.trackOverrides || {}) },
+          isManuallyEdited: true,
+        };
+      });
+    }
+
     onAudioFilesChange(updated);
     setEditDialogOpen(false);
     setEditingFileId(null);
@@ -412,6 +501,25 @@ export function AudiosTab({
     setTrackEditOpen(true);
   };
 
+  const openMultiDelayDialog = (fileId: string, trackType: "audio" | "subtitle" = "audio") => {
+    const file = audioFiles.find((entry) => entry.id === fileId);
+    if (!file) return;
+    const targetTracks = (file.tracks || []).filter((track) => track.type === trackType);
+    if (targetTracks.length === 0) return;
+    const initial: Record<number, string> = {};
+    targetTracks.forEach((track) => {
+      const trackId = Number(track.id);
+      if (!Number.isFinite(trackId)) return;
+      const delay = file.trackOverrides?.[trackId]?.delay ?? file.delay ?? 0;
+      initial[trackId] = delay.toFixed(3);
+    });
+    setMultiDelayFileId(fileId);
+    setMultiDelayTrackType(trackType);
+    setMultiDelayValues(initial);
+    setMultiDelayBulkValue((file.delay ?? 0).toFixed(3));
+    setMultiDelayOpen(true);
+  };
+
   const applyTrackEdit = () => {
     if (!trackEditTarget) return;
     setTrackEditOpen(false);
@@ -428,8 +536,7 @@ export function AudiosTab({
     const nextName =
       updates.trackName !== undefined ? updates.trackName : trackEditForm.trackName;
 
-    const updated = audioFiles.map((file) => {
-      if (file.id !== fileId) return file;
+    applyTrackChangesToDuplicateFiles(fileId, (file) => {
       const nextOverrides = { ...(file.trackOverrides || {}) };
       nextOverrides[trackId] = {
         language: nextLanguage || undefined,
@@ -438,7 +545,36 @@ export function AudiosTab({
       };
       return { ...file, trackOverrides: nextOverrides, isManuallyEdited: true };
     });
-    onAudioFilesChange(updated);
+  };
+
+  const applyMultiDelayChanges = () => {
+    if (!multiDelayFileId) return;
+    applyTrackChangesToDuplicateFiles(multiDelayFileId, (file) => {
+      const targetTracks = (file.tracks || []).filter((track) => track.type === multiDelayTrackType);
+      const nextOverrides = { ...(file.trackOverrides || {}) };
+      targetTracks.forEach((track) => {
+        const trackId = Number(track.id);
+        if (!Number.isFinite(trackId)) return;
+        const nextDelay = Number(multiDelayValues[trackId]) || 0;
+        const prev = nextOverrides[trackId] || {};
+        nextOverrides[trackId] = {
+          ...prev,
+          delay: nextDelay,
+        };
+      });
+      return {
+        ...file,
+        trackOverrides: nextOverrides,
+        isManuallyEdited: true,
+      };
+    });
+    setMultiDelayOpen(false);
+    setMultiDelayFileId(null);
+    setMultiDelayTrackType("audio");
+    toast({
+      title: "Track Delays Updated",
+      description: `Applied per-track delay values for selected ${multiDelayTrackType} tracks.`,
+    });
   };
 
   const applyBulkMapping = () => {
@@ -561,7 +697,7 @@ export function AudiosTab({
       isDefault: currentConfig.isDefault,
       isForced: currentConfig.isForced,
       muxAfter: currentConfig.muxAfter,
-      includeSubtitles: file.includeSubtitles ?? false,
+      includeSubtitles: getSubtitleTrackIds(file).length > 0,
       includedSubtitleTrackIds:
         file.includedSubtitleTrackIds?.length
           ? file.includedSubtitleTrackIds
@@ -577,11 +713,15 @@ export function AudiosTab({
 
   useEffect(() => {
     if (audioFiles.length === 0) return;
-    const isSynced = audioFiles.every((file, index) => file.matchedVideoId === videoFiles[index]?.id);
-    if (!isSynced) {
-      onAudioFilesChange(syncAudioLinks(audioFiles));
+    // Re-match only when some file's matchedVideoId is missing or points to a removed video
+    const videoIdSet = new Set(videoFiles.map((v) => v.id));
+    const needsRematch = audioFiles.some(
+      (f) => !f.matchedVideoId || !videoIdSet.has(f.matchedVideoId),
+    );
+    if (needsRematch) {
+      onAudioFilesChange(matchExternalToVideos(audioFiles, videoFiles));
     }
-  }, [audioFiles, onAudioFilesChange, syncAudioLinks, videoFiles]);
+  }, [audioFiles, onAudioFilesChange, videoFiles]);
 
   const confirmDeleteTrack = (trackId: string) => {
     if (audioTracks.length <= 1) return;
@@ -1150,21 +1290,34 @@ export function AudiosTab({
                 {audioFiles.map((file) => {
                   const checked = bulkSelectedAudioIds.includes(file.id);
                   const trackCount = file.tracks?.length || file.includedTrackIds?.length || 0;
+                  const audioTrackCount = (file.tracks || []).filter((track) => track.type === "audio").length;
                   return (
-                    <label key={file.id} className="flex items-center gap-2 text-xs text-foreground/80 cursor-pointer">
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={(value) => {
-                          setBulkSelectedAudioIds((prev) =>
-                            value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
-                          );
-                        }}
-                      />
-                      <span className="truncate">{file.name}</span>
-                      {trackCount > 1 && (
-                        <span className="ml-auto text-[10px] text-muted-foreground/70">{trackCount} tracks</span>
+                    <div key={file.id} className="flex items-center gap-2 text-xs text-foreground/80">
+                      <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(value) => {
+                            setBulkSelectedAudioIds((prev) =>
+                              value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
+                            );
+                          }}
+                        />
+                        <span className="truncate">{file.name}</span>
+                      </label>
+                      {audioTrackCount > 1 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => openEditDialog(file.id)}
+                        >
+                          Tracks
+                        </Button>
                       )}
-                    </label>
+                      {trackCount > 1 && (
+                        <span className="text-[10px] text-muted-foreground/70 shrink-0">{trackCount} tracks</span>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -1288,11 +1441,11 @@ export function AudiosTab({
             </div>
           </div>
 
-          <div className="grid grid-cols-[1fr_auto] gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] items-start gap-3">
             <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-2">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Track Flags</div>
-              <div className="flex items-center gap-5">
-                <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-start gap-x-5 gap-y-2">
+                <label className="inline-flex items-center gap-3 cursor-pointer">
                   <Checkbox
                     id="audio-edit-default"
                     checked={editForm.isDefault}
@@ -1300,11 +1453,9 @@ export function AudiosTab({
                       setEditForm((prev) => ({ ...prev, isDefault: checked as boolean }))
                     }
                   />
-                  <label htmlFor="audio-edit-default" className="text-sm">
-                    Default
-                  </label>
-                </div>
-                <div className="flex items-center gap-3">
+                  <span className="text-sm">Default</span>
+                </label>
+                <div className="inline-flex items-start gap-3">
                   <Checkbox
                     id="audio-edit-forced"
                     checked={editForm.isForced}
@@ -1313,19 +1464,19 @@ export function AudiosTab({
                     }
                   />
                   <div className="flex flex-col">
-                    <label htmlFor="audio-edit-forced" className="text-sm">
+                    <label htmlFor="audio-edit-forced" className="text-sm cursor-pointer">
                       Forced
                     </label>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="max-w-[190px] text-[11px] leading-tight text-muted-foreground">
                       Rare for audio; some players may ignore.
                     </span>
                   </div>
                 </div>
               </div>
             </div>
-            <div className="rounded-md border border-panel-border/50 bg-panel-header/30 px-4 py-3">
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/30 px-4 py-3 space-y-2">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Bulk Action</div>
-              <div className="flex items-center gap-3">
+              <label className="inline-flex items-center gap-3 cursor-pointer">
                 <Checkbox
                   id="audio-edit-delay-all"
                   checked={editForm.applyDelayToAll}
@@ -1333,10 +1484,21 @@ export function AudiosTab({
                     setEditForm((prev) => ({ ...prev, applyDelayToAll: checked as boolean }))
                   }
                 />
-                <label htmlFor="audio-edit-delay-all" className="text-sm">
-                  Apply delay to all
-                </label>
-              </div>
+                <span className="text-sm">Apply delay to all</span>
+              </label>
+              <label className="inline-flex items-center gap-3 cursor-pointer">
+                <Checkbox
+                  id="audio-edit-apply-all"
+                  checked={editForm.applyToAllFiles}
+                  onCheckedChange={(checked) =>
+                    setEditForm((prev) => ({ ...prev, applyToAllFiles: checked as boolean }))
+                  }
+                />
+                <div className="flex flex-col">
+                  <span className="text-sm">Apply to all files</span>
+                  <span className="text-[11px] text-muted-foreground leading-tight">Track selection applied by position</span>
+                </div>
+              </label>
             </div>
           </div>
 
@@ -1348,6 +1510,16 @@ export function AudiosTab({
                     Included Audio Tracks
                   </div>
                   <div className="flex items-center gap-2">
+                    {editingFile.tracks.filter((track) => track.type === "audio").length > 1 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => openMultiDelayDialog(editingFile.id, "audio")}
+                      >
+                        Track Delays
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1427,6 +1599,16 @@ export function AudiosTab({
                       Included Subtitle Tracks
                     </div>
                     <div className="flex items-center gap-2">
+                      {editingFile.tracks.filter((track) => track.type === "subtitle").length > 1 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-[11px]"
+                          onClick={() => openMultiDelayDialog(editingFile.id, "subtitle")}
+                        >
+                          Track Delays
+                        </Button>
+                      )}
                       <Button
                         variant="ghost"
                         size="sm"
@@ -1519,6 +1701,126 @@ export function AudiosTab({
               )}
             </>
           )}
+        </div>
+      </BaseModal>
+
+      <BaseModal
+        open={multiDelayOpen}
+        onOpenChange={(open) => {
+          setMultiDelayOpen(open);
+          if (!open) {
+            setMultiDelayFileId(null);
+            setMultiDelayTrackType("audio");
+            setMultiDelayValues({});
+          }
+        }}
+        title={`Edit Multi-Track ${multiDelayTrackType === "audio" ? "Audio" : "Subtitle"} Delays`}
+        subtitle={
+          multiDelayFile?.name ||
+          `Set separate delays for each ${multiDelayTrackType} track`
+        }
+        icon={<AudioLines className="w-5 h-5 text-primary" />}
+        className="max-w-xl"
+        bodyClassName="px-5 py-4"
+        footerRight={
+          <>
+            <Button
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setMultiDelayOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={applyMultiDelayChanges}>Save Delays</Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="rounded-md border border-panel-border/50 bg-panel-header/30 px-4 py-3 space-y-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Bulk Fill
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                value={multiDelayBulkValue}
+                onChange={(event) => setMultiDelayBulkValue(event.target.value)}
+                className="h-9 font-mono"
+                placeholder="0.000"
+              />
+              <Button
+                variant="outline"
+                onClick={() =>
+                  setMultiDelayValues((prev) => {
+                    if (!multiDelayFile) return prev;
+                    const next = { ...prev };
+                    multiDelayFile.tracks
+                      ?.filter((track) => track.type === multiDelayTrackType)
+                      .forEach((track) => {
+                        const trackId = Number(track.id);
+                        if (!Number.isFinite(trackId)) return;
+                        next[trackId] = multiDelayBulkValue;
+                      });
+                    return next;
+                  })
+                }
+              >
+                Apply To All {multiDelayTrackType === "audio" ? "Audio" : "Subtitle"} Tracks
+              </Button>
+            </div>
+            <div className="text-[11px] text-muted-foreground/70">
+              Use positive values to delay {multiDelayTrackType} and negative values to make it earlier.
+            </div>
+          </div>
+
+          <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Per-Track Delays
+            </div>
+            <div className="max-h-72 overflow-y-auto pr-1 space-y-2 scrollbar-thin">
+              {(multiDelayFile?.tracks || [])
+                .filter((track) => track.type === multiDelayTrackType)
+                .map((track, index) => {
+                  const trackId = Number(track.id);
+                  const includedIds =
+                    multiDelayTrackType === "audio"
+                      ? multiDelayFile?.includedTrackIds
+                      : multiDelayFile?.includedSubtitleTrackIds;
+                  const isIncluded =
+                    multiDelayTrackType === "subtitle" && !multiDelayFile?.includeSubtitles
+                      ? false
+                      : !includedIds || includedIds.length === 0
+                      ? true
+                      : includedIds.includes(trackId);
+                  return (
+                    <div
+                      key={`${track.id}-${index}`}
+                      className="grid grid-cols-[1fr_120px] items-center gap-3 rounded-md border border-panel-border/40 bg-card/40 px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm text-foreground truncate">
+                          Track {index + 1}
+                          {track.language ? ` • ${track.language}` : ""}
+                          {track.name ? ` • ${track.name}` : ""}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground/70">
+                          ID {track.id}
+                          {isIncluded ? " • Included" : " • Not included"}
+                        </div>
+                      </div>
+                      <Input
+                        value={Number.isFinite(trackId) ? (multiDelayValues[trackId] ?? "0.000") : "0.000"}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          if (!Number.isFinite(trackId)) return;
+                          setMultiDelayValues((prev) => ({ ...prev, [trackId]: value }));
+                        }}
+                        className="h-8 font-mono text-right"
+                      />
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
         </div>
       </BaseModal>
 

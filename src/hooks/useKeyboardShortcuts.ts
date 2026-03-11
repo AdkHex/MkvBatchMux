@@ -6,6 +6,8 @@ interface ShortcutHandlers {
   onNewTrack?: () => void;
   onShowHelp?: () => void;
   onToggleSidebar?: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
 export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
@@ -45,6 +47,18 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
       event.preventDefault();
       handlers.onToggleSidebar?.();
     }
+
+    // Ctrl+Z - Undo
+    if (event.ctrlKey && !event.shiftKey && event.key === 'z') {
+      event.preventDefault();
+      handlers.onUndo?.();
+    }
+
+    // Ctrl+Y or Ctrl+Shift+Z - Redo
+    if ((event.ctrlKey && event.key === 'y') || (event.ctrlKey && event.shiftKey && event.key === 'z')) {
+      event.preventDefault();
+      handlers.onRedo?.();
+    }
   }, [handlers]);
 
   useEffect(() => {
@@ -58,5 +72,8 @@ export const shortcuts = [
   { keys: ['Ctrl', 'M'], description: 'Modify Tracks dialog' },
   { keys: ['Ctrl', 'N'], description: 'Add new track (in Subtitles/Audios tab)' },
   { keys: ['Ctrl', 'B'], description: 'Toggle sidebar collapse' },
+  { keys: ['Ctrl', 'Z'], description: 'Undo last action' },
+  { keys: ['Ctrl', 'Y'], description: 'Redo last undone action' },
+  { keys: ['Ctrl', 'Shift', 'Z'], description: 'Redo last undone action' },
   { keys: ['?'], description: 'Show keyboard shortcuts' },
 ];
