@@ -64,11 +64,24 @@ Artifacts will be attached to the workflow run.
 
 ---
 
+## Project Structure
+```text
+src/
+  app/        App entry, routes, and global styles
+  features/   Workspace, history, and session-specific code
+  shared/     Reusable UI, shared components, utilities, types, and data
+src-tauri/    Rust backend and Tauri configuration
+docs/         Project documentation assets such as screenshots
+scripts/      Project maintenance scripts
+```
+
+---
+
 ## Credits
 - Ionicboy (AdkHexx)
 
 ## Screenshots
-![Videos](/Screenshots/VideoTab.png)
-![Audio Tracks](/Screenshots/AudioTab.png)
-![Subtitles](/Screenshots/SubtitleTab.png)
-![Mux Settings](/Screenshots/MuxSettings.png)
+![Videos](docs/screenshots/VideoTab.png)
+![Audio Tracks](docs/screenshots/AudioTab.png)
+![Subtitles](docs/screenshots/SubtitleTab.png)
+![Mux Settings](docs/screenshots/MuxSettings.png)
