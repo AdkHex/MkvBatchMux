@@ -125,33 +125,6 @@ export function MuxSettingTab({
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-1 min-h-0 overflow-y-auto">
-      <div className="px-5 pt-2">
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-panel-border/30 bg-panel-header/50 px-4 py-2">
-          <div className="flex items-center gap-4 text-xs text-muted-foreground">
-            <div className="flex items-center gap-2">
-              <span className="uppercase tracking-wider text-[10px] text-muted-foreground/70">Queue</span>
-              <span className="text-foreground font-medium">{jobs.length || videoFiles.length}</span>
-            </div>
-            <div className="h-3 w-px bg-panel-border/50" />
-            <div className="flex items-center gap-2">
-              <span className="uppercase tracking-wider text-[10px] text-muted-foreground/70">Warnings</span>
-              <span className={cn("font-medium", warningCount ? "text-warning" : "text-muted-foreground")}>
-                {warningCount || 0}
-              </span>
-            </div>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 px-3 text-xs gap-1.5 border-panel-border/40 bg-card/40 hover:bg-panel-header/60"
-            onClick={onPreviewQueue}
-            disabled={previewLoading || (jobs.length === 0 && videoFiles.length === 0)}
-          >
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            {previewLoading ? "Validating..." : "Validate Queue"}
-          </Button>
-        </div>
-      </div>
       {/* Output Configuration */}
       <div className="px-5 pt-2 pb-2 space-y-2.5">
         {/* Output Destination Card */}
@@ -480,6 +453,16 @@ export function MuxSettingTab({
           <div className="flex items-center justify-between">
             <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Mux Engine</div>
             <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-3 text-xs gap-1.5 border-panel-border/40 bg-card/40 hover:bg-panel-header/60"
+                onClick={onPreviewQueue}
+                disabled={previewLoading || (jobs.length === 0 && videoFiles.length === 0)}
+              >
+                <CheckCircle2 className="w-3 h-3" />
+                {previewLoading ? "Validating..." : warningCount > 0 ? `Validate (${warningCount}⚠)` : "Validate"}
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"

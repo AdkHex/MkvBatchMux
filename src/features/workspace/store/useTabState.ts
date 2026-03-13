@@ -1,5 +1,26 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, type StorageValue } from "zustand/middleware";
+
+// Debounced storage — batches localStorage writes to avoid per-keystroke lag
+const debouncedStorage = (() => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return {
+    getItem: (name: string): StorageValue<unknown> | null => {
+      const item = localStorage.getItem(name);
+      return item ? JSON.parse(item) : null;
+    },
+    setItem: (name: string, value: StorageValue<unknown>) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        localStorage.setItem(name, JSON.stringify(value));
+      }, 300);
+    },
+    removeItem: (name: string) => {
+      clearTimeout(timer);
+      localStorage.removeItem(name);
+    },
+  };
+})();
 
 export interface TrackConfig {
   sourceFolder: string;
@@ -169,6 +190,7 @@ export const useTabState = create<TabState>()(
     }),
     {
       name: "mkv-tab-state",
+      storage: debouncedStorage,
       partialize: (state) => ({
         // Only persist audio/subtitle tracks and configs (not chapter/attachment - session only)
         audioTracks: state.audioTracks,

@@ -8,6 +8,7 @@ import {
 } from "@/shared/ui/select";
 import { ModifyTracksDialog } from "./ModifyTracksDialog";
 import { VideoFileEditDialog } from "./VideoFileEditDialog";
+import { MediaInfoDialog } from "./MediaInfoDialog";
 import type { Preset, VideoFile, ExternalFile } from "@/shared/types";
 import {
   pickDirectory,
@@ -17,7 +18,7 @@ import {
   listenInspectPathsStreamDone,
   listenInspectPathsStreamError,
 } from "@/shared/lib/backend";
-import { open as openExternal } from "@tauri-apps/api/shell";
+import { appWindow } from "@tauri-apps/api/window";
 import { VIDEO_EXTENSIONS } from "@/shared/lib/extensions";
 import { PageLayout } from "@/shared/components/PageLayout";
 import { TextField, DropdownTrigger, DropdownContent } from "@/shared/components/Fields";
@@ -82,6 +83,9 @@ export function VideosTab({
   const [showScanOverlay, setShowScanOverlay] = useState(false);
   const [editingFile, setEditingFile] = useState<VideoFile | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [isMediaInfoOpen, setIsMediaInfoOpen] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dropTokenRef = useRef(0);
   const scanTokenRef = useRef(0);
   const scanAbortRef = useRef(false);
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -203,10 +207,77 @@ export function VideosTab({
 
   const handleMediaInfo = () => {
     if (selectedFileIds.length === 0) return;
-    const selectedFile = files.find((file) => file.id === selectedFileIds[0]);
-    if (!selectedFile) return;
-    openExternal(selectedFile.path).catch(() => undefined);
+    setIsMediaInfoOpen(true);
   };
+
+  const handleDroppedFiles = useCallback(async (paths: string[]) => {
+    const allowed = new Set(videoExtensions);
+    const videoPaths = paths.filter((p) => {
+      const ext = p.split(".").pop()?.toLowerCase();
+      return ext && allowed.has(ext);
+    });
+    if (videoPaths.length === 0) return;
+
+    // Deduplicate against existing files
+    const existingPaths = new Set(files.map((f) => f.path));
+    const newPaths = videoPaths.filter((p) => !existingPaths.has(p));
+    if (newPaths.length === 0) return;
+
+    dropTokenRef.current += 1;
+    const dropToken = dropTokenRef.current;
+
+    // Create stub entries immediately so the list updates at once
+    const stubs: VideoFile[] = newPaths.map((path) => ({
+      id: `video-drop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: path.split(/[\\/]/).pop() || path,
+      path,
+      size: 0,
+      status: "pending" as const,
+      tracks: [],
+    }));
+
+    const combined = [...files, ...stubs];
+    updateFiles(combined);
+
+    // Now inspect them to fill in tracks/duration/fps/size
+    const byPath = new Map(combined.map((f) => [f.path, f]));
+    const streamId = `drop-${dropToken}`;
+
+    let resolveDone: () => void = () => undefined;
+    const donePromise = new Promise<void>((res) => { resolveDone = res; });
+
+    const unlistenChunk = await listenInspectPathsStreamChunk((payload) => {
+      if (payload.scanId !== streamId) return;
+      for (const item of payload.items as VideoFile[]) {
+        byPath.set(item.path, item);
+      }
+      updateFiles(Array.from(byPath.values()));
+    });
+    const unlistenDone = await listenInspectPathsStreamDone((payload) => {
+      if (payload.scanId !== streamId) return;
+      resolveDone();
+    });
+    const unlistenError = await listenInspectPathsStreamError((payload) => {
+      if (payload.scanId !== streamId) return;
+      resolveDone();
+    });
+
+    try {
+      await inspectPathsStream({
+        scan_id: streamId,
+        paths: newPaths,
+        type: "video",
+        include_tracks: true,
+        batch_size: 8,
+      });
+      await donePromise;
+    } finally {
+      unlistenChunk();
+      unlistenDone();
+      unlistenError();
+      updateFiles(Array.from(byPath.values()));
+    }
+  }, [files, videoExtensions]);
 
   useEffect(() => {
     if (!preset) return;
@@ -215,6 +286,22 @@ export function VideosTab({
       setVideoExtension(defaultExt.toLowerCase());
     }
   }, [preset]);
+
+  // Native file drag-and-drop via Tauri window event
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    appWindow.onFileDropEvent((event) => {
+      if (event.payload.type === "hover") {
+        setIsDragOver(true);
+      } else if (event.payload.type === "cancel") {
+        setIsDragOver(false);
+      } else if (event.payload.type === "drop") {
+        setIsDragOver(false);
+        handleDroppedFiles(event.payload.paths);
+      }
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, [handleDroppedFiles]);
 
   useEffect(() => {
     const element = bodyRef.current;
@@ -492,7 +579,7 @@ export function VideosTab({
 
           <DataTableBody
             ref={bodyRef}
-            className="flex-1"
+            className={`flex-1 transition-colors ${isDragOver ? "ring-2 ring-inset ring-primary/50 bg-primary/5" : ""}`}
             onScroll={(event) => {
               if (!shouldVirtualize) return;
               setScrollTop(event.currentTarget.scrollTop);
@@ -511,7 +598,7 @@ export function VideosTab({
                 description={
                   isScanning && !showScanOverlay
                     ? "Loading video metadata"
-                    : "Click the folder icon above or drag & drop files here"
+                    : "Click the folder icon above or drag & drop MKV files here"
                 }
               />
             ) : (
@@ -563,6 +650,12 @@ export function VideosTab({
           </div>
         </DataTable>
       </div>
+
+      <MediaInfoDialog
+        open={isMediaInfoOpen}
+        onOpenChange={setIsMediaInfoOpen}
+        files={files.filter((f) => selectedFileIds.includes(f.id)).slice(0, 5)}
+      />
 
       <ModifyTracksDialog
         open={isModifyTracksOpen}

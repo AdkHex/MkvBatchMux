@@ -43,7 +43,7 @@ export function ChaptersTab({
     chapterTabState: state.chapterTabState,
     updateChapterTabState: state.updateChapterTabState,
   }));
-  
+
   const [selectedVideoIndex, setSelectedVideoIndex] = useState<number | null>(null);
   const [selectedChapterIndex, setSelectedChapterIndex] = useState<number | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -53,12 +53,11 @@ export function ChaptersTab({
     applyDelayToAll: false,
   });
 
-  // Initialize from preset on mount
   useEffect(() => {
     if (!preset) return;
     updateChapterTabState({
-      sourceFolder: preset.Default_Chapter_Directory || '',
-      extension: 'all',
+      sourceFolder: preset.Default_Chapter_Directory || "",
+      extension: "all",
     });
   }, [preset, updateChapterTabState]);
 
@@ -74,33 +73,25 @@ export function ChaptersTab({
       return;
     }
     try {
-      const extensions = extension === 'all' ? [] : [extension];
+      const extensions = extension === "all" ? [] : [extension];
       const results = await scanMedia({
         folder: folderPath,
         extensions,
         recursive: true,
-        type: 'chapter',
+        type: "chapter",
         include_tracks: false,
       });
       if (!results || !Array.isArray(results)) {
         onChapterFilesChange([]);
         return;
       }
-      // Safely normalize results, filtering out any invalid entries
       const normalized = (results as ExternalFile[])
-        .filter((file): file is ExternalFile => {
-          // Validate that file has required fields
-          return !!(
-            file &&
-            typeof file === 'object' &&
-            file.id &&
-            file.name &&
-            file.path
-          );
-        })
+        .filter((file): file is ExternalFile =>
+          !!(file && typeof file === "object" && file.id && file.name && file.path)
+        )
         .map((file, index) => ({
           ...file,
-          type: 'chapter' as const,
+          type: "chapter" as const,
           matchedVideoId: videoFiles[index]?.id,
         }));
       onChapterFilesChange(normalized);
@@ -140,7 +131,7 @@ export function ChaptersTab({
     const targetVideo = videoFiles[selectedVideoIndex];
     if (!targetVideo) return;
     const updated = chapterFiles.map((file, index) =>
-      index === selectedChapterIndex ? { ...file, matchedVideoId: targetVideo.id } : file
+      index === selectedChapterIndex ? { ...file, matchedVideoId: targetVideo.id } : file,
     );
     onChapterFilesChange(updated);
   };
@@ -149,10 +140,7 @@ export function ChaptersTab({
     const file = chapterFiles.find((entry) => entry.id === fileId);
     if (!file) return;
     setEditingFileId(fileId);
-    setEditForm({
-      delay: (file.delay ?? 0).toFixed(3),
-      applyDelayToAll: false,
-    });
+    setEditForm({ delay: (file.delay ?? 0).toFixed(3), applyDelayToAll: false });
     setEditDialogOpen(true);
   };
 
@@ -160,12 +148,8 @@ export function ChaptersTab({
     if (!editingFileId) return;
     const delayValue = Number(editForm.delay) || 0;
     const updated = chapterFiles.map((file) => {
-      if (file.id === editingFileId) {
-        return { ...file, delay: delayValue };
-      }
-      if (editForm.applyDelayToAll) {
-        return { ...file, delay: delayValue };
-      }
+      if (file.id === editingFileId) return { ...file, delay: delayValue };
+      if (editForm.applyDelayToAll) return { ...file, delay: delayValue };
       return file;
     });
     onChapterFilesChange(updated);
@@ -173,42 +157,54 @@ export function ChaptersTab({
     setEditingFileId(null);
   };
 
+  const applyDelayToAll = () => {
+    const delayValue = Number(chapterDelay) || 0;
+    const updated = chapterFiles.map((file) => ({ ...file, delay: delayValue }));
+    onChapterFilesChange(updated);
+  };
+
   return (
     <div className="flex flex-col h-full p-5 gap-4 bg-background">
-      {/* Chapters Enable Toggle */}
-      <div className="panel-card flex items-center gap-2 px-4 py-2.5">
-        <Checkbox 
-          id="chapters-enabled" 
-          checked={chaptersEnabled}
-          onCheckedChange={(checked) => {
-            const enabled = checked as boolean;
-            updateChapterTabState({ chaptersEnabled: enabled });
-            if (!enabled) {
-              onChapterFilesChange([]);
-            }
-          }}
-        />
-        <label htmlFor="chapters-enabled" className="text-sm font-medium cursor-pointer">Chapters</label>
+      {/* Track Selector Bar */}
+      <div className="track-selector-bar">
+        <div className="flex items-center gap-3">
+          <Checkbox
+            id="chapters-enabled"
+            checked={chaptersEnabled}
+            onCheckedChange={(checked) => {
+              const enabled = checked as boolean;
+              updateChapterTabState({ chaptersEnabled: enabled });
+              if (!enabled) onChapterFilesChange([]);
+            }}
+          />
+          <label htmlFor="chapters-enabled" className="text-sm font-medium cursor-pointer">
+            Chapters
+          </label>
+          <span className="text-[11px] font-mono text-muted-foreground">{chapterFiles.length}</span>
+        </div>
       </div>
 
+      {/* Configuration Card */}
       <div className="config-card space-y-4">
-        {/* Controls Row 1 */}
-        <div className="control-row">
-          <label className="config-label w-[140px]">
-            Chapter Source Folder:
-          </label>
-          <Input
-            value={sourceFolder}
-            onChange={(e) => updateChapterTabState({ sourceFolder: e.target.value })}
-            placeholder="Enter Chapter Folder Path"
-            className="app-input flex-1 font-mono"
-            disabled={!chaptersEnabled}
-          />
-          <div className="flex items-center gap-1">
+        <h3 className="text-[12px] uppercase tracking-[0.5px] text-muted-foreground font-semibold">
+          Chapter Configuration
+        </h3>
+
+        {/* Source Folder */}
+        <div className="flex items-center gap-3">
+          <label className="config-label">Source Folder</label>
+          <div className="flex-1 flex items-center gap-2">
+            <Input
+              value={sourceFolder}
+              onChange={(e) => updateChapterTabState({ sourceFolder: e.target.value })}
+              placeholder="Select chapter folder path..."
+              className="h-8 flex-1 font-mono"
+              disabled={!chaptersEnabled}
+            />
             <Button
-              variant="ghost"
+              variant="outline"
               size="icon"
-              className="btn-icon bg-muted/50 text-foreground hover:bg-muted/70"
+              className="h-8 w-8"
               disabled={!chaptersEnabled}
               onClick={async () => {
                 const folder = await pickDirectory();
@@ -223,7 +219,7 @@ export function ChaptersTab({
             <Button
               variant="ghost"
               size="icon"
-              className="btn-icon bg-primary/10 text-primary hover:bg-primary/20"
+              className="h-8 w-8 bg-primary/10 text-primary hover:bg-primary/20"
               disabled={!chaptersEnabled}
               onClick={() => scanChapters(sourceFolder)}
             >
@@ -232,10 +228,10 @@ export function ChaptersTab({
             <Button
               variant="ghost"
               size="icon"
-              className="btn-icon bg-destructive/10 text-destructive hover:bg-destructive/20"
+              className="h-8 w-8 bg-destructive/10 text-destructive hover:bg-destructive/20"
               disabled={!chaptersEnabled}
               onClick={() => {
-                updateChapterTabState({ sourceFolder: '' });
+                updateChapterTabState({ sourceFolder: "" });
                 onChapterFilesChange([]);
               }}
             >
@@ -245,9 +241,9 @@ export function ChaptersTab({
         </div>
 
         {/* Settings Row */}
-        <div className="grid grid-cols-[1.1fr_1fr_1.2fr] gap-3 items-center">
-          <div className="grid grid-cols-[124px_minmax(0,1fr)] items-center gap-2">
-            <label className="config-label whitespace-nowrap">Chapter Extension</label>
+        <div className="flex flex-wrap items-center gap-5">
+          <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2">
+            <label className="config-label">Extension</label>
             <Select
               value={extension}
               onValueChange={(v) => updateChapterTabState({ extension: v })}
@@ -267,8 +263,8 @@ export function ChaptersTab({
             </Select>
           </div>
 
-          <div className="grid grid-cols-[100px_minmax(0,1fr)_auto] items-center gap-2">
-            <label className="config-label whitespace-nowrap">Delay</label>
+          <div className="grid grid-cols-[100px_minmax(0,1fr)_auto_auto] items-center gap-2">
+            <label className="config-label">Delay</label>
             <Input
               value={chapterDelay}
               onChange={(e) => updateChapterTabState({ delay: e.target.value })}
@@ -276,60 +272,58 @@ export function ChaptersTab({
               disabled={!chaptersEnabled}
             />
             <span className="text-[12px] text-muted-foreground">sec</span>
-          </div>
-
-          <div className="flex items-center justify-end gap-4">
-            <div className="flex items-center gap-2 min-w-[220px] justify-end">
-              <Checkbox
-                id="discard-chapters"
-                checked={discardOldChapters}
-                onCheckedChange={(checked) => {
-                  const enabled = checked as boolean;
-                  updateChapterTabState({ discardOldChapters: enabled });
-                  onMuxSettingsChange({ discardOldChapters: enabled });
-                }}
-                disabled={!chaptersEnabled}
-              />
-              <label htmlFor="discard-chapters" className="text-[13px] cursor-pointer">Discard Old Chapters</label>
-            </div>
             <Button
               variant="default"
               size="sm"
-              className="h-9 px-4 text-xs"
+              className="h-8 px-4 text-xs"
               disabled={!chaptersEnabled || chapterFiles.length === 0}
-              onClick={() => {
-                const delayValue = Number(chapterDelay) || 0;
-                const updated = chapterFiles.map((file) => ({ ...file, delay: delayValue }));
-                onChapterFilesChange(updated);
-              }}
+              onClick={applyDelayToAll}
             >
               Apply
             </Button>
           </div>
+
+          <div className="h-4 w-px bg-panel-border/40" />
+
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="discard-chapters"
+              checked={discardOldChapters}
+              onCheckedChange={(checked) => {
+                const enabled = checked as boolean;
+                updateChapterTabState({ discardOldChapters: enabled });
+                onMuxSettingsChange({ discardOldChapters: enabled });
+              }}
+              disabled={!chaptersEnabled}
+            />
+            <label htmlFor="discard-chapters" className="text-[12px] cursor-pointer">
+              Discard Old Chapters
+            </label>
+          </div>
         </div>
       </div>
 
-      {/* Matching Section Label */}
+      {/* Chapter Matching Label */}
       <div className="section-label rounded-md border border-panel-border/20">
         Chapter Matching
       </div>
 
-      {/* Dual Panel Matching */}
+      {/* Dual Panel */}
       <div className="workspace-split flex-1 flex overflow-hidden gap-4">
         {/* Video List */}
         <div className="panel-card flex-1 flex flex-col overflow-hidden">
           <div className="panel-card-header">
-            <div className="panel-card-title">Video Name</div>
+            <div className="flex items-center gap-2">
+              <h4 className="panel-card-title">Video Files</h4>
+              <span className="text-[11px] font-mono text-muted-foreground">{videoFiles.length}</span>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
             {videoFiles.map((file, index) => (
               <div
                 key={file.id}
                 onClick={() => setSelectedVideoIndex(index)}
-                className={cn(
-                    "file-item-video",
-                    selectedVideoIndex === index && "selected",
-                  )}
+                className={cn("file-item-video", selectedVideoIndex === index && "selected")}
               >
                 <div className="media-row-main">
                   <span className="media-row-index">{index + 1}</span>
@@ -357,7 +351,8 @@ export function ChaptersTab({
             className="btn-toolbar h-8 w-8 p-0"
             disabled={!chaptersEnabled || selectedChapterIndex === null || selectedChapterIndex === 0}
             onClick={() =>
-              selectedChapterIndex !== null && reorderChapterFile(selectedChapterIndex, selectedChapterIndex - 1)
+              selectedChapterIndex !== null &&
+              reorderChapterFile(selectedChapterIndex, selectedChapterIndex - 1)
             }
           >
             <ChevronUp className="w-4 h-4" />
@@ -365,7 +360,7 @@ export function ChaptersTab({
           <Button
             variant="default"
             size="sm"
-            className="btn-toolbar h-8 w-8 p-0"
+            className="btn-toolbar h-8 px-3 text-xs"
             disabled={!chaptersEnabled || selectedVideoIndex === null || selectedChapterIndex === null}
             onClick={linkChapterToVideo}
           >
@@ -376,10 +371,13 @@ export function ChaptersTab({
             size="sm"
             className="btn-toolbar h-8 w-8 p-0"
             disabled={
-              !chaptersEnabled || selectedChapterIndex === null || selectedChapterIndex === chapterFiles.length - 1
+              !chaptersEnabled ||
+              selectedChapterIndex === null ||
+              selectedChapterIndex === chapterFiles.length - 1
             }
             onClick={() =>
-              selectedChapterIndex !== null && reorderChapterFile(selectedChapterIndex, selectedChapterIndex + 1)
+              selectedChapterIndex !== null &&
+              reorderChapterFile(selectedChapterIndex, selectedChapterIndex + 1)
             }
           >
             <ChevronDown className="w-4 h-4" />
@@ -389,10 +387,13 @@ export function ChaptersTab({
             size="sm"
             className="btn-toolbar h-8 w-8 p-0"
             disabled={
-              !chaptersEnabled || selectedChapterIndex === null || selectedChapterIndex === chapterFiles.length - 1
+              !chaptersEnabled ||
+              selectedChapterIndex === null ||
+              selectedChapterIndex === chapterFiles.length - 1
             }
             onClick={() =>
-              selectedChapterIndex !== null && reorderChapterFile(selectedChapterIndex, chapterFiles.length - 1)
+              selectedChapterIndex !== null &&
+              reorderChapterFile(selectedChapterIndex, chapterFiles.length - 1)
             }
           >
             <ChevronsDown className="w-4 h-4" />
@@ -402,7 +403,10 @@ export function ChaptersTab({
         {/* Chapter List */}
         <div className="panel-card flex-1 flex flex-col overflow-hidden">
           <div className="panel-card-header">
-            <div className="panel-card-title">Chapter Name</div>
+            <div className="flex items-center gap-2">
+              <h4 className="panel-card-title">Chapter Files</h4>
+              <span className="text-[11px] font-mono text-muted-foreground">{chapterFiles.length}</span>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
             {chapterFiles.length === 0 ? (
@@ -418,17 +422,15 @@ export function ChaptersTab({
                   key={file.id}
                   onClick={() => setSelectedChapterIndex(index)}
                   onDoubleClick={() => openEditDialog(file.id)}
-                className={cn(
-                    "file-item-audio",
-                    selectedChapterIndex === index && "selected",
-                  )}
-              >
-                <div className="media-row-main">
-                  <span className="media-row-index">{index + 1}</span>
+                  className={cn("file-item-audio", selectedChapterIndex === index && "selected")}
+                >
+                  <div className="media-row-main">
+                    <span className="media-row-index">{index + 1}</span>
                     <span className="media-row-name">{truncateMiddle(file.name)}</span>
                     {Number(file.delay) !== 0 && (
                       <span className="text-xs text-muted-foreground/60">
-                        ({Number(file.delay) > 0 ? '+' : ''}{Number(file.delay).toFixed(3)}s)
+                        ({Number(file.delay) > 0 ? "+" : ""}
+                        {Number(file.delay).toFixed(3)}s)
                       </span>
                     )}
                   </div>
@@ -455,17 +457,19 @@ export function ChaptersTab({
         open={editDialogOpen}
         onOpenChange={(open) => {
           setEditDialogOpen(open);
-          if (!open) {
-            setEditingFileId(null);
-          }
+          if (!open) setEditingFileId(null);
         }}
         title="Edit Chapter Delay"
-        subtitle={chapterFiles.find(f => f.id === editingFileId)?.name || "Update chapter delay."}
+        subtitle={chapterFiles.find((f) => f.id === editingFileId)?.name || "Update chapter delay."}
         icon={<BookOpen className="w-5 h-5 text-primary" />}
         className="max-w-lg"
         footerRight={
           <>
-            <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setEditDialogOpen(false)}>
+            <Button
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setEditDialogOpen(false)}
+            >
               Cancel
             </Button>
             <Button onClick={applyEditChanges}>Save Changes</Button>
