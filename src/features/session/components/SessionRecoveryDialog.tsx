@@ -26,13 +26,13 @@ export function SessionRecoveryDialog({ onRestore, onDiscard }: SessionRecoveryD
   const { hasPendingSession, pendingSession } = useSessionStore();
   const dialogDisabled = localStorage.getItem("session-recovery-dialog-disabled") === "1";
 
-  // Auto-restore silently when popup is disabled in settings
+  // Discard silently when popup is disabled in settings
   useEffect(() => {
     if (hasPendingSession && pendingSession && dialogDisabled) {
-      onRestore(pendingSession);
+      clearSession();
       useSessionStore.getState().clearPendingSession();
     }
-  }, [hasPendingSession, pendingSession, dialogDisabled, onRestore]);
+  }, [hasPendingSession, pendingSession, dialogDisabled]);
 
   const handleRestore = () => {
     if (pendingSession) {
