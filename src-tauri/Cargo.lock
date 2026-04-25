@@ -1654,7 +1654,7 @@ dependencies = [
 
 [[package]]
 name = "mkv_batch_muxing_tool"
-version = "1.15.0"
+version = "1.17.0"
 dependencies = [
  "crc32fast",
  "fs2",

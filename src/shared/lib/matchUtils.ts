@@ -107,6 +107,48 @@ export function matchExternalToVideos(
   }
 
   const videoIdSet = new Set(videoFiles.map((v) => v.id));
+  const assignedVideoIds = new Set<string>();
+
+  const pickBestUnassignedVideo = (file: ExternalFile) => {
+    const ep = extractEpisodeNumber(file.name);
+    if (ep !== null) {
+      const video = episodeMap.get(ep);
+      if (video && !assignedVideoIds.has(video.id)) {
+        return video.id;
+      }
+    }
+
+    const extNorm = normalizeName(file.name);
+    let best: { id: string; score: number } | null = null;
+    for (const video of videoFiles) {
+      if (assignedVideoIds.has(video.id)) continue;
+      const score = wordOverlap(extNorm, normalizeName(video.name));
+      if (score > 0 && (!best || score > best.score)) {
+        best = { id: video.id, score };
+      }
+    }
+    return best?.id;
+  };
+
+  const pickPositionalFallback = (index: number) => {
+    const preferred = videoFiles[Math.min(index, videoFiles.length - 1)];
+    if (preferred && !assignedVideoIds.has(preferred.id)) {
+      return preferred.id;
+    }
+    for (let offset = 1; offset < videoFiles.length; offset += 1) {
+      const forwardIndex = index + offset;
+      if (forwardIndex < videoFiles.length) {
+        const forward = videoFiles[forwardIndex];
+        if (!assignedVideoIds.has(forward.id)) return forward.id;
+      }
+      const backwardIndex = index - offset;
+      if (backwardIndex >= 0) {
+        const backward = videoFiles[backwardIndex];
+        if (!assignedVideoIds.has(backward.id)) return backward.id;
+      }
+    }
+    return preferred?.id;
+  };
 
   return externalFiles.map((file, index) => {
     // Preserve a valid, explicitly set match
@@ -115,29 +157,57 @@ export function matchExternalToVideos(
       file.matchedVideoId &&
       videoIdSet.has(file.matchedVideoId)
     ) {
+      assignedVideoIds.add(file.matchedVideoId);
       return file;
     }
 
-    // 1. Episode number match
-    const ep = extractEpisodeNumber(file.name);
-    if (ep !== null) {
-      const video = episodeMap.get(ep);
-      if (video) return { ...file, matchedVideoId: video.id };
+    const matchedVideoId = pickBestUnassignedVideo(file) || pickPositionalFallback(index);
+    if (matchedVideoId) {
+      assignedVideoIds.add(matchedVideoId);
     }
-
-    // 2. Word-overlap match
-    const extNorm = normalizeName(file.name);
-    let best: { id: string; score: number } | null = null;
-    for (const video of videoFiles) {
-      const score = wordOverlap(extNorm, normalizeName(video.name));
-      if (score > 0 && (!best || score > best.score)) {
-        best = { id: video.id, score };
-      }
-    }
-    if (best) return { ...file, matchedVideoId: best.id };
-
-    // 3. Positional fallback (clamp to last video so we always get a valid id)
-    const fallback = videoFiles[Math.min(index, videoFiles.length - 1)];
-    return { ...file, matchedVideoId: fallback.id };
+    return { ...file, matchedVideoId };
   });
+}
+
+export function linkExternalFilesByOrder(
+  externalFiles: ExternalFile[],
+  videoFiles: VideoFile[],
+): ExternalFile[] {
+  const videoIds = videoFiles.map((video) => video.id);
+  return externalFiles.map((file, index) => ({
+    ...file,
+    matchedVideoId: videoIds[index],
+  }));
+}
+
+export function assignExternalFileToVideo(
+  externalFiles: ExternalFile[],
+  fileId: string,
+  videoId: string,
+): ExternalFile[] {
+  const target = externalFiles.find((file) => file.id === fileId);
+  if (!target) return externalFiles;
+
+  const previousVideoId = target.matchedVideoId;
+
+  return externalFiles.map((file) => {
+    if (file.id === fileId) {
+      return { ...file, matchedVideoId: videoId };
+    }
+    if (file.matchedVideoId !== videoId) {
+      return file;
+    }
+    return {
+      ...file,
+      matchedVideoId: previousVideoId && previousVideoId !== videoId ? previousVideoId : undefined,
+    };
+  });
+}
+
+export function getUnlinkedExternalFiles(
+  externalFiles: ExternalFile[],
+  videoFiles: VideoFile[],
+): ExternalFile[] {
+  const videoIds = new Set(videoFiles.map((video) => video.id));
+  return externalFiles.filter((file) => !file.matchedVideoId || !videoIds.has(file.matchedVideoId));
 }

@@ -77,7 +77,7 @@ export function ChaptersTab({
       const results = await scanMedia({
         folder: folderPath,
         extensions,
-        recursive: true,
+        recursive: false,
         type: "chapter",
         include_tracks: false,
       });

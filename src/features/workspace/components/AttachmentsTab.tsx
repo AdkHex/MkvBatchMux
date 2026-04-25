@@ -71,7 +71,7 @@ export function AttachmentsTab({
     const results = await scanMedia({
       folder: folderPath,
       extensions,
-      recursive: true,
+      recursive: false,
       type: "attachment",
       include_tracks: false,
     });

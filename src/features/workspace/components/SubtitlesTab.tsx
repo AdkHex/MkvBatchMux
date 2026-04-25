@@ -20,7 +20,12 @@ import type { VideoFile, ExternalFile, Preset } from "@/shared/types";
 import { pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { SUBTITLE_EXTENSIONS } from "@/shared/lib/extensions";
-import { matchExternalToVideos } from "@/shared/lib/matchUtils";
+import {
+  assignExternalFileToVideo,
+  getUnlinkedExternalFiles,
+  linkExternalFilesByOrder,
+  matchExternalToVideos,
+} from "@/shared/lib/matchUtils";
 import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/shared/data/languages-iso6393";
 
 interface SubtitlesTabProps {
@@ -73,7 +78,7 @@ export function SubtitlesTab({
   preset,
 }: SubtitlesTabProps) {
   const syncSubtitleLinks = useCallback(
-    (files: ExternalFile[]) => matchExternalToVideos(files, videoFiles),
+    (files: ExternalFile[]) => matchExternalToVideos(files, videoFiles, true),
     [videoFiles],
   );
   const {
@@ -169,6 +174,17 @@ export function SubtitlesTab({
     () => videoFiles.find((file) => file.id === importSourceVideoId) || null,
     [videoFiles, importSourceVideoId],
   );
+  const selectedSubtitleFile =
+    selectedSubtitleIndex !== null ? subtitleFiles[selectedSubtitleIndex] || null : null;
+  const selectedVideoFile = selectedVideoIndex !== null ? videoFiles[selectedVideoIndex] || null : null;
+  const linkedVideoNameById = useMemo(
+    () => new Map(videoFiles.map((file) => [file.id, file.name] as const)),
+    [videoFiles],
+  );
+  const unlinkedCount = useMemo(
+    () => getUnlinkedExternalFiles(subtitleFiles, videoFiles).length,
+    [subtitleFiles, videoFiles],
+  );
 
   const importableTracks = useMemo(
     () =>
@@ -257,6 +273,26 @@ export function SubtitlesTab({
     });
   };
 
+  const linkSelectedSubtitleToVideo = useCallback(() => {
+    if (!selectedSubtitleFile || !selectedVideoFile) return;
+    onSubtitleFilesChange(
+      assignExternalFileToVideo(subtitleFiles, selectedSubtitleFile.id, selectedVideoFile.id),
+    );
+    toast({
+      title: "Subtitle Linked",
+      description: `${selectedSubtitleFile.name} linked to ${selectedVideoFile.name}.`,
+    });
+  }, [onSubtitleFilesChange, selectedSubtitleFile, selectedVideoFile, subtitleFiles]);
+
+  const linkSubtitleFilesByOrder = useCallback(() => {
+    if (subtitleFiles.length === 0 || videoFiles.length === 0) return;
+    onSubtitleFilesChange(linkExternalFilesByOrder(subtitleFiles, videoFiles));
+    toast({
+      title: "Subtitle Links Updated",
+      description: "Subtitle files are now linked to videos by their visible order.",
+    });
+  }, [onSubtitleFilesChange, subtitleFiles, videoFiles]);
+
   useEffect(() => {
     if (onAddTrack) {
       window.__subtitlesAddTrack = addNewTrack;
@@ -291,7 +327,7 @@ export function SubtitlesTab({
     const results = await scanMedia({
       folder: folderPath,
       extensions,
-      recursive: true,
+      recursive: false,
       type: 'subtitle',
       include_tracks: true,
     });
@@ -321,7 +357,7 @@ export function SubtitlesTab({
       (f) => !f.matchedVideoId || !videoIdSet.has(f.matchedVideoId),
     );
     if (needsRematch) {
-      onSubtitleFilesChange(matchExternalToVideos(subtitleFiles, videoFiles));
+      onSubtitleFilesChange(matchExternalToVideos(subtitleFiles, videoFiles, true));
     }
   }, [onSubtitleFilesChange, subtitleFiles, videoFiles]);
 
@@ -1037,6 +1073,24 @@ export function SubtitlesTab({
                 variant="ghost"
                 size="sm"
                 className="panel-text-btn"
+                onClick={linkSubtitleFilesByOrder}
+                disabled={videoFiles.length === 0 || subtitleFiles.length === 0}
+              >
+                Link by Order
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="panel-text-btn"
+                onClick={linkSelectedSubtitleToVideo}
+                disabled={!selectedSubtitleFile || !selectedVideoFile}
+              >
+                Link Selected
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="panel-text-btn"
                 onClick={() => {
                   setBulkSelectedVideoIds(videoFiles.map((file) => file.id));
                   setBulkSelectedSubtitleIds(subtitleFiles.map((file) => file.id));
@@ -1049,6 +1103,11 @@ export function SubtitlesTab({
             </div>
           </div>
           <div className="flex-1 overflow-auto scrollbar-thin">
+            {unlinkedCount > 0 && (
+              <div className="px-3 py-2 text-[11px] text-warning border-b border-panel-border/30 bg-warning/8">
+                {unlinkedCount} subtitle file{unlinkedCount === 1 ? "" : "s"} still need a linked video before muxing.
+              </div>
+            )}
             {subtitleFiles.length === 0 ? (
               <EmptyState
                 icon={<FileText className="w-5 h-5 text-muted-foreground/65" />}
@@ -1073,7 +1132,41 @@ export function SubtitlesTab({
                     <GripVertical className="w-4 h-4" />
                   </span>
                   <span className="media-row-index">{`${index + 1}.`}</span>
-                  <span className="media-row-name">{file.name}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="media-row-name">{file.name}</div>
+                    <div className={cn("media-row-link", file.matchedVideoId ? "text-muted-foreground" : "text-warning")}>
+                      {file.matchedVideoId
+                        ? `Linked to: ${linkedVideoNameById.get(file.matchedVideoId) || "Selected video"}`
+                        : "Not linked to any video"}
+                    </div>
+                  </div>
+                  <Select
+                    value={file.matchedVideoId || "__unlinked__"}
+                    onValueChange={(value) =>
+                      onSubtitleFilesChange(
+                        value === "__unlinked__"
+                          ? subtitleFiles.map((entry) =>
+                              entry.id === file.id ? { ...entry, matchedVideoId: undefined } : entry,
+                            )
+                          : assignExternalFileToVideo(subtitleFiles, file.id, value),
+                      )
+                    }
+                  >
+                    <SelectTrigger
+                      className="media-row-select h-8 text-[11px] bg-input/70"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <SelectValue placeholder="Link to video" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__unlinked__">Not linked</SelectItem>
+                      {videoFiles.map((video, videoIndex) => (
+                        <SelectItem key={video.id} value={video.id}>
+                          {`${videoIndex + 1}. ${video.name}`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <div className="media-row-actions">
                     <Button
                       variant="ghost"

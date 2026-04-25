@@ -4,9 +4,19 @@ import { DataTable, DataTableHeader, DataTableBody, DataTableRow, DataTableCell 
 
 export { DataTableHeader as ReorderableTableHeader, DataTableCell as ReorderableTableCell };
 
-export function ReorderableTableBody({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <DataTableBody className={cn("min-h-0 flex-1 overflow-y-auto", className)} {...props} />;
-}
+export const ReorderableTableBody = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  ({ className, ...props }, ref) => {
+    return (
+      <DataTableBody
+        ref={ref}
+        className={cn("min-h-0 flex-1 overflow-y-auto", className)}
+        {...props}
+      />
+    );
+  },
+);
+
+ReorderableTableBody.displayName = "ReorderableTableBody";
 
 export function ReorderableTable({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <DataTable className={cn("relative flex flex-col min-h-0", className)} {...props} />;

@@ -55,13 +55,17 @@ import { AppShell } from "@/shared/components/AppShell";
 import { SidebarNav } from "@/shared/components/SidebarNav";
 import { CommandBar } from "@/shared/components/CommandBar";
 import { IconButton } from "@/shared/components/IconButton";
-import { checkForPendingSession, scheduleSave, clearSession } from "@/features/session/lib/sessionManager";
+import { checkForPendingSession, scheduleSave, clearSession, forceSave } from "@/features/session/lib/sessionManager";
 import type { SessionState } from "@/features/session/store/useSessionStore";
 import { AddVideosCommand } from "@/features/history/lib/commands/AddVideosCommand";
 import { RemoveVideosCommand } from "@/features/history/lib/commands/RemoveVideosCommand";
 import { ModifyTracksCommand } from "@/features/history/lib/commands/ModifyTracksCommand";
 import { AddExternalFilesCommand } from "@/features/history/lib/commands/AddExternalFilesCommand";
 import { RemoveExternalFilesCommand } from "@/features/history/lib/commands/RemoveExternalFilesCommand";
+import { buildMuxJobRequests } from "@/features/workspace/lib/muxJobBuilder";
+import { areVideoFilesEquivalent } from "@/features/workspace/lib/videoCompare";
+import type { MuxProgressEvent } from "@/shared/lib/backend";
+import { getUnlinkedExternalFiles } from "@/shared/lib/matchUtils";
 
 type TabId = "videos" | "subtitles" | "audios" | "chapters" | "attachments" | "mux-setting";
 
@@ -107,18 +111,6 @@ const WorkspacePage = () => {
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-  // Refs to access current state inside event listeners without stale closures
-  const videoFilesRef = useRef(videoFiles);
-  const audioFilesByTrackRef = useRef(audioFilesByTrack);
-  const subtitleFilesByTrackRef = useRef(subtitleFilesByTrack);
-  const chapterFilesRef = useRef(chapterFiles);
-  const attachmentFilesRef = useRef(attachmentFiles);
-  useEffect(() => { videoFilesRef.current = videoFiles; }, [videoFiles]);
-  useEffect(() => { audioFilesByTrackRef.current = audioFilesByTrack; }, [audioFilesByTrack]);
-  useEffect(() => { subtitleFilesByTrackRef.current = subtitleFilesByTrack; }, [subtitleFilesByTrack]);
-  useEffect(() => { chapterFilesRef.current = chapterFiles; }, [chapterFiles]);
-  useEffect(() => { attachmentFilesRef.current = attachmentFiles; }, [attachmentFiles]);
-
   const audioFilesCount = useMemo(
     () => Object.values(audioFilesByTrack).reduce((sum, list) => sum + list.length, 0),
     [audioFilesByTrack],
@@ -127,6 +119,30 @@ const WorkspacePage = () => {
     () => Object.values(subtitleFilesByTrack).reduce((sum, list) => sum + list.length, 0),
     [subtitleFilesByTrack],
   );
+  const unlinkedAudioFiles = useMemo(
+    () =>
+      Object.values(audioFilesByTrack).flatMap((files) => getUnlinkedExternalFiles(files, videoFiles)),
+    [audioFilesByTrack, videoFiles],
+  );
+  const unlinkedSubtitleFiles = useMemo(
+    () =>
+      Object.values(subtitleFilesByTrack).flatMap((files) => getUnlinkedExternalFiles(files, videoFiles)),
+    [subtitleFilesByTrack, videoFiles],
+  );
+  const externalLinkIssues = useMemo(() => {
+    const messages: string[] = [];
+    if (unlinkedAudioFiles.length > 0) {
+      messages.push(
+        `${unlinkedAudioFiles.length} audio file${unlinkedAudioFiles.length === 1 ? "" : "s"} are not linked to a video.`,
+      );
+    }
+    if (unlinkedSubtitleFiles.length > 0) {
+      messages.push(
+        `${unlinkedSubtitleFiles.length} subtitle file${unlinkedSubtitleFiles.length === 1 ? "" : "s"} are not linked to a video.`,
+      );
+    }
+    return messages;
+  }, [unlinkedAudioFiles.length, unlinkedSubtitleFiles.length]);
 
   useEffect(() => {
     setAudioFilesByTrack((prev) =>
@@ -166,6 +182,30 @@ const WorkspacePage = () => {
     makeSubtitleDefaultLanguage: undefined,
     useMkvpropedit: false,
   });
+
+  // Refs to access current state inside event listeners without stale closures
+  const videoFilesRef = useRef(videoFiles);
+  const audioFilesByTrackRef = useRef(audioFilesByTrack);
+  const subtitleFilesByTrackRef = useRef(subtitleFilesByTrack);
+  const chapterFilesRef = useRef(chapterFiles);
+  const attachmentFilesRef = useRef(attachmentFiles);
+  const perVideoExternalRef = useRef(perVideoExternal);
+  const jobsRef = useRef(jobs);
+  const muxSettingsRef = useRef(muxSettings);
+  const outputSettingsRef = useRef(outputSettings);
+  const activeTabRef = useRef(activeTab);
+  const videoSourceFolderRef = useRef(videoSourceFolder);
+  useEffect(() => { videoFilesRef.current = videoFiles; }, [videoFiles]);
+  useEffect(() => { audioFilesByTrackRef.current = audioFilesByTrack; }, [audioFilesByTrack]);
+  useEffect(() => { subtitleFilesByTrackRef.current = subtitleFilesByTrack; }, [subtitleFilesByTrack]);
+  useEffect(() => { chapterFilesRef.current = chapterFiles; }, [chapterFiles]);
+  useEffect(() => { attachmentFilesRef.current = attachmentFiles; }, [attachmentFiles]);
+  useEffect(() => { perVideoExternalRef.current = perVideoExternal; }, [perVideoExternal]);
+  useEffect(() => { jobsRef.current = jobs; }, [jobs]);
+  useEffect(() => { muxSettingsRef.current = muxSettings; }, [muxSettings]);
+  useEffect(() => { outputSettingsRef.current = outputSettings; }, [outputSettings]);
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+  useEffect(() => { videoSourceFolderRef.current = videoSourceFolder; }, [videoSourceFolder]);
 
   // Apply theme
   useEffect(() => {
@@ -215,25 +255,30 @@ const WorkspacePage = () => {
     localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
   }, [sidebarCollapsed]);
 
-  // Auto-save session on any state change (debounced 5s)
-  useEffect(() => {
-    const sessionSnapshot: SessionState = {
+  const buildSessionSnapshot = useCallback(
+    (): SessionState => ({
       version: "1.0.0",
       timestamp: Math.floor(Date.now() / 1000),
-      videoFiles,
-      audioFiles: audioFilesByTrack,
-      subtitleFiles: subtitleFilesByTrack,
-      chapterFiles,
-      attachmentFiles,
-      perVideoExternal,
-      jobs,
-      muxSettings,
-      outputSettings,
-      activeTab,
-      videoSourceFolder,
-    };
-    scheduleSave(sessionSnapshot);
+      videoFiles: videoFilesRef.current,
+      audioFiles: audioFilesByTrackRef.current,
+      subtitleFiles: subtitleFilesByTrackRef.current,
+      chapterFiles: chapterFilesRef.current,
+      attachmentFiles: attachmentFilesRef.current,
+      perVideoExternal: perVideoExternalRef.current,
+      jobs: jobsRef.current,
+      muxSettings: muxSettingsRef.current,
+      outputSettings: outputSettingsRef.current,
+      activeTab: activeTabRef.current,
+      videoSourceFolder: videoSourceFolderRef.current,
+    }),
+    [],
+  );
+
+  // Auto-save session on any state change (debounced 5s) without rebuilding the full snapshot eagerly.
+  useEffect(() => {
+    scheduleSave(buildSessionSnapshot);
   }, [
+    buildSessionSnapshot,
     videoFiles,
     audioFilesByTrack,
     subtitleFilesByTrack,
@@ -247,16 +292,39 @@ const WorkspacePage = () => {
     videoSourceFolder,
   ]);
 
+  useEffect(() => {
+    const flushSession = () => {
+      void forceSave(buildSessionSnapshot());
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushSession();
+      }
+    };
+    window.addEventListener("beforeunload", flushSession);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("beforeunload", flushSession);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [buildSessionSnapshot]);
+
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((prev) => !prev);
   }, []);
 
   useEffect(() => {
-    const unlistenPromise = listenMuxProgress((payload) => {
+    const bufferedProgress = new Map<string, MuxProgressEvent>();
+    let flushTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const applyProgress = (payloads: MuxProgressEvent[]) => {
+      if (!payloads.length) return;
+      const payloadById = new Map(payloads.map((payload) => [payload.job_id, payload] as const));
       setJobs((prev) => {
         const now = Date.now();
         return prev.map((job) => {
-          if (job.id !== payload.job_id) return job;
+          const payload = payloadById.get(job.id);
+          if (!payload) return job;
           if (job.status === "stopped") return job;
           const status = payload.status as MuxJob["status"];
           const startedAt = job.startedAt ?? (status === "processing" ? now : job.startedAt);
@@ -282,6 +350,34 @@ const WorkspacePage = () => {
           };
         });
       });
+    };
+
+    const flushBufferedProgress = () => {
+      if (flushTimeout) {
+        clearTimeout(flushTimeout);
+        flushTimeout = null;
+      }
+      if (!bufferedProgress.size) return;
+      const payloads = Array.from(bufferedProgress.values());
+      bufferedProgress.clear();
+      applyProgress(payloads);
+    };
+
+    const unlistenPromise = listenMuxProgress((payload) => {
+      const isTerminal =
+        payload.status === "completed" ||
+        payload.status === "error" ||
+        payload.status === "stopped";
+
+      if (isTerminal) {
+        bufferedProgress.delete(payload.job_id);
+        applyProgress([payload]);
+      } else {
+        bufferedProgress.set(payload.job_id, payload);
+        if (!flushTimeout) {
+          flushTimeout = setTimeout(flushBufferedProgress, 120);
+        }
+      }
 
       if (payload.status === "error") {
         const description =
@@ -294,6 +390,10 @@ const WorkspacePage = () => {
       }
     });
     return () => {
+      flushBufferedProgress();
+      if (flushTimeout) {
+        clearTimeout(flushTimeout);
+      }
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, []);
@@ -427,8 +527,10 @@ const WorkspacePage = () => {
   }, [activePreset, activeTab, activeAudioTrack, activeSubtitleTrack, dispatch]);
 
   const handleAddToQueue = () => {
+    const queuedJobIds = new Set(jobs.map((job) => job.id));
     const newJobs: MuxJob[] = videoFiles
       .filter((f) => f.status === "pending")
+      .filter((f) => !queuedJobIds.has(`job-${f.id}`))
       .map((f) => ({
         id: `job-${f.id}`,
         videoFile: f,
@@ -436,130 +538,48 @@ const WorkspacePage = () => {
         progress: 0,
         sizeBefore: f.size,
       }));
+    if (newJobs.length === 0) return;
     setJobs((prev) => [...prev, ...newJobs]);
   };
 
-  const buildJobRequests = useCallback(() => {
-    const normalizeName = (value: string) =>
-      value
-        .toLowerCase()
-        .replace(/\.[^/.]+$/, "")
-        .replace(/[^a-z0-9]+/g, " ")
-        .trim();
-
-    const findBestVideoMatch = (filePath: string) => {
-      const fileName = filePath.split(/[\\/]/).pop() || filePath;
-      const normalizedFile = normalizeName(fileName);
-      let best: { id: string; score: number } | null = null;
-      videoFiles.forEach((video) => {
-        const videoName = video.path.split(/[\\/]/).pop() || video.path;
-        const normalizedVideo = normalizeName(videoName);
-        if (!normalizedFile || !normalizedVideo) return;
-        let score = 0;
-        if (normalizedVideo.includes(normalizedFile)) {
-          score = normalizedFile.length;
-        } else if (normalizedFile.includes(normalizedVideo)) {
-          score = normalizedVideo.length;
-        }
-        if (score > 0 && (!best || score > best.score)) {
-          best = { id: video.id, score };
-        }
-      });
-      return best?.id;
-    };
-
-    const mapByVideoId = <T extends ExternalFile>(files: T[]) => {
-      const map = new Map<string, T[]>();
-      files.forEach((file, index) => {
-        const matchedId =
-          file.matchedVideoId || findBestVideoMatch(file.path) || videoFiles[index]?.id;
-        if (!matchedId) return;
-        const current = map.get(matchedId) || [];
-        current.push(file);
-        map.set(matchedId, current);
-      });
-      return map;
-    };
-
-    const allAudioFiles = Object.values(audioFilesByTrack).flat();
-    const allSubtitleFiles = Object.values(subtitleFilesByTrack).flat();
-    const audioMap = mapByVideoId(allAudioFiles);
-    const subtitleMap = mapByVideoId(allSubtitleFiles);
-    const chapterMap = mapByVideoId(chapterFiles);
-    const attachmentMap = mapByVideoId(attachmentFiles);
-
-    const muxAfterRank = (value?: string) => {
-      if (!value || value === "video") return 0;
-      if (value.startsWith("track-")) {
-        const index = Number(value.replace("track-", ""));
-        return Number.isFinite(index) ? index : 1;
-      }
-      if (value === "end") return 99;
-      return 0;
-    };
-    const orderByMuxAfter = (
-      files: Array<{ file: ExternalFile; sourcePriority: number; order: number }>,
-    ) =>
-      [...files].sort((a, b) => {
-        const rankDiff = muxAfterRank(a.file.muxAfter) - muxAfterRank(b.file.muxAfter);
-        if (rankDiff !== 0) return rankDiff;
-        if (a.sourcePriority !== b.sourcePriority) return a.sourcePriority - b.sourcePriority;
-        return a.order - b.order;
-      });
-
-    return videoFiles.map((video) => {
-      const perVideo = perVideoExternal[video.id] || { audios: [], subtitles: [] };
-      const bulkAudios = (audioMap.get(video.id) || []).map((file, index) => ({
-        file: {
-          ...file,
-          isDefault: file.isDefault ?? true,
-          source: "bulk",
-        },
-        sourcePriority: 0,
-        order: index,
-      }));
-      const perVideoAudios = perVideo.audios.map((file, index) => ({
-        file: {
-          ...file,
-          isDefault: file.isDefault ?? false,
-          source: "per-file",
-        },
-        sourcePriority: 1,
-        order: index,
-      }));
-      const mergedAudios = orderByMuxAfter([...bulkAudios, ...perVideoAudios]).map(
-        (entry) => entry.file,
-      );
-
-      const bulkSubtitles = (subtitleMap.get(video.id) || []).map((file, index) => ({
-        file: {
-          ...file,
-          source: "bulk",
-        },
-        sourcePriority: 0,
-        order: index,
-      }));
-      const perVideoSubtitles = perVideo.subtitles.map((file, index) => ({
-        file: {
-          ...file,
-          source: "per-file",
-        },
-        sourcePriority: 1,
-        order: index,
-      }));
-      const mergedSubtitles = orderByMuxAfter([...bulkSubtitles, ...perVideoSubtitles]).map(
-        (entry) => entry.file,
-      );
-      return {
-        id: `job-${video.id}`,
-        video,
-        audios: mergedAudios,
-        subtitles: mergedSubtitles,
-        chapters: chapterMap.get(video.id) || [],
-        attachments: attachmentMap.get(video.id) || [],
-      };
+  useEffect(() => {
+    const validVideoIds = new Set(videoFiles.map((video) => video.id));
+    setJobs((prev) => {
+      const next = prev.filter((job) => validVideoIds.has(job.videoFile.id));
+      return next.length === prev.length ? prev : next;
     });
-  }, [audioFilesByTrack, attachmentFiles, chapterFiles, subtitleFilesByTrack, videoFiles, perVideoExternal]);
+    setPreviewResults((prev) => {
+      const nextEntries = Object.entries(prev).filter(([jobId]) => {
+        const videoId = jobId.startsWith("job-") ? jobId.slice(4) : jobId;
+        return validVideoIds.has(videoId);
+      });
+      return nextEntries.length === Object.keys(prev).length ? prev : Object.fromEntries(nextEntries);
+    });
+    setPerVideoExternal((prev) => {
+      const nextEntries = Object.entries(prev).filter(([videoId]) => validVideoIds.has(videoId));
+      return nextEntries.length === Object.keys(prev).length ? prev : Object.fromEntries(nextEntries);
+    });
+  }, [videoFiles]);
+
+  const buildJobRequests = useCallback(() => {
+    return buildMuxJobRequests({
+      videoFiles,
+      jobs,
+      audioFilesByTrack,
+      subtitleFilesByTrack,
+      chapterFiles,
+      attachmentFiles,
+      perVideoExternal,
+    });
+  }, [
+    attachmentFiles,
+    audioFilesByTrack,
+    chapterFiles,
+    jobs,
+    perVideoExternal,
+    subtitleFilesByTrack,
+    videoFiles,
+  ]);
 
   const getJobReport = useCallback(
     (jobId: string) => {
@@ -781,6 +801,14 @@ const WorkspacePage = () => {
   );
 
   const handleStartMuxing = useCallback(() => {
+    if (externalLinkIssues.length > 0) {
+      toast({
+        title: "Link external files first",
+        description: externalLinkIssues[0],
+        variant: "destructive",
+      });
+      return;
+    }
     const jobsRequest = buildJobRequests();
     const settings = buildEffectiveMuxSettings(jobsRequest.length);
     startMuxing({ settings, jobs: jobsRequest }).catch(() => {
@@ -792,9 +820,17 @@ const WorkspacePage = () => {
         })),
       );
     });
-  }, [buildEffectiveMuxSettings, buildJobRequests]);
+  }, [buildEffectiveMuxSettings, buildJobRequests, externalLinkIssues]);
 
   const handlePreviewQueue = useCallback(async () => {
+    if (externalLinkIssues.length > 0) {
+      toast({
+        title: "Validation blocked",
+        description: externalLinkIssues[0],
+        variant: "destructive",
+      });
+      return;
+    }
     const jobsRequest = buildJobRequests();
     if (!jobsRequest.length) {
       toast({
@@ -834,7 +870,7 @@ const WorkspacePage = () => {
     } finally {
       setPreviewLoading(false);
     }
-  }, [buildEffectiveMuxSettings, buildJobRequests]);
+  }, [buildEffectiveMuxSettings, buildJobRequests, externalLinkIssues]);
 
   const handlePauseMuxing = useCallback(() => {
     pauseMuxing();
@@ -906,7 +942,7 @@ const WorkspacePage = () => {
       } else if (added.length === 0 && removed.length === 0) {
         const modified = newFiles.filter((v) => {
           const orig = videoFiles.find((o) => o.id === v.id);
-          return orig && JSON.stringify(orig) !== JSON.stringify(v);
+          return orig && !areVideoFilesEquivalent(orig, v);
         });
         if (modified.length > 0) {
           const prevModified = videoFiles.filter((v) => modified.some((m) => m.id === v.id));
@@ -1129,6 +1165,7 @@ const WorkspacePage = () => {
             settings={outputSettings}
             onSettingsChange={(updates) => setOutputSettings((prev) => ({ ...prev, ...updates }))}
             fastMuxAvailable={fastMuxAvailable}
+            externalLinkIssues={externalLinkIssues}
             jobs={jobs}
             videoFiles={videoFiles}
             onAddToQueue={handleAddToQueue}

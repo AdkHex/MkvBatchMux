@@ -18,6 +18,8 @@ import { cn } from "@/shared/lib/utils";
 import { pickFiles } from "@/shared/lib/backend";
 import { AUDIO_EXTENSIONS, SUBTITLE_EXTENSIONS } from "@/shared/lib/extensions";
 import type { VideoFile, Track, ExternalFile } from "@/shared/types";
+import { moveTrackRow } from "@/features/workspace/lib/modifyTracks";
+import { getAutoScrollDelta, getReorderIndexFromPointer } from "@/features/workspace/lib/reorderDrag";
 
 interface VideoFileEditDialogProps {
   open: boolean;
@@ -85,6 +87,9 @@ export function VideoFileEditDialog({
   const [editingName, setEditingName] = useState("");
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const scrollBodyRef = useRef<HTMLDivElement | null>(null);
+  const isNoDragTarget = (target: EventTarget | null) =>
+    target instanceof HTMLElement && Boolean(target.closest("[data-no-drag='true']"));
   const [addExternalOpen, setAddExternalOpen] = useState(false);
   const [pendingExternalPaths, setPendingExternalPaths] = useState<string[]>([]);
   const [addExternalType, setAddExternalType] = useState<"audio" | "subtitle" | null>(null);
@@ -262,20 +267,40 @@ export function VideoFileEditDialog({
   const dragOverItem = useRef<number | null>(null);
   const pointerDragActive = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
+  const pointerYRef = useRef(0);
+  const autoScrollFrameRef = useRef<number | null>(null);
+
+  const updateDragTarget = useCallback(
+    (pointerY: number) => {
+      const container = scrollBodyRef.current;
+      if (!container || currentTracks.length === 0) return;
+      const firstRow = container.querySelector("[data-reorder-index]") as HTMLElement | null;
+      const rowHeight = firstRow?.offsetHeight || 48;
+      const idx = getReorderIndexFromPointer({
+        containerRect: container.getBoundingClientRect(),
+        scrollTop: container.scrollTop,
+        rowHeight,
+        rowCount: currentTracks.length,
+        pointerY,
+      });
+      if (idx === dragOverItem.current) return;
+      dragOverItem.current = idx;
+      setDragOverIndex(idx);
+    },
+    [currentTracks.length],
+  );
 
   const handleDragEnd = useCallback(() => {
+    if (autoScrollFrameRef.current !== null) {
+      cancelAnimationFrame(autoScrollFrameRef.current);
+      autoScrollFrameRef.current = null;
+    }
     if (
       dragItem.current !== null &&
       dragOverItem.current !== null &&
       dragItem.current !== dragOverItem.current
     ) {
-      setCurrentTracks((prev) => {
-        const newTracks = [...prev];
-        const draggedItem = newTracks[dragItem.current!];
-        newTracks.splice(dragItem.current!, 1);
-        newTracks.splice(dragOverItem.current!, 0, draggedItem);
-        return newTracks;
-      });
+      setCurrentTracks((prev) => moveTrackRow(prev, dragItem.current!, dragOverItem.current!));
     }
     dragItem.current = null;
     dragOverItem.current = null;
@@ -287,6 +312,7 @@ export function VideoFileEditDialog({
     event.preventDefault();
     pointerDragActive.current = true;
     pointerIdRef.current = event.pointerId;
+    pointerYRef.current = event.clientY;
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     dragItem.current = index;
     dragOverItem.current = index;
@@ -294,16 +320,38 @@ export function VideoFileEditDialog({
     setDragOverIndex(index);
   };
 
+  const handleRowPointerDown = (event: React.PointerEvent, index: number, trackId: string) => {
+    setSelectedTrackId(trackId);
+    if (isNoDragTarget(event.target)) return;
+    startPointerDrag(event, index);
+  };
+
   useEffect(() => {
+    const tickAutoScroll = () => {
+      if (!pointerDragActive.current) {
+        autoScrollFrameRef.current = null;
+        return;
+      }
+      const container = scrollBodyRef.current;
+      if (!container) {
+        autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
+        return;
+      }
+      const delta = getAutoScrollDelta({
+        containerRect: container.getBoundingClientRect(),
+        pointerY: pointerYRef.current,
+      });
+      if (delta !== 0) {
+        container.scrollTop += delta;
+        updateDragTarget(pointerYRef.current);
+      }
+      autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
+    };
+
     const handlePointerMove = (event: PointerEvent) => {
       if (!pointerDragActive.current || pointerIdRef.current !== event.pointerId) return;
-      const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-      const row = target?.closest("[data-reorder-index]") as HTMLElement | null;
-      if (!row) return;
-      const idx = Number(row.dataset.reorderIndex);
-      if (!Number.isFinite(idx) || idx === dragOverItem.current) return;
-      dragOverItem.current = idx;
-      setDragOverIndex(idx);
+      pointerYRef.current = event.clientY;
+      updateDragTarget(event.clientY);
     };
 
     const handlePointerUp = (event: PointerEvent) => {
@@ -316,12 +364,16 @@ export function VideoFileEditDialog({
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
     window.addEventListener("pointercancel", handlePointerUp);
+    autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
+      if (autoScrollFrameRef.current !== null) {
+        cancelAnimationFrame(autoScrollFrameRef.current);
+      }
     };
-  }, [handleDragEnd]);
+  }, [handleDragEnd, updateDragTarget]);
 
   const handleApplyChanges = () => {
     if (!videoFile) return;
@@ -699,7 +751,7 @@ export function VideoFileEditDialog({
             <ReorderableTableCell className="center" />
           </ReorderableTableHeader>
 
-          <ReorderableTableBody className="max-h-[220px] overflow-y-auto">
+          <ReorderableTableBody ref={scrollBodyRef} className="max-h-[220px] overflow-y-auto">
             {currentTracks.length === 0 ? (
               <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
                 No {activeTab} tracks found in this file
@@ -709,6 +761,7 @@ export function VideoFileEditDialog({
                 <ReorderableRow
                   key={track.id}
                   onClick={() => setSelectedTrackId(track.id)}
+                  onPointerDown={(event) => handleRowPointerDown(event, index, track.id)}
                   selected={selectedTrackId === track.id}
                   dragging={draggedIndex === index}
                   dropTarget={dragOverIndex === index}
@@ -732,6 +785,7 @@ export function VideoFileEditDialog({
                     {String(index + 1).padStart(2, "0")}
                   </ReorderableTableCell>
                   <ReorderableTableCell
+                    data-no-drag="true"
                     className="center"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -745,6 +799,7 @@ export function VideoFileEditDialog({
                     />
                   </ReorderableTableCell>
                   <ReorderableTableCell
+                    data-no-drag="true"
                     className="center"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -760,6 +815,7 @@ export function VideoFileEditDialog({
                     />
                   </ReorderableTableCell>
                   <ReorderableTableCell
+                    data-no-drag="true"
                     className="center"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -788,6 +844,7 @@ export function VideoFileEditDialog({
                   <ReorderableTableCell className="pr-2" onClick={(e) => e.stopPropagation()}>
                     {editingTrackId === track.id ? (
                       <TextField
+                        data-no-drag="true"
                         value={editingName}
                         onChange={(e) => setEditingName(e.target.value)}
                         onBlur={finishEditing}
@@ -816,14 +873,14 @@ export function VideoFileEditDialog({
                       </div>
                     )}
                   </ReorderableTableCell>
-                  <ReorderableTableCell className="right" onClick={(e) => e.stopPropagation()}>
+                  <ReorderableTableCell data-no-drag="true" className="right" onClick={(e) => e.stopPropagation()}>
                     <LanguageSelect
                       value={track.language}
                       onChange={(value) => handleTrackChange(track.id, "language", value)}
                       className="h-8 justify-end bg-input/40 border border-panel-border/40 hover:bg-input/60"
                     />
                   </ReorderableTableCell>
-                  <ReorderableTableCell className="center" onClick={(e) => e.stopPropagation()}>
+                  <ReorderableTableCell data-no-drag="true" className="center" onClick={(e) => e.stopPropagation()}>
                     <Button
                       variant="ghost"
                       size="icon"

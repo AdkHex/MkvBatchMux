@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   FolderOpen,
   Pause,
@@ -28,6 +28,7 @@ interface MuxSettingTabProps {
   muxSettings: MuxSettings;
   onMuxSettingsChange: (settings: Partial<MuxSettings>) => void;
   fastMuxAvailable: boolean;
+  externalLinkIssues: string[];
   jobs: MuxJob[];
   videoFiles: VideoFile[];
   onAddToQueue: () => void;
@@ -65,6 +66,7 @@ export function MuxSettingTab({
   muxSettings,
   onMuxSettingsChange,
   fastMuxAvailable,
+  externalLinkIssues,
   jobs,
   videoFiles,
   onAddToQueue,
@@ -106,11 +108,11 @@ export function MuxSettingTab({
   const completedJobs = jobs.filter((job) => job.status === 'completed').length;
   const stoppedJobs = jobs.filter((job) => job.status === 'stopped').length;
   const statusLabel = isProcessing ? "Running" : stoppedJobs > 0 ? "Stopped" : "Idle";
-  const selectedJob = selectedJobIndex !== null ? jobs[selectedJobIndex] : null;
   const warningCount = useMemo(
     () => Object.values(previewResults).reduce((acc, result) => acc + result.warnings.length, 0),
     [previewResults],
   );
+  const hasExternalLinkIssues = externalLinkIssues.length > 0;
   const overallProgress = useMemo(() => {
     if (!hasJobs) return 0;
     const sum = jobs.reduce((acc, job) => {
@@ -121,6 +123,17 @@ export function MuxSettingTab({
     return Math.round(sum / jobs.length);
   }, [hasJobs, jobs]);
   const reportData = reportJobId && getJobReport ? getJobReport(reportJobId) : null;
+
+  useEffect(() => {
+    if (jobs.length === 0) {
+      setSelectedJobIndex(null);
+      return;
+    }
+    if (selectedJobIndex === null) return;
+    if (selectedJobIndex >= jobs.length) {
+      setSelectedJobIndex(jobs.length - 1);
+    }
+  }, [jobs.length, selectedJobIndex]);
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -449,7 +462,20 @@ export function MuxSettingTab({
         </Collapsible>
 
         {/* Execution Card */}
-        <div className="rounded-lg border border-panel-border/35 bg-panel-header/70 px-4 py-2 space-y-2.5">
+        <div className="sticky top-0 z-20 rounded-lg border border-panel-border/35 bg-panel-header/90 px-4 py-2 space-y-2.5 backdrop-blur">
+          {hasExternalLinkIssues && (
+            <div className="rounded-md border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning flex items-start gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <div className="space-y-0.5">
+                <div className="font-semibold text-warning">External files need linking</div>
+                {externalLinkIssues.map((issue) => (
+                  <div key={issue} className="text-warning/90">
+                    {issue}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex items-center justify-between">
             <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Mux Engine</div>
             <div className="flex items-center gap-2">
@@ -458,7 +484,7 @@ export function MuxSettingTab({
                 size="sm"
                 className="h-8 px-3 text-xs gap-1.5 border-panel-border/40 bg-card/40 hover:bg-panel-header/60"
                 onClick={onPreviewQueue}
-                disabled={previewLoading || (jobs.length === 0 && videoFiles.length === 0)}
+                disabled={hasExternalLinkIssues || previewLoading || (jobs.length === 0 && videoFiles.length === 0)}
               >
                 <CheckCircle2 className="w-3 h-3" />
                 {previewLoading ? "Validating..." : warningCount > 0 ? `Validate (${warningCount}⚠)` : "Validate"}
@@ -480,6 +506,16 @@ export function MuxSettingTab({
               >
                 <ListPlus className="w-3 h-3" />
                 Add To Queue
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                className="h-8 px-4 text-xs gap-1.5 font-medium"
+                onClick={onStartMuxing}
+                disabled={hasExternalLinkIssues || !hasJobs || isProcessing}
+              >
+                <Play className="w-3.5 h-3.5" />
+                Start Muxing
               </Button>
             </div>
           </div>
@@ -687,16 +723,6 @@ export function MuxSettingTab({
               Stop
             </Button>
           )}
-          <Button 
-            variant="default" 
-            size="sm" 
-            className="h-8 px-5 gap-2 text-xs font-medium"
-            onClick={onStartMuxing}
-            disabled={!hasJobs || isProcessing}
-          >
-            <Play className="w-3.5 h-3.5" />
-            Start Muxing
-          </Button>
         </div>
       </div>
       </div>

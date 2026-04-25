@@ -7,17 +7,19 @@ import { useSessionStore, type SessionState } from "@/features/session/store/use
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 const DEBOUNCE_MS = 5000;
+type SessionStateInput = SessionState | (() => SessionState);
 
 /**
  * Schedule a debounced session save. Resets the timer on each call.
  * The save fires 5 seconds after the last state change.
  */
-export function scheduleSave(state: SessionState): void {
+export function scheduleSave(state: SessionStateInput): void {
   if (debounceTimer !== null) {
     clearTimeout(debounceTimer);
   }
   debounceTimer = setTimeout(() => {
-    void performSave(state);
+    const resolvedState = typeof state === "function" ? state() : state;
+    void performSave(resolvedState);
     debounceTimer = null;
   }, DEBOUNCE_MS);
 }

@@ -20,7 +20,12 @@ import type { VideoFile, ExternalFile, Preset } from "@/shared/types";
 import { pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { AUDIO_EXTENSIONS } from "@/shared/lib/extensions";
-import { matchExternalToVideos } from "@/shared/lib/matchUtils";
+import {
+  assignExternalFileToVideo,
+  getUnlinkedExternalFiles,
+  linkExternalFilesByOrder,
+  matchExternalToVideos,
+} from "@/shared/lib/matchUtils";
 import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/shared/data/languages-iso6393";
 
 interface AudiosTabProps {
@@ -86,7 +91,7 @@ export function AudiosTab({
   preset,
 }: AudiosTabProps) {
   const syncAudioLinks = useCallback(
-    (files: ExternalFile[]) => matchExternalToVideos(files, videoFiles),
+    (files: ExternalFile[]) => matchExternalToVideos(files, videoFiles, true),
     [videoFiles],
   );
 
@@ -188,6 +193,16 @@ export function AudiosTab({
     () => videoFiles.find((file) => file.id === importSourceVideoId) || null,
     [videoFiles, importSourceVideoId],
   );
+  const selectedAudioFile = selectedAudioIndex !== null ? audioFiles[selectedAudioIndex] || null : null;
+  const selectedVideoFile = selectedVideoIndex !== null ? videoFiles[selectedVideoIndex] || null : null;
+  const linkedVideoNameById = useMemo(
+    () => new Map(videoFiles.map((file) => [file.id, file.name] as const)),
+    [videoFiles],
+  );
+  const unlinkedCount = useMemo(
+    () => getUnlinkedExternalFiles(audioFiles, videoFiles).length,
+    [audioFiles, videoFiles],
+  );
 
   const importableTracks = useMemo(
     () =>
@@ -276,6 +291,26 @@ export function AudiosTab({
       description: `Audio #${activeAudioTrack} settings copied to Audio #${newTrackNumber}.`,
     });
   };
+
+  const linkSelectedAudioToVideo = useCallback(() => {
+    if (!selectedAudioFile || !selectedVideoFile) return;
+    onAudioFilesChange(
+      assignExternalFileToVideo(audioFiles, selectedAudioFile.id, selectedVideoFile.id),
+    );
+    toast({
+      title: "Audio Linked",
+      description: `${selectedAudioFile.name} linked to ${selectedVideoFile.name}.`,
+    });
+  }, [audioFiles, onAudioFilesChange, selectedAudioFile, selectedVideoFile]);
+
+  const linkAudioFilesByOrder = useCallback(() => {
+    if (audioFiles.length === 0 || videoFiles.length === 0) return;
+    onAudioFilesChange(linkExternalFilesByOrder(audioFiles, videoFiles));
+    toast({
+      title: "Audio Links Updated",
+      description: "Audio files are now linked to videos by their visible order.",
+    });
+  }, [audioFiles, onAudioFilesChange, videoFiles]);
 
   const reorderAudioFile = (fromIndex: number, toIndex: number) => {
     if (toIndex < 0 || toIndex >= audioFiles.length) return;
@@ -684,7 +719,7 @@ export function AudiosTab({
     const results = await scanMedia({
       folder: folderPath,
       extensions,
-      recursive: true,
+      recursive: false,
       type: 'audio',
       include_tracks: true,
     });
@@ -719,7 +754,7 @@ export function AudiosTab({
       (f) => !f.matchedVideoId || !videoIdSet.has(f.matchedVideoId),
     );
     if (needsRematch) {
-      onAudioFilesChange(matchExternalToVideos(audioFiles, videoFiles));
+      onAudioFilesChange(matchExternalToVideos(audioFiles, videoFiles, true));
     }
   }, [audioFiles, onAudioFilesChange, videoFiles]);
 
@@ -1091,6 +1126,24 @@ export function AudiosTab({
                 variant="ghost"
                 size="sm"
                 className="panel-text-btn"
+                onClick={linkAudioFilesByOrder}
+                disabled={videoFiles.length === 0 || audioFiles.length === 0}
+              >
+                Link by Order
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="panel-text-btn"
+                onClick={linkSelectedAudioToVideo}
+                disabled={!selectedAudioFile || !selectedVideoFile}
+              >
+                Link Selected
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="panel-text-btn"
                 onClick={() => {
                   setBulkSelectedVideoIds(videoFiles.map((file) => file.id));
                   setBulkSelectedAudioIds(audioFiles.map((file) => file.id));
@@ -1103,6 +1156,11 @@ export function AudiosTab({
             </div>
           </div>
           <div className="flex-1 overflow-auto scrollbar-thin">
+            {unlinkedCount > 0 && (
+              <div className="px-3 py-2 text-[11px] text-warning border-b border-panel-border/30 bg-warning/8">
+                {unlinkedCount} audio file{unlinkedCount === 1 ? "" : "s"} still need a linked video before muxing.
+              </div>
+            )}
             {audioFiles.length === 0 ? (
               <EmptyState
                 icon={<AudioLines className="w-5 h-5 text-muted-foreground/65" />}
@@ -1127,7 +1185,41 @@ export function AudiosTab({
                     <GripVertical className="w-4 h-4" />
                   </span>
                   <span className="media-row-index">{`${index + 1}.`}</span>
-                  <span className="media-row-name">{file.name}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="media-row-name">{file.name}</div>
+                    <div className={cn("media-row-link", file.matchedVideoId ? "text-muted-foreground" : "text-warning")}>
+                      {file.matchedVideoId
+                        ? `Linked to: ${linkedVideoNameById.get(file.matchedVideoId) || "Selected video"}`
+                        : "Not linked to any video"}
+                    </div>
+                  </div>
+                  <Select
+                    value={file.matchedVideoId || "__unlinked__"}
+                    onValueChange={(value) =>
+                      onAudioFilesChange(
+                        value === "__unlinked__"
+                          ? audioFiles.map((entry) =>
+                              entry.id === file.id ? { ...entry, matchedVideoId: undefined } : entry,
+                            )
+                          : assignExternalFileToVideo(audioFiles, file.id, value),
+                      )
+                    }
+                  >
+                    <SelectTrigger
+                      className="media-row-select h-8 text-[11px] bg-input/70"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <SelectValue placeholder="Link to video" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__unlinked__">Not linked</SelectItem>
+                      {videoFiles.map((video, videoIndex) => (
+                        <SelectItem key={video.id} value={video.id}>
+                          {`${videoIndex + 1}. ${video.name}`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <div className="media-row-actions">
                     <Button
                       variant="ghost"

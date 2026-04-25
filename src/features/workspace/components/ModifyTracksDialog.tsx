@@ -17,6 +17,12 @@ import { cn } from "@/shared/lib/utils";
 import type { Track, VideoFile } from "@/shared/types";
 import { LanguageSelect } from "@/features/workspace/components/LanguageSelect";
 import { CODE_TO_LABEL } from "@/shared/data/languages-iso6393";
+import {
+  applyTrackRowsToVideo,
+  moveTrackRow,
+  type TrackRowDraft,
+} from "@/features/workspace/lib/modifyTracks";
+import { getAutoScrollDelta, getReorderIndexFromPointer } from "@/features/workspace/lib/reorderDrag";
 
 interface ModifyTracksDialogProps {
   open: boolean;
@@ -29,6 +35,7 @@ interface ModifyTracksDialogProps {
 type TrackTab = "videos" | "subtitles" | "audios";
 
 interface TrackRow {
+  sourceTrackPosition: number;
   id: string;
   trackIndex: number;
   copyTrack: boolean;
@@ -55,20 +62,9 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
   const [editingName, setEditingName] = useState("");
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-
-  const toTrackRows = (tracks: Track[], type: Track["type"]): TrackRow[] =>
-    tracks
-      .filter((track) => track.type === type)
-      .map((track, idx) => ({
-        id: track.id,
-        trackIndex: idx + 1,
-        copyTrack: track.action !== "remove",
-        setDefault: track.isDefault || false,
-        setForced: track.isForced || false,
-        trackName: track.name || track.codec || `Track ${idx + 1}`,
-        language: track.language || "und",
-        originalTrack: track,
-      }));
+  const scrollBodyRef = useRef<HTMLDivElement | null>(null);
+  const isNoDragTarget = (target: EventTarget | null) =>
+    target instanceof HTMLElement && Boolean(target.closest("[data-no-drag='true']"));
 
   const scopedFiles = useMemo(() => {
     if (!selectedVideoId) return videoFiles;
@@ -76,17 +72,19 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
     return selected ? [selected] : videoFiles;
   }, [selectedVideoId, videoFiles]);
 
-  useEffect(() => {
-    if (!open) return;
-    const buildAggregatedRows = (type: Track["type"]) => {
-      const trackLists = scopedFiles.map((file) => (file.tracks || []).filter((track) => track.type === type));
+  const buildAggregatedRows = useCallback(
+    (type: Track["type"]) => {
+      const trackLists = scopedFiles.map((file) =>
+        (file.tracks || []).filter((track) => track.type === type),
+      );
       const maxCount = Math.max(0, ...trackLists.map((list) => list.length));
       const rows: TrackRow[] = [];
       for (let index = 0; index < maxCount; index += 1) {
         const tracksAtIndex = trackLists.map((list) => list[index]).filter(Boolean) as Track[];
         const names = tracksAtIndex.map((track) => track.name || track.codec || "");
         const languages = tracksAtIndex.map((track) => track.language || "und");
-        const uniqueName = names.find(Boolean) && names.every((name) => name === names[0]) ? names[0] : "Multiple";
+        const uniqueName =
+          names.find(Boolean) && names.every((name) => name === names[0]) ? names[0] : "Multiple";
         const uniqueLanguage =
           languages.length > 0 && languages.every((lang) => lang === languages[0]) ? languages[0] : "und";
         const copyTrack = tracksAtIndex.length > 0 && tracksAtIndex.every((track) => track.action !== "remove");
@@ -97,10 +95,13 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
         const setDefault = allHaveDefault && !someHaveDefaultUndefined;
         const setForced = allHaveForced && !someHaveForcedUndefined;
         const trackWithBitrate =
-          type === "audio" ? tracksAtIndex.find((t) => t.bitrate !== undefined) || tracksAtIndex[0] : tracksAtIndex[0];
+          type === "audio"
+            ? tracksAtIndex.find((track) => track.bitrate !== undefined) || tracksAtIndex[0]
+            : tracksAtIndex[0];
 
         rows.push({
           id: `${type}-${index}`,
+          sourceTrackPosition: index,
           trackIndex: index + 1,
           copyTrack,
           setDefault,
@@ -108,15 +109,19 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
           trackName: uniqueName || `Track ${index + 1}`,
           language: uniqueLanguage,
           originalTrack: trackWithBitrate || { id: `${type}-${index}`, type },
-        } as TrackRow);
+        });
       }
       return rows;
-    };
+    },
+    [scopedFiles],
+  );
 
+  useEffect(() => {
+    if (!open) return;
     setVideoTracks(buildAggregatedRows("video"));
     setSubtitleTracks(buildAggregatedRows("subtitle"));
     setAudioTracks(buildAggregatedRows("audio"));
-  }, [open, scopedFiles]);
+  }, [buildAggregatedRows, open]);
 
   const currentTracks = activeTab === "videos" ? videoTracks : activeTab === "subtitles" ? subtitleTracks : audioTracks;
   const setCurrentTracks = activeTab === "videos" ? setVideoTracks : activeTab === "subtitles" ? setSubtitleTracks : setAudioTracks;
@@ -205,17 +210,9 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
     const idx = tracks.findIndex((t) => t.id === selectedTrackId);
     if (idx < 0) return;
     if (direction === "up" && idx > 0) {
-      setCurrentTracks((prev) => {
-        const newTracks = [...prev];
-        [newTracks[idx - 1], newTracks[idx]] = [newTracks[idx], newTracks[idx - 1]];
-        return newTracks;
-      });
+      setCurrentTracks((prev) => moveTrackRow(prev, idx, idx - 1));
     } else if (direction === "down" && idx < tracks.length - 1) {
-      setCurrentTracks((prev) => {
-        const newTracks = [...prev];
-        [newTracks[idx + 1], newTracks[idx]] = [newTracks[idx], newTracks[idx + 1]];
-        return newTracks;
-      });
+      setCurrentTracks((prev) => moveTrackRow(prev, idx, idx + 1));
     }
   };
 
@@ -223,20 +220,40 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
   const dragOverItem = useRef<number | null>(null);
   const pointerDragActive = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
+  const pointerYRef = useRef(0);
+  const autoScrollFrameRef = useRef<number | null>(null);
+
+  const updateDragTarget = useCallback(
+    (pointerY: number) => {
+      const container = scrollBodyRef.current;
+      if (!container || currentTracks.length === 0) return;
+      const firstRow = container.querySelector("[data-reorder-index]") as HTMLElement | null;
+      const rowHeight = firstRow?.offsetHeight || 48;
+      const idx = getReorderIndexFromPointer({
+        containerRect: container.getBoundingClientRect(),
+        scrollTop: container.scrollTop,
+        rowHeight,
+        rowCount: currentTracks.length,
+        pointerY,
+      });
+      if (idx === dragOverItem.current) return;
+      dragOverItem.current = idx;
+      setDragOverIndex(idx);
+    },
+    [currentTracks.length],
+  );
 
   const handleDragEnd = useCallback(() => {
+    if (autoScrollFrameRef.current !== null) {
+      cancelAnimationFrame(autoScrollFrameRef.current);
+      autoScrollFrameRef.current = null;
+    }
     if (
       dragItem.current !== null &&
       dragOverItem.current !== null &&
       dragItem.current !== dragOverItem.current
     ) {
-      setCurrentTracks((prev) => {
-        const newTracks = [...prev];
-        const draggedItem = newTracks[dragItem.current!];
-        newTracks.splice(dragItem.current!, 1);
-        newTracks.splice(dragOverItem.current!, 0, draggedItem);
-        return newTracks;
-      });
+      setCurrentTracks((prev) => moveTrackRow(prev, dragItem.current!, dragOverItem.current!));
     }
     dragItem.current = null;
     dragOverItem.current = null;
@@ -248,6 +265,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
     event.preventDefault();
     pointerDragActive.current = true;
     pointerIdRef.current = event.pointerId;
+    pointerYRef.current = event.clientY;
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     dragItem.current = index;
     dragOverItem.current = index;
@@ -255,16 +273,38 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
     setDragOverIndex(index);
   };
 
+  const handleRowPointerDown = (event: React.PointerEvent, index: number, trackId: string) => {
+    setSelectedTrackId(trackId);
+    if (isNoDragTarget(event.target)) return;
+    startPointerDrag(event, index);
+  };
+
   useEffect(() => {
+    const tickAutoScroll = () => {
+      if (!pointerDragActive.current) {
+        autoScrollFrameRef.current = null;
+        return;
+      }
+      const container = scrollBodyRef.current;
+      if (!container) {
+        autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
+        return;
+      }
+      const delta = getAutoScrollDelta({
+        containerRect: container.getBoundingClientRect(),
+        pointerY: pointerYRef.current,
+      });
+      if (delta !== 0) {
+        container.scrollTop += delta;
+        updateDragTarget(pointerYRef.current);
+      }
+      autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
+    };
+
     const handlePointerMove = (event: PointerEvent) => {
       if (!pointerDragActive.current || pointerIdRef.current !== event.pointerId) return;
-      const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-      const row = target?.closest("[data-reorder-index]") as HTMLElement | null;
-      if (!row) return;
-      const idx = Number(row.dataset.reorderIndex);
-      if (!Number.isFinite(idx) || idx === dragOverItem.current) return;
-      dragOverItem.current = idx;
-      setDragOverIndex(idx);
+      pointerYRef.current = event.clientY;
+      updateDragTarget(event.clientY);
     };
 
     const handlePointerUp = (event: PointerEvent) => {
@@ -277,81 +317,23 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
     window.addEventListener("pointercancel", handlePointerUp);
+    autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
+      if (autoScrollFrameRef.current !== null) {
+        cancelAnimationFrame(autoScrollFrameRef.current);
+      }
     };
-  }, [handleDragEnd]);
-
-  const applyRowsToVideo = (file: VideoFile, rows: TrackRow[], type: Track["type"]) => {
-    const tracks = file.tracks || [];
-    const typeTracks = tracks.filter((track) => track.type === type);
-    const updatedTypeTracks = typeTracks.map((track, index) => {
-      const row = rows[index];
-      if (!row) return track;
-
-      const originalDefault = row.originalTrack.isDefault;
-      const originalForced = row.originalTrack.isForced;
-
-      let newDefault: boolean | undefined;
-      if (originalDefault === undefined && row.setDefault === false) {
-        newDefault = undefined;
-      } else if (originalDefault !== row.setDefault) {
-        newDefault = row.setDefault;
-      } else {
-        newDefault = originalDefault;
-      }
-
-      let newForced: boolean | undefined;
-      if (originalForced === undefined && row.setForced === false) {
-        newForced = undefined;
-      } else if (originalForced !== row.setForced) {
-        newForced = row.setForced;
-      } else {
-        newForced = originalForced;
-      }
-
-      const existingOriginalName = track.originalName ?? track.name ?? track.codec ?? "";
-      const existingOriginalLanguage = track.originalLanguage ?? track.language ?? "";
-      const existingOriginalDefault =
-        track.originalDefault !== undefined ? track.originalDefault : track.isDefault;
-      const existingOriginalForced =
-        track.originalForced !== undefined ? track.originalForced : track.isForced;
-
-      const nextName = row.trackName === "Multiple" ? track.name : row.trackName;
-      const nextLanguage = row.language;
-      const nextAction = row.copyTrack ? "keep" : "remove";
-      const hasChanged =
-        nextAction !== "remove" &&
-        ((nextName || "") !== (track.name || "") ||
-          (nextLanguage || "") !== (track.language || "") ||
-          newDefault !== track.isDefault ||
-          newForced !== track.isForced);
-      return {
-        ...track,
-        name: nextName,
-        language: nextLanguage,
-        isDefault: newDefault,
-        isForced: newForced,
-        action: nextAction === "remove" ? "remove" : hasChanged ? "modify" : "keep",
-        originalName: existingOriginalName,
-        originalLanguage: existingOriginalLanguage,
-        originalDefault: existingOriginalDefault,
-        originalForced: existingOriginalForced,
-      };
-    });
-    let typeIndex = 0;
-    const merged = tracks.map((track) => (track.type === type ? updatedTypeTracks[typeIndex++] || track : track));
-    return { ...file, tracks: merged };
-  };
+  }, [handleDragEnd, updateDragTarget]);
 
   const applyChanges = () => {
     const updated = videoFiles.map((file) => {
       if (selectedVideoId && file.id !== selectedVideoId) return file;
-      let updatedFile = applyRowsToVideo(file, videoTracks, "video");
-      updatedFile = applyRowsToVideo(updatedFile, subtitleTracks, "subtitle");
-      updatedFile = applyRowsToVideo(updatedFile, audioTracks, "audio");
+      let updatedFile = applyTrackRowsToVideo(file, videoTracks as TrackRowDraft[], "video");
+      updatedFile = applyTrackRowsToVideo(updatedFile, subtitleTracks as TrackRowDraft[], "subtitle");
+      updatedFile = applyTrackRowsToVideo(updatedFile, audioTracks as TrackRowDraft[], "audio");
       return updatedFile;
     });
     onFilesChange(updated);
@@ -372,38 +354,6 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
           variant="ghost"
           className="h-9 px-4 text-sm text-muted-foreground hover:text-foreground gap-2"
           onClick={() => {
-            const buildAggregatedRows = (type: Track["type"]) => {
-              const trackLists = videoFiles.map((file) => (file.tracks || []).filter((track) => track.type === type));
-              const maxCount = Math.max(0, ...trackLists.map((list) => list.length));
-              const rows: TrackRow[] = [];
-              for (let index = 0; index < maxCount; index += 1) {
-                const tracksAtIndex = trackLists.map((list) => list[index]).filter(Boolean) as Track[];
-                const names = tracksAtIndex.map((track) => track.name || track.codec || "");
-                const languages = tracksAtIndex.map((track) => track.language || "und");
-                const uniqueName =
-                  names.find(Boolean) && names.every((name) => name === names[0]) ? names[0] : "Multiple";
-                const uniqueLanguage =
-                  languages.length > 0 && languages.every((lang) => lang === languages[0]) ? languages[0] : "und";
-                const copyTrack = tracksAtIndex.length > 0 && tracksAtIndex.every((track) => track.action !== "remove");
-                const setDefault = tracksAtIndex.length > 0 && tracksAtIndex.every((track) => track.isDefault);
-                const setForced = tracksAtIndex.length > 0 && tracksAtIndex.every((track) => track.isForced);
-                const trackWithBitrate =
-                  type === "audio" ? tracksAtIndex.find((t) => t.bitrate !== undefined) || tracksAtIndex[0] : tracksAtIndex[0];
-
-                rows.push({
-                  id: `${type}-${index}`,
-                  trackIndex: index + 1,
-                  copyTrack,
-                  setDefault,
-                  setForced,
-                  trackName: uniqueName || `Track ${index + 1}`,
-                  language: uniqueLanguage,
-                  originalTrack: trackWithBitrate || { id: `${type}-${index}`, type },
-                } as TrackRow);
-              }
-              return rows;
-            };
-
             setVideoTracks(buildAggregatedRows("video"));
             setSubtitleTracks(buildAggregatedRows("subtitle"));
             setAudioTracks(buildAggregatedRows("audio"));
@@ -524,7 +474,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
             <ReorderableTableCell className="center" />
           </ReorderableTableHeader>
 
-          <ReorderableTableBody className="max-h-[220px] overflow-y-auto">
+          <ReorderableTableBody ref={scrollBodyRef} className="max-h-[220px] overflow-y-auto">
             {currentTracks.length === 0 ? (
               <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">No tracks available</div>
             ) : (
@@ -532,7 +482,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                 <ReorderableRow
                   key={track.id}
                   onClick={() => setSelectedTrackId(track.id)}
-                  onMouseDown={() => setSelectedTrackId(track.id)}
+                  onPointerDown={(event) => handleRowPointerDown(event, index, track.id)}
                   selected={selectedTrackId === track.id}
                   dragging={draggedIndex === index}
                   dropTarget={dragOverIndex === index}
@@ -556,6 +506,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                     {String(index + 1).padStart(2, "0")}
                   </ReorderableTableCell>
                   <ReorderableTableCell
+                    data-no-drag="true"
                     className="center flex items-center justify-center"
                     onClick={() => handleTrackChange(track.id, "copyTrack", !track.copyTrack)}
                   >
@@ -566,6 +517,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                     />
                   </ReorderableTableCell>
                   <ReorderableTableCell
+                    data-no-drag="true"
                     className="center flex items-center justify-center"
                     onClick={() => {
                       if (!track.copyTrack) return;
@@ -583,6 +535,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                     />
                   </ReorderableTableCell>
                   <ReorderableTableCell
+                    data-no-drag="true"
                     className="center flex items-center justify-center"
                     onClick={() => {
                       if (!track.copyTrack) return;
@@ -607,6 +560,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                   <ReorderableTableCell className="pl-2 pr-2">
                     {editingTrackId === track.id ? (
                       <TextField
+                        data-no-drag="true"
                         value={editingName}
                         onChange={(e) => setEditingName(e.target.value)}
                         onBlur={finishEditing}
@@ -630,7 +584,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                     </div>
                   )}
                 </ReorderableTableCell>
-                  <ReorderableTableCell className="pr-4">
+                  <ReorderableTableCell data-no-drag="true" className="pr-4">
                     <LanguageSelect
                       value={track.language}
                       onChange={(value) => handleTrackChange(track.id, "language", value)}
@@ -638,7 +592,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                     />
                   </ReorderableTableCell>
                   {activeTab !== "videos" ? (
-                    <ReorderableTableCell className="center" onClick={(e) => e.stopPropagation()}>
+                    <ReorderableTableCell data-no-drag="true" className="center" onClick={(e) => e.stopPropagation()}>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -680,8 +634,8 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
               const tracks = (file.tracks || []).filter((track) =>
                 activeTab === "videos" ? track.type === "video" : activeTab === "subtitles" ? track.type === "subtitle" : track.type === "audio",
               );
-              const selectedIndex = selectedIndexRaw >= 0 ? selectedIndexRaw : 0;
-              const selectedTrack = tracks[selectedIndex];
+              const selectedRow = currentTracks[selectedIndexRaw >= 0 ? selectedIndexRaw : 0];
+              const selectedTrack = selectedRow ? tracks[selectedRow.sourceTrackPosition] : tracks[0];
               const hasDefault = selectedTrack?.isDefault;
               const hasForced = selectedTrack?.isForced;
               return (

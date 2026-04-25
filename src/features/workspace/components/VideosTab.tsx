@@ -18,7 +18,6 @@ import {
   listenInspectPathsStreamDone,
   listenInspectPathsStreamError,
 } from "@/shared/lib/backend";
-import { appWindow } from "@tauri-apps/api/window";
 import { VIDEO_EXTENSIONS } from "@/shared/lib/extensions";
 import { PageLayout } from "@/shared/components/PageLayout";
 import { TextField, DropdownTrigger, DropdownContent } from "@/shared/components/Fields";
@@ -120,11 +119,11 @@ export function VideosTab({
     ? files.slice(virtualRange.startIndex, virtualRange.endIndex)
     : files;
 
-  const updateFiles = (next: VideoFile[]) => {
+  const updateFiles = useCallback((next: VideoFile[]) => {
     startTransition(() => {
       onFilesChange(next);
     });
-  };
+  }, [onFilesChange]);
 
   const handleDoubleClick = useCallback((file: VideoFile) => {
     setEditingFile(file);
@@ -277,7 +276,7 @@ export function VideosTab({
       unlistenError();
       updateFiles(Array.from(byPath.values()));
     }
-  }, [files, videoExtensions]);
+  }, [files, updateFiles, videoExtensions]);
 
   useEffect(() => {
     if (!preset) return;
@@ -290,17 +289,34 @@ export function VideosTab({
   // Native file drag-and-drop via Tauri window event
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    appWindow.onFileDropEvent((event) => {
-      if (event.payload.type === "hover") {
-        setIsDragOver(true);
-      } else if (event.payload.type === "cancel") {
-        setIsDragOver(false);
-      } else if (event.payload.type === "drop") {
-        setIsDragOver(false);
-        handleDroppedFiles(event.payload.paths);
-      }
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    let cancelled = false;
+
+    import("@tauri-apps/api/window")
+      .then(({ appWindow }) =>
+        appWindow.onFileDropEvent((event) => {
+          if (event.payload.type === "hover") {
+            setIsDragOver(true);
+          } else if (event.payload.type === "cancel") {
+            setIsDragOver(false);
+          } else if (event.payload.type === "drop") {
+            setIsDragOver(false);
+            handleDroppedFiles(event.payload.paths);
+          }
+        }),
+      )
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [handleDroppedFiles]);
 
   useEffect(() => {
@@ -339,7 +355,7 @@ export function VideosTab({
       const results = (await scanMedia({
         folder: folderPath,
         extensions,
-        recursive: true,
+        recursive: false,
         type: "video",
         include_tracks: false,
       })) as VideoFile[];
@@ -471,46 +487,53 @@ export function VideosTab({
         </div>
       )}
       <div className="fluent-surface p-4">
-        <div className="flex items-center gap-4">
-          <label className="text-sm font-medium text-foreground whitespace-nowrap">Source Folder</label>
-          <TextField
-            value={sourceFolder}
-            onChange={(e) => onSourceFolderChange(e.target.value)}
-            placeholder="Select video source folder..."
-            className="flex-1"
-          />
-          <div className="flex items-center gap-2">
-            <IconButton
-              className="bg-muted/50 text-foreground hover:bg-muted/70"
-              onClick={async () => {
-                const folder = await pickDirectory();
-                if (folder) {
-                  onSourceFolderChange(folder);
-                  scanVideos(folder);
-                }
-              }}
-              aria-label="Browse folder"
-            >
-              <FolderOpen className="w-4 h-4" />
-            </IconButton>
-            <IconButton
-              className="bg-primary/10 text-primary hover:bg-primary/20"
-              onClick={() => scanVideos(sourceFolder)}
-              aria-label="Rescan"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </IconButton>
-            <IconButton
-              className="bg-destructive/10 text-destructive hover:bg-destructive/20"
-              onClick={() => {
-                cancelScan();
-                onSourceFolderChange("");
-                onFilesChange([]);
-              }}
-              aria-label="Clear folder"
-            >
-              <X className="w-4 h-4" />
-            </IconButton>
+        <div className="video-source-panel">
+          <div className="video-source-copy">
+            <div className="video-source-kicker">Video Import</div>
+            <div className="video-source-title-row">
+              <label className="text-sm font-semibold text-foreground whitespace-nowrap">Source Folder</label>
+            </div>
+          </div>
+          <div className="video-source-controls">
+            <TextField
+              value={sourceFolder}
+              onChange={(e) => onSourceFolderChange(e.target.value)}
+              placeholder="Select video source folder..."
+              className="flex-1"
+            />
+            <div className="flex items-center gap-2">
+              <IconButton
+                className="bg-muted/50 text-foreground hover:bg-muted/70"
+                onClick={async () => {
+                  const folder = await pickDirectory();
+                  if (folder) {
+                    onSourceFolderChange(folder);
+                    scanVideos(folder);
+                  }
+                }}
+                aria-label="Browse folder"
+              >
+                <FolderOpen className="w-4 h-4" />
+              </IconButton>
+              <IconButton
+                className="bg-primary/10 text-primary hover:bg-primary/20"
+                onClick={() => scanVideos(sourceFolder)}
+                aria-label="Rescan"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </IconButton>
+              <IconButton
+                className="bg-destructive/10 text-destructive hover:bg-destructive/20"
+                onClick={() => {
+                  cancelScan();
+                  onSourceFolderChange("");
+                  onFilesChange([]);
+                }}
+                aria-label="Clear folder"
+              >
+                <X className="w-4 h-4" />
+              </IconButton>
+            </div>
           </div>
         </div>
 
