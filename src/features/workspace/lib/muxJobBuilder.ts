@@ -119,7 +119,11 @@ export function buildMuxJobRequests({
   const audioMap = mapByResolvedVideoId(allAudioFiles, resolve);
   const subtitleMap = mapByResolvedVideoId(allSubtitleFiles, resolve);
   const chapterMap = mapByResolvedVideoId(chapterFiles, resolve);
-  const attachmentMap = mapByResolvedVideoId(attachmentFiles, resolve);
+  const globalAttachments = attachmentFiles.map((file) => ({
+    ...file,
+    source: "bulk" as const,
+    matchedVideoId: undefined,
+  }));
 
   return jobs.flatMap((job) => {
     const video = byId.get(job.videoFile.id);
@@ -170,7 +174,7 @@ export function buildMuxJobRequests({
           (entry) => entry.file,
         ),
         chapters: chapterMap.get(video.id) || [],
-        attachments: attachmentMap.get(video.id) || [],
+        attachments: globalAttachments,
       },
     ];
   });

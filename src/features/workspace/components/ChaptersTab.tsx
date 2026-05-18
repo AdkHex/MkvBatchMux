@@ -24,6 +24,9 @@ interface ChaptersTabProps {
   onChapterFilesChange: (files: ExternalFile[]) => void;
   preset?: Preset | null;
   onMuxSettingsChange: (settings: Partial<MuxSettings>) => void;
+  searchValue?: string;
+  filterValue?: string;
+  sortValue?: string;
 }
 
 const truncateMiddle = (value: string, maxLength = 52) => {
@@ -38,6 +41,9 @@ export function ChaptersTab({
   onChapterFilesChange,
   preset,
   onMuxSettingsChange,
+  searchValue = "",
+  filterValue = "all",
+  sortValue = "loaded",
 }: ChaptersTabProps) {
   const { chapterTabState, updateChapterTabState } = useTabState((state) => ({
     chapterTabState: state.chapterTabState,
@@ -66,6 +72,23 @@ export function ChaptersTab({
   const extension = chapterTabState.extension;
   const discardOldChapters = chapterTabState.discardOldChapters;
   const chapterDelay = chapterTabState.delay;
+  const filterAndSort = <T extends { id: string; name: string; path: string; size?: number; matchedVideoId?: string }>(
+    items: T[],
+  ) => {
+    const term = searchValue.trim().toLowerCase();
+    const filtered = items.filter((file) => {
+      if (term && !`${file.name} ${file.path}`.toLowerCase().includes(term)) return false;
+      if (filterValue === "linked") return Boolean(file.matchedVideoId);
+      if (filterValue === "unlinked") return !file.matchedVideoId;
+      return true;
+    });
+    if (sortValue === "name-asc") return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+    if (sortValue === "name-desc") return [...filtered].sort((a, b) => b.name.localeCompare(a.name));
+    if (sortValue === "size-desc") return [...filtered].sort((a, b) => (b.size || 0) - (a.size || 0));
+    return filtered;
+  };
+  const visibleVideos = filterAndSort(videoFiles);
+  const visibleChapters = filterAndSort(chapterFiles);
 
   const scanChapters = async (folderPath: string) => {
     if (!folderPath) {
@@ -319,7 +342,9 @@ export function ChaptersTab({
             </div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
-            {videoFiles.map((file, index) => (
+            {visibleVideos.map((file) => {
+              const index = videoFiles.findIndex((entry) => entry.id === file.id);
+              return (
               <div
                 key={file.id}
                 onClick={() => setSelectedVideoIndex(index)}
@@ -330,7 +355,8 @@ export function ChaptersTab({
                   <span className="media-row-name">{truncateMiddle(file.name)}</span>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -416,8 +442,17 @@ export function ChaptersTab({
                 description="Enable chapters, then click the folder icon above"
                 className="h-full"
               />
+            ) : visibleChapters.length === 0 ? (
+              <EmptyState
+                icon={<BookOpen className="w-5 h-5 text-muted-foreground/65" />}
+                title="No chapter files match the current filter"
+                description="Clear search or change the filter to show all chapter files"
+                className="h-full"
+              />
             ) : (
-              chapterFiles.map((file, index) => (
+              visibleChapters.map((file) => {
+                const index = chapterFiles.findIndex((entry) => entry.id === file.id);
+                return (
                 <div
                   key={file.id}
                   onClick={() => setSelectedChapterIndex(index)}
@@ -446,7 +481,8 @@ export function ChaptersTab({
                     <Pencil className="w-3 h-3" />
                   </Button>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>

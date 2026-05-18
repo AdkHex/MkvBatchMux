@@ -6,3 +6,5 @@ declare global {
     __subtitlesAddTrack?: () => void;
   }
 }
+
+export {};

@@ -27,6 +27,13 @@ const makeAudio = (id: string, name: string, matchedVideoId?: string): ExternalF
   matchedVideoId,
 });
 
+const makeAttachment = (id: string, name: string): ExternalFile => ({
+  id,
+  name,
+  path: `/attachments/${name}`,
+  type: "attachment",
+});
+
 describe("buildMuxJobRequests", () => {
   it("builds requests only for queued jobs and keeps each matched audio with its video", () => {
     const videos = [
@@ -77,5 +84,31 @@ describe("buildMuxJobRequests", () => {
 
     expect(requests[0].audios).toEqual([]);
     expect(requests[1].audios).toEqual([]);
+  });
+
+  it("adds attachment files globally to every queued video", () => {
+    const videos = [
+      makeVideo("v1", "Show.S01E01.mkv"),
+      makeVideo("v2", "Show.S01E02.mkv"),
+    ];
+    const attachments = [
+      makeAttachment("att1", "Font-Regular.ttf"),
+      makeAttachment("att2", "Signs.otf"),
+    ];
+
+    const requests = buildMuxJobRequests({
+      videoFiles: videos,
+      jobs: [makeQueuedJob(videos[0]), makeQueuedJob(videos[1])],
+      audioFilesByTrack: {},
+      subtitleFilesByTrack: {},
+      chapterFiles: [],
+      attachmentFiles: attachments,
+      perVideoExternal: {},
+    });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].attachments.map((file) => file.id)).toEqual(["att1", "att2"]);
+    expect(requests[1].attachments.map((file) => file.id)).toEqual(["att1", "att2"]);
+    expect(requests[0].attachments.every((file) => file.source === "bulk")).toBe(true);
   });
 });

@@ -2,27 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
-/* MKV Muxing Batch GUI - Windows 11 Fluent Dark Theme */
+/* MKV Muxing Batch GUI - Windows 11 Fluent Theme */
 
 @layer base {
   :root {
-    --background: 0 0% 8.2%;
-    --foreground: 0 0% 100%;
+    --background: 210 20% 96%;
+    --foreground: 222 35% 12%;
 
-    --card: 0 0% 11.8%;
-    --card-foreground: 0 0% 100%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 35% 12%;
 
-    --popover: 0 0% 14.5%;
-    --popover-foreground: 0 0% 100%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 35% 12%;
 
     --primary: 206 100% 42%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 0 0% 11.8%;
-    --secondary-foreground: 0 0% 80%;
+    --secondary: 210 22% 91%;
+    --secondary-foreground: 222 20% 28%;
 
-    --muted: 0 0% 14.5%;
-    --muted-foreground: 0 0% 60%;
+    --muted: 210 18% 92%;
+    --muted-foreground: 215 12% 43%;
 
     --accent: 206 100% 42%;
     --accent-foreground: 206 100% 42%;
@@ -36,32 +36,32 @@
     --warning: 45 100% 50%;
     --warning-foreground: 0 0% 8%;
 
-    --border: 0 0% 20%;
-    --input: 0 0% 14.5%;
+    --border: 214 18% 82%;
+    --input: 0 0% 100%;
     --ring: 206 100% 42%;
 
     --radius: 8px;
 
-    --panel: 0 0% 11.8%;
-    --panel-header: 0 0% 14.5%;
-    --panel-border: 0 0% 20%;
+    --panel: 0 0% 100%;
+    --panel-header: 210 20% 94%;
+    --panel-border: 214 18% 82%;
     --selection: 206 100% 42% / 0.12;
     --selection-border: 206 100% 42%;
-    --table-row: 0 0% 11.8%;
-    --table-row-alt: 0 0% 11.8%;
-    --table-header: 0 0% 14.5%;
+    --table-row: 0 0% 100%;
+    --table-row-alt: 210 20% 98%;
+    --table-header: 210 20% 94%;
 
-    --sidebar-background: 0 0% 8.2%;
-    --sidebar-foreground: 0 0% 60%;
+    --sidebar-background: 210 20% 96%;
+    --sidebar-foreground: 215 12% 36%;
     --sidebar-primary: 206 100% 42%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 0 0% 16.5%;
-    --sidebar-accent-foreground: 0 0% 100%;
-    --sidebar-border: 0 0% 20%;
+    --sidebar-accent: 210 18% 90%;
+    --sidebar-accent-foreground: 222 35% 12%;
+    --sidebar-border: 214 18% 82%;
     --sidebar-ring: 206 100% 42%;
 
-    --toggle-off: 0 0% 20%;
-    --toggle-border: 0 0% 25%;
+    --toggle-off: 210 12% 78%;
+    --toggle-border: 214 18% 72%;
     --toggle-knob: 0 0% 100%;
 
     --space-1: 4px;
@@ -76,8 +76,8 @@
     --control-height: 32px;
     --icon-button-size: 32px;
 
-    --shadow-1: none;
-    --shadow-2: 0 12px 28px rgb(0 0 0 / 0.55);
+    --shadow-1: 0 1px 2px rgb(15 23 42 / 0.08);
+    --shadow-2: 0 14px 34px rgb(15 23 42 / 0.18);
   }
 
   .dark {
@@ -684,7 +684,12 @@
   }
 
   .media-row-index {
-    @apply text-muted-foreground tabular-nums shrink-0 w-7 text-right text-xs font-mono;
+    @apply inline-flex items-center justify-center tabular-nums shrink-0 text-xs font-semibold font-mono rounded-md border;
+    width: 30px;
+    height: 24px;
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--panel-header) / 0.55);
+    border-color: hsl(var(--panel-border) / 0.45);
   }
 
   .media-row-handle {
@@ -693,22 +698,12 @@
   }
 
   .media-row-name {
-    @apply text-secondary-foreground leading-tight whitespace-nowrap text-[13px] font-mono min-w-0 overflow-hidden text-ellipsis;
-  }
-
-  .media-row-link {
-    @apply text-[10px] mt-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap;
-    letter-spacing: 0.01em;
-  }
-
-  .media-row-select {
-    @apply shrink-0;
-    width: 210px;
+    @apply text-foreground leading-tight whitespace-nowrap text-[13px] font-mono min-w-0 overflow-hidden text-ellipsis;
   }
 
   .media-row-actions {
     @apply flex items-center gap-1 shrink-0 justify-end pl-2;
-    width: 92px;
+    width: 88px;
     padding-top: 1px;
   }
 
@@ -778,21 +773,31 @@
   }
 
   .file-item-video {
-    @apply table-row h-10 px-3 text-sm cursor-pointer transition-colors font-mono w-max min-w-full;
+    @apply table-row h-11 px-3 text-sm cursor-pointer transition-colors font-mono w-max min-w-full;
     display: grid;
-    grid-template-columns: 28px max-content;
+    grid-template-columns: 30px max-content;
     align-items: center;
     column-gap: 12px;
     white-space: nowrap;
   }
 
   .file-item-audio {
-    @apply table-row px-3 py-2 text-sm cursor-pointer transition-colors font-mono w-full min-w-0;
+    @apply px-3 text-sm cursor-pointer transition-colors font-mono w-full min-w-0 border-b border-panel-border/35;
     display: grid;
-    grid-template-columns: 20px 28px minmax(0, 1fr) 210px 92px;
-    align-items: start;
-    column-gap: 10px;
-    min-height: 58px;
+    grid-template-columns: 18px 30px minmax(0, 1fr) 88px;
+    align-items: center;
+    column-gap: 12px;
+    min-height: 44px;
+    background: hsl(var(--card) / 0.36);
+  }
+
+  .file-item-audio:hover {
+    background: hsl(var(--panel-header) / 0.42);
+  }
+
+  .file-item-audio.selected {
+    background: linear-gradient(90deg, hsl(var(--primary) / 0.18), hsl(var(--primary) / 0.07));
+    box-shadow: inset 2px 0 0 hsl(var(--primary)), inset 0 0 0 1px hsl(var(--primary) / 0.2);
   }
 
   .file-action-btn {
@@ -817,11 +822,7 @@
 
   @media (max-width: 1480px) {
     .file-item-audio {
-      grid-template-columns: 20px 28px minmax(0, 1fr) 180px 92px;
-    }
-
-    .media-row-select {
-      width: 180px;
+      grid-template-columns: 18px 30px minmax(0, 1fr) 88px;
     }
   }
 }

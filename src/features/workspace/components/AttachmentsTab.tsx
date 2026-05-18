@@ -21,6 +21,8 @@ interface AttachmentsTabProps {
   onAttachmentFilesChange: (files: ExternalFile[]) => void;
   preset?: Preset | null;
   onMuxSettingsChange: (settings: Partial<MuxSettings>) => void;
+  searchValue?: string;
+  sortValue?: string;
 }
 
 function formatFileSize(bytes: number): string {
@@ -40,6 +42,8 @@ export function AttachmentsTab({
   onAttachmentFilesChange,
   preset,
   onMuxSettingsChange,
+  searchValue = "",
+  sortValue = "loaded",
 }: AttachmentsTabProps) {
   const { attachmentTabState, updateAttachmentTabState } = useTabState((state) => ({
     attachmentTabState: state.attachmentTabState,
@@ -61,6 +65,18 @@ export function AttachmentsTab({
   const allowDuplicate = attachmentTabState.allowDuplicate;
   const discardOld = attachmentTabState.discardOld;
   const expertMode = attachmentTabState.expertMode;
+  const visibleAttachments = [...attachmentFiles]
+    .filter((file) =>
+      searchValue.trim()
+        ? `${file.name} ${file.path}`.toLowerCase().includes(searchValue.trim().toLowerCase())
+        : true,
+    )
+    .sort((a, b) => {
+      if (sortValue === "name-asc") return a.name.localeCompare(b.name);
+      if (sortValue === "name-desc") return b.name.localeCompare(a.name);
+      if (sortValue === "size-desc") return (b.size || 0) - (a.size || 0);
+      return attachmentFiles.indexOf(a) - attachmentFiles.indexOf(b);
+    });
 
   const scanAttachments = async (folderPath: string) => {
     if (!folderPath) {
@@ -124,7 +140,7 @@ export function AttachmentsTab({
             }}
           />
           <label htmlFor="attachments-enabled" className="text-sm font-medium cursor-pointer">
-            Attachments
+            Global Attachments
           </label>
           <span className="text-[11px] font-mono text-muted-foreground">{attachmentFiles.length}</span>
         </div>
@@ -281,6 +297,9 @@ export function AttachmentsTab({
             </label>
           </div>
         </div>
+        <p className="text-[11px] text-muted-foreground">
+          Attachment files are added to every queued video. Disable duplicates to keep one attachment per matching file name.
+        </p>
       </div>
 
       {/* Files Panel */}
@@ -317,13 +336,17 @@ export function AttachmentsTab({
               <div className="w-11 h-11 rounded-lg bg-muted/50 flex items-center justify-center mb-3">
                 <Paperclip className="w-5 h-5 text-muted-foreground/50" />
               </div>
-              <p className="text-muted-foreground text-sm">No attachment files added</p>
+              <p className="text-muted-foreground text-sm">
+                {attachmentFiles.length > 0 ? "No attachments match the current filter" : "No attachment files added"}
+              </p>
               <p className="text-muted-foreground/60 text-xs mt-1">
                 Enable attachments, then click Add Files above
               </p>
             </div>
           ) : (
-            attachmentFiles.map((file, index) => (
+            visibleAttachments.map((file) => {
+              const index = attachmentFiles.findIndex((entry) => entry.id === file.id);
+              return (
               <div
                 key={file.id}
                 onClick={() => setSelectedIndex(index)}
@@ -345,7 +368,8 @@ export function AttachmentsTab({
                   {file.size ? formatFileSize(file.size) : "—"}
                 </div>
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

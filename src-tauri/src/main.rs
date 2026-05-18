@@ -1,7 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod session;
-
 use crc32fast::Hasher;
 use fs2::available_space;
 use rayon::prelude::*;
@@ -82,10 +80,6 @@ impl Default for Preset {
     }
 }
 
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct OptionsData {
     #[serde(rename = "Presets")]
@@ -98,8 +92,6 @@ struct OptionsData {
     attachment_expert_mode_info_message_show: bool,
     #[serde(rename = "Choose_Preset_On_Startup")]
     choose_preset_on_startup: bool,
-    #[serde(rename = "Show_Session_Recovery_Dialog", default = "default_true")]
-    show_session_recovery_dialog: bool,
 }
 
 impl Default for OptionsData {
@@ -110,7 +102,6 @@ impl Default for OptionsData {
             dark_mode: false,
             attachment_expert_mode_info_message_show: true,
             choose_preset_on_startup: false,
-            show_session_recovery_dialog: true,
         }
     }
 }
@@ -196,6 +187,12 @@ struct ScanRequest {
     folder: String,
     extensions: Vec<String>,
     recursive: bool,
+    #[serde(default)]
+    include_patterns: Vec<String>,
+    #[serde(default)]
+    exclude_patterns: Vec<String>,
+    #[serde(default)]
+    ignore_patterns: Vec<String>,
     #[serde(rename = "type")]
     file_type: String,
     include_tracks: bool,
@@ -246,6 +243,7 @@ struct InspectStreamErrorEvent {
 #[serde(rename_all = "camelCase")]
 struct MuxSettings {
     destination_dir: String,
+    output_naming_pattern: Option<String>,
     overwrite_source: bool,
     add_crc: bool,
     remove_old_crc: bool,
@@ -333,6 +331,7 @@ struct MuxState {
 struct AppState {
     paths: AppPaths,
     mux_state: Arc<Mutex<MuxState>>,
+    cancelled_scans: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Default for MuxState {
@@ -384,6 +383,69 @@ fn should_include_file(path: &Path, allowed_extensions: &HashSet<String>) -> boo
         .and_then(|ext| ext.to_str())
         .map(|ext| allowed_extensions.contains(&ext.to_ascii_lowercase()))
         .unwrap_or(false)
+}
+
+fn normalize_patterns(patterns: &[String]) -> Vec<String> {
+    patterns
+        .iter()
+        .flat_map(|value| value.split([',', ';', '\n']))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return value.contains(pattern);
+    }
+
+    let mut cursor = 0usize;
+    let anchored_start = !pattern.starts_with('*');
+    let anchored_end = !pattern.ends_with('*');
+
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        let Some(found) = value[cursor..].find(part) else {
+            return false;
+        };
+        if index == 0 && anchored_start && found != 0 {
+            return false;
+        }
+        cursor += found + part.len();
+    }
+
+    if anchored_end {
+        if let Some(last) = parts.iter().rev().find(|part| !part.is_empty()) {
+            return value.ends_with(last);
+        }
+    }
+    true
+}
+
+fn matches_any_pattern(path: &Path, root: &Path, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    patterns
+        .iter()
+        .any(|pattern| wildcard_match(pattern, &name) || wildcard_match(pattern, &relative))
 }
 
 fn hidden_command(program: &str) -> Command {
@@ -908,18 +970,43 @@ fn generate_id(prefix: &str) -> String {
 fn scan_files(request: &ScanRequest) -> Result<Vec<PathBuf>, String> {
     let mut results = Vec::new();
     let allowed_extensions = normalize_extension_list(&request.extensions);
+    let root = Path::new(&request.folder);
+    let include_patterns = normalize_patterns(&request.include_patterns);
+    let exclude_patterns = normalize_patterns(&request.exclude_patterns);
+    let ignore_patterns = normalize_patterns(&request.ignore_patterns);
+    if !root.exists() {
+        return Err(format!("Source folder does not exist: {}", request.folder));
+    }
+    if !root.is_dir() {
+        return Err(format!("Source path is not a folder: {}", request.folder));
+    }
     let walker = WalkDir::new(&request.folder)
         .follow_links(true)
         .max_depth(if request.recursive { usize::MAX } else { 1 });
 
     for entry in walker.into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
-        if path.is_file() && should_include_file(path, &allowed_extensions) {
+        if !ignore_patterns.is_empty() && matches_any_pattern(path, root, &ignore_patterns) {
+            continue;
+        }
+        if path.is_file()
+            && should_include_file(path, &allowed_extensions)
+            && (include_patterns.is_empty() || matches_any_pattern(path, root, &include_patterns))
+            && !matches_any_pattern(path, root, &exclude_patterns)
+        {
             results.push(path.to_path_buf());
         }
     }
 
     Ok(results)
+}
+
+fn scan_cancelled(state: &AppState, scan_id: &str) -> bool {
+    state.cancelled_scans.lock().unwrap().contains(scan_id)
+}
+
+fn clear_scan_cancel(state: &AppState, scan_id: &str) {
+    state.cancelled_scans.lock().unwrap().remove(scan_id);
 }
 
 fn build_file_info(
@@ -1172,10 +1259,12 @@ fn inspect_paths(request: InspectRequest) -> Result<Vec<serde_json::Value>, Stri
 
 #[tauri::command]
 fn inspect_paths_stream(
+    state: State<AppState>,
     window: tauri::Window,
     request: InspectStreamRequest,
 ) -> Result<(), String> {
     let scan_id = request.scan_id.clone();
+    clear_scan_cancel(&state, &scan_id);
     let file_type = request.file_type.clone();
     let include_tracks = request.include_tracks;
     let total = request.paths.len();
@@ -1199,6 +1288,18 @@ fn inspect_paths_stream(
     let mut processed = 0usize;
 
     for chunk in all_paths.chunks(batch_size) {
+        if scan_cancelled(&state, &scan_id) {
+            clear_scan_cancel(&state, &scan_id);
+            let _ = window.emit(
+                "inspect-paths-stream-done",
+                InspectStreamDoneEvent {
+                    scan_id: scan_id.clone(),
+                    total: processed,
+                },
+            );
+            return Ok(());
+        }
+
         let items: Vec<serde_json::Value> = chunk
             .par_iter()
             .filter(|path| path.is_file())
@@ -1241,6 +1342,12 @@ fn inspect_paths_stream(
     Ok(())
 }
 
+#[tauri::command]
+fn cancel_scan(state: State<AppState>, scan_id: String) -> Result<(), String> {
+    state.cancelled_scans.lock().unwrap().insert(scan_id);
+    Ok(())
+}
+
 fn write_log_line(paths: &AppPaths, line: &str) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .create(true)
@@ -1267,6 +1374,11 @@ fn get_output_paths(job: &MuxJobRequest, settings: &MuxSettings) -> (PathBuf, Pa
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("output");
+    let output_stem = render_output_template(
+        settings.output_naming_pattern.as_deref(),
+        &job.video,
+        file_stem,
+    );
     let overwrite_mode = settings.destination_dir.trim().is_empty() || settings.overwrite_source;
 
     if overwrite_mode {
@@ -1274,14 +1386,49 @@ fn get_output_paths(job: &MuxJobRequest, settings: &MuxSettings) -> (PathBuf, Pa
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::from_secs(0))
             .as_secs();
-        let temp_name = format!("{}#{}{}.mkv", file_stem, suffix, "");
+        let temp_name = format!("{}#{}{}.mkv", output_stem, suffix, "");
         let output_path = output_dir.join(temp_name);
-        let final_path = output_dir.join(format!("{}.mkv", file_stem));
+        let final_path = output_dir.join(format!("{}.mkv", output_stem));
         (output_path, final_path, true)
     } else {
-        let output_path = output_dir.join(format!("{}.mkv", file_stem));
+        let output_path = output_dir.join(format!("{}.mkv", output_stem));
         (output_path.clone(), output_path, false)
     }
+}
+
+fn sanitize_file_stem(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            ch if ch.is_control() => '_',
+            ch => ch,
+        })
+        .collect();
+    let trimmed = sanitized.trim().trim_matches('.').to_string();
+    if trimmed.is_empty() {
+        "output".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn render_output_template(pattern: Option<&str>, video: &VideoFileInfo, original_stem: &str) -> String {
+    let raw_pattern = pattern
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("{original_filename}");
+    let extension = Path::new(&video.name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mkv");
+    let rendered = raw_pattern
+        .replace("{original_filename}", original_stem)
+        .replace("{filename}", original_stem)
+        .replace("{name}", original_stem)
+        .replace("{extension}", extension)
+        .replace("{id}", &video.id);
+    sanitize_file_stem(&rendered)
 }
 
 fn compute_crc(path: &Path) -> Result<String, String> {
@@ -1332,6 +1479,148 @@ fn check_free_space(path: &Path, required_bytes: u64) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn destination_dir_for_job(job: &MuxJobRequest, settings: &MuxSettings) -> PathBuf {
+    if settings.destination_dir.trim().is_empty() {
+        PathBuf::from(&job.video.path)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
+    } else {
+        PathBuf::from(&settings.destination_dir)
+    }
+}
+
+fn ensure_output_dir(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        if path.is_dir() {
+            return Ok(());
+        }
+        return Err(format!(
+            "Output destination exists but is not a folder: {}",
+            path.to_string_lossy()
+        ));
+    }
+    fs::create_dir_all(path).map_err(|e| {
+        format!(
+            "Failed to create output destination {}: {e}",
+            path.to_string_lossy()
+        )
+    })
+}
+
+fn emit_job_error(
+    app: &AppHandle,
+    state: &AppState,
+    settings: &MuxSettings,
+    job_id: &str,
+    message: &str,
+    error: String,
+) {
+    emit_progress(
+        app,
+        MuxProgressEvent {
+            job_id: job_id.to_string(),
+            status: "error".to_string(),
+            progress: 0,
+            message: Some(message.to_string()),
+            size_after: None,
+            error_message: Some(error),
+        },
+    );
+    if settings.abort_on_errors {
+        abort_mux_queue(state);
+    }
+}
+
+fn abort_mux_queue(state: &AppState) {
+    let mut mux_state = state.mux_state.lock().unwrap();
+    mux_state.stop = true;
+    mux_state.pause = false;
+    for (_, handle) in mux_state.children.drain() {
+        if let Ok(mut child) = handle.lock() {
+            let _ = child.kill();
+        }
+    }
+}
+
+fn unique_backup_path(source: &Path) -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_nanos();
+    let file_name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("source.mkv");
+    source.with_file_name(format!("{file_name}.mkvbatchmux-backup-{timestamp}"))
+}
+
+fn safe_replace_source(source: &Path, output: &Path, final_path: &Path) -> Result<(), String> {
+    if !output.exists() {
+        return Err(format!(
+            "Muxed output was not created: {}",
+            output.to_string_lossy()
+        ));
+    }
+    if source == output {
+        return Err("Refusing to replace source with the same temporary output path.".to_string());
+    }
+
+    let backup_path = unique_backup_path(source);
+    fs::rename(source, &backup_path).map_err(|e| {
+        format!(
+            "Failed to move source to backup before overwrite: {} -> {} ({e})",
+            source.to_string_lossy(),
+            backup_path.to_string_lossy()
+        )
+    })?;
+
+    if let Err(rename_error) = fs::rename(output, final_path) {
+        let restore_result = fs::rename(&backup_path, source);
+        return Err(match restore_result {
+            Ok(()) => format!(
+                "Failed to move muxed output into place; original source was restored. {} -> {} ({rename_error})",
+                output.to_string_lossy(),
+                final_path.to_string_lossy()
+            ),
+            Err(restore_error) => format!(
+                "Failed to move muxed output into place and failed to restore backup. Output: {}, backup: {}, restore error: {restore_error}, rename error: {rename_error}",
+                output.to_string_lossy(),
+                backup_path.to_string_lossy()
+            ),
+        });
+    }
+
+    fs::remove_file(&backup_path).map_err(|e| {
+        format!(
+            "Muxed file replaced the source, but the backup could not be removed: {} ({e})",
+            backup_path.to_string_lossy()
+        )
+    })
+}
+
+fn rename_final_output(current: &Path, target: &Path) -> Result<PathBuf, String> {
+    if current == target {
+        return Ok(current.to_path_buf());
+    }
+    if target.exists() {
+        fs::remove_file(target).map_err(|e| {
+            format!(
+                "Failed to remove existing target before rename: {} ({e})",
+                target.to_string_lossy()
+            )
+        })?;
+    }
+    fs::rename(current, target).map_err(|e| {
+        format!(
+            "Failed to rename output {} -> {}: {e}",
+            current.to_string_lossy(),
+            target.to_string_lossy()
+        )
+    })?;
+    Ok(target.to_path_buf())
 }
 
 fn collect_track_ids_by_language(
@@ -1525,6 +1814,132 @@ fn join_mkvmerge_command(args: &[String]) -> String {
         parts.push(quote_arg(arg));
     }
     parts.join(" ")
+}
+
+fn fast_mux_allowed_for_job(job: &MuxJobRequest, settings: &MuxSettings) -> bool {
+    settings.destination_dir.trim().is_empty()
+        && settings.overwrite_source
+        && job.audios.is_empty()
+        && job.subtitles.is_empty()
+        && job.chapters.is_empty()
+        && job.attachments.is_empty()
+        && (!settings.only_keep_audios_enabled || settings.only_keep_audio_languages.is_empty())
+        && (!settings.only_keep_subtitles_enabled || settings.only_keep_subtitle_languages.is_empty())
+}
+
+fn validate_external_files(job: &MuxJobRequest, warnings: &mut Vec<String>) {
+    if !Path::new(&job.video.path).exists() {
+        warnings.push(format!("Video file missing: {}", job.video.path));
+    }
+    for audio in &job.audios {
+        if !Path::new(&audio.path).exists() {
+            warnings.push(format!("Audio file missing: {}", audio.path));
+        }
+    }
+    for subtitle in &job.subtitles {
+        if !Path::new(&subtitle.path).exists() {
+            warnings.push(format!("Subtitle file missing: {}", subtitle.path));
+        }
+    }
+    for chapter in &job.chapters {
+        if !Path::new(&chapter.path).exists() {
+            warnings.push(format!("Chapter file missing: {}", chapter.path));
+        }
+    }
+    for attachment in &job.attachments {
+        if !Path::new(&attachment.path).exists() {
+            warnings.push(format!("Attachment file missing: {}", attachment.path));
+        }
+    }
+}
+
+fn validate_attachment_plan(job: &MuxJobRequest, settings: &MuxSettings, warnings: &mut Vec<String>) {
+    if job.attachments.is_empty() {
+        return;
+    }
+
+    let mut names = HashSet::new();
+    for attachment in &job.attachments {
+        let normalized = attachment.name.to_ascii_lowercase();
+        if !settings.allow_duplicate_attachments && !names.insert(normalized) {
+            warnings.push(format!(
+                "Duplicate attachment name will be skipped because duplicates are disabled: {}",
+                attachment.name
+            ));
+        }
+    }
+
+    if settings.attachments_expert_mode && !settings.discard_old_attachments {
+        warnings.push(
+            "Attachment expert mode is enabled while existing attachments are kept; verify duplicate names before muxing."
+                .to_string(),
+        );
+    }
+}
+
+fn validate_job_preflight(
+    job: &MuxJobRequest,
+    settings: &MuxSettings,
+    output_path: &Path,
+    final_path: &Path,
+    duplicate_output: bool,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    validate_external_files(job, &mut warnings);
+
+    let output_dir = destination_dir_for_job(job, settings);
+    if settings.destination_dir.trim().is_empty() && !settings.overwrite_source {
+        warnings.push("Destination folder is empty and overwrite source is disabled.".to_string());
+    }
+    if output_dir.exists() && !output_dir.is_dir() {
+        warnings.push(format!(
+            "Output destination exists but is not a folder: {}",
+            output_dir.to_string_lossy()
+        ));
+    }
+    if !output_dir.exists() {
+        warnings.push(format!(
+            "Output destination will be created: {}",
+            output_dir.to_string_lossy()
+        ));
+    } else if let Err(err) = check_free_space(&output_dir, job.video.size) {
+        warnings.push(err);
+    }
+
+    if duplicate_output {
+        warnings.push(format!(
+            "Multiple queued jobs target the same output path: {}",
+            final_path.to_string_lossy()
+        ));
+    }
+    if !settings.overwrite_source && final_path.exists() {
+        warnings.push(format!(
+            "Output file already exists and may be overwritten or fail: {}",
+            final_path.to_string_lossy()
+        ));
+    }
+    if output_path == Path::new(&job.video.path) || final_path == Path::new(&job.video.path) {
+        if !settings.overwrite_source {
+            warnings.push("Output path matches the source file without overwrite source enabled.".to_string());
+        }
+    }
+
+    if settings.use_mkvpropedit && !fast_mux_allowed_for_job(job, settings) {
+        warnings.push(
+            "Fast mux was requested, but this job requires full mkvmerge because it is not an in-place metadata-only edit."
+                .to_string(),
+        );
+    }
+    if settings.use_mkvpropedit && fast_mux_allowed_for_job(job, settings) && !tool_available("mkvpropedit", "-V") {
+        warnings.push("mkvpropedit is not available; fast mux cannot run.".to_string());
+    }
+    let will_use_mkvmerge = !settings.use_mkvpropedit || !fast_mux_allowed_for_job(job, settings);
+    if !mkvmerge_available() && will_use_mkvmerge {
+        warnings.push("mkvmerge is not available; full mux jobs cannot run.".to_string());
+    }
+
+    validate_attachment_plan(job, settings, &mut warnings);
+    warnings
 }
 
 fn log_job_plan(state: &AppState, job: &MuxJobRequest, output_path: &Path) {
@@ -2044,7 +2459,12 @@ fn build_mkvmerge_command(
         }
     }
 
+    let mut attached_names = HashSet::new();
     for attachment in &job.attachments {
+        let normalized_name = attachment.name.to_ascii_lowercase();
+        if !settings.allow_duplicate_attachments && !attached_names.insert(normalized_name) {
+            continue;
+        }
         args.push("--attach-file".to_string());
         args.push(attachment.path.clone());
     }
@@ -2183,51 +2603,25 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
         &format!("Starting job {} for {}", job.id, job.video.path),
     );
 
-    let output_dir = if settings.destination_dir.trim().is_empty() {
-        PathBuf::from(&job.video.path)
-            .parent()
-            .unwrap_or(Path::new("."))
-            .to_path_buf()
-    } else {
-        PathBuf::from(&settings.destination_dir)
-    };
+    let output_dir = destination_dir_for_job(&job, settings);
+    if let Err(err) = ensure_output_dir(&output_dir) {
+        emit_job_error(app, state, settings, &job.id, "Output destination unavailable", err);
+        return;
+    }
     if let Err(err) = check_free_space(&output_dir, job.video.size) {
-        emit_progress(
-            app,
-            MuxProgressEvent {
-                job_id: job.id.clone(),
-                status: "error".to_string(),
-                progress: 0,
-                message: Some("Low disk space".to_string()),
-                size_after: None,
-                error_message: Some(err),
-            },
-        );
-        if settings.abort_on_errors {
-            let mut mux_state = state.mux_state.lock().unwrap();
-            mux_state.pause = true;
-        }
+        emit_job_error(app, state, settings, &job.id, "Low disk space", err);
         return;
     }
 
     if settings.destination_dir.trim().is_empty() && !settings.overwrite_source {
-        emit_progress(
+        emit_job_error(
             app,
-            MuxProgressEvent {
-                job_id: job.id.clone(),
-                status: "error".to_string(),
-                progress: 0,
-                message: Some("Destination folder required".to_string()),
-                size_after: None,
-                error_message: Some(
-                    "Set a destination folder or enable overwrite source.".to_string(),
-                ),
-            },
+            state,
+            settings,
+            &job.id,
+            "Destination folder required",
+            "Set a destination folder or enable overwrite source.".to_string(),
         );
-        if settings.abort_on_errors {
-            let mut mux_state = state.mux_state.lock().unwrap();
-            mux_state.pause = true;
-        }
         return;
     }
 
@@ -2238,17 +2632,7 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
     );
     // mkvpropedit is in-place metadata editing only.
     // Allow it only when the user is explicitly overwriting source files.
-    let fast_mux_in_place_allowed =
-        settings.destination_dir.trim().is_empty() && settings.overwrite_source;
-    let can_use_mkvpropedit = settings.use_mkvpropedit
-        && fast_mux_in_place_allowed
-        && job.audios.is_empty()
-        && job.subtitles.is_empty()
-        && job.chapters.is_empty()
-        && job.attachments.is_empty()
-        && (!settings.only_keep_audios_enabled || settings.only_keep_audio_languages.is_empty())
-        && (!settings.only_keep_subtitles_enabled
-            || settings.only_keep_subtitle_languages.is_empty());
+    let can_use_mkvpropedit = settings.use_mkvpropedit && fast_mux_allowed_for_job(&job, settings);
     if settings.use_mkvpropedit && !can_use_mkvpropedit {
         let _ = write_log_line(
             &state.paths,
@@ -2370,21 +2754,14 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
     }
 
     if !tool_available("mkvmerge", "-V") {
-        emit_progress(
+        emit_job_error(
             app,
-            MuxProgressEvent {
-                job_id: job.id.clone(),
-                status: "error".to_string(),
-                progress: 0,
-                message: Some("mkvmerge not found".to_string()),
-                size_after: None,
-                error_message: Some("Install mkvmerge (MKVToolNix) and try again.".to_string()),
-            },
+            state,
+            settings,
+            &job.id,
+            "mkvmerge not found",
+            "Install mkvmerge (MKVToolNix) and try again.".to_string(),
         );
-        if settings.abort_on_errors {
-            let mut mux_state = state.mux_state.lock().unwrap();
-            mux_state.pause = true;
-        }
         return;
     }
 
@@ -2404,21 +2781,7 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
     let handle = match run_command_with_logs(app, state, &job, &mut command) {
         Ok(child) => child,
         Err(err) => {
-            emit_progress(
-                app,
-                MuxProgressEvent {
-                    job_id: job.id.clone(),
-                    status: "error".to_string(),
-                    progress: 0,
-                    message: Some("Failed to start process".to_string()),
-                    size_after: None,
-                    error_message: Some(err),
-                },
-            );
-            if settings.abort_on_errors {
-                let mut mux_state = state.mux_state.lock().unwrap();
-                mux_state.pause = true;
-            }
+            emit_job_error(app, state, settings, &job.id, "Failed to start process", err);
             return;
         }
     };
@@ -2441,41 +2804,52 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
                 &state.paths,
                 &format!("Job {} failed with exit code {}", job.id, exit_code),
             );
-            emit_progress(
+            emit_job_error(
                 app,
-                MuxProgressEvent {
-                    job_id: job.id.clone(),
-                    status: "error".to_string(),
-                    progress: 0,
-                    message: Some("Muxing failed".to_string()),
-                    size_after: None,
-                    error_message: Some(format!("Process exited with code {exit_code}")),
-                },
+                state,
+                settings,
+                &job.id,
+                "Muxing failed",
+                format!("Process exited with code {exit_code}"),
             );
-            if settings.abort_on_errors {
-                let mut mux_state = state.mux_state.lock().unwrap();
-                mux_state.pause = true;
-            }
             return;
         }
     }
 
     if overwrite_mode && output_path.exists() {
-        let _ = fs::remove_file(&job.video.path);
-        let _ = fs::rename(&output_path, &final_path);
+        if let Err(err) = safe_replace_source(Path::new(&job.video.path), &output_path, &final_path) {
+            emit_job_error(app, state, settings, &job.id, "Overwrite failed", err);
+            return;
+        }
     }
 
     let mut final_output = final_path.clone();
     if settings.add_crc && final_path.exists() {
-        if let Ok(crc) = compute_crc(&final_path) {
-            let with_crc = file_name_with_crc(&final_path, &crc);
-            let _ = fs::rename(&final_path, &with_crc);
-            final_output = with_crc;
+        match compute_crc(&final_path) {
+            Ok(crc) => {
+                let with_crc = file_name_with_crc(&final_path, &crc);
+                match rename_final_output(&final_path, &with_crc) {
+                    Ok(path) => final_output = path,
+                    Err(err) => {
+                        emit_job_error(app, state, settings, &job.id, "CRC rename failed", err);
+                        return;
+                    }
+                }
+            }
+            Err(err) => {
+                emit_job_error(app, state, settings, &job.id, "CRC calculation failed", err);
+                return;
+            }
         }
     } else if settings.remove_old_crc && final_path.exists() {
         let without_crc = file_name_without_crc(&final_path);
-        let _ = fs::rename(&final_path, &without_crc);
-        final_output = without_crc;
+        match rename_final_output(&final_path, &without_crc) {
+            Ok(path) => final_output = path,
+            Err(err) => {
+                emit_job_error(app, state, settings, &job.id, "CRC cleanup failed", err);
+                return;
+            }
+        }
     }
 
     let size_after = fs::metadata(&final_output).map(|m| m.len()).ok();
@@ -2574,18 +2948,18 @@ fn start_muxing(
     state: State<AppState>,
     request: MuxStartRequest,
 ) -> Result<(), String> {
-    clear_log(&state.paths)?;
-    write_log_line(&state.paths, "Starting muxing session")?;
-
     let mut mux_state = state.mux_state.lock().unwrap();
+    if mux_state.running {
+        return Err("Muxing is already running.".to_string());
+    }
+
+    clear_log(&state.paths)?;
+    write_log_line(&state.paths, "Starting muxing run")?;
+
     mux_state.queue = request.jobs;
     mux_state.settings = Some(request.settings);
     mux_state.stop = false;
     mux_state.pause = false;
-
-    if mux_state.running {
-        return Ok(());
-    }
     mux_state.running = true;
 
     let app_handle = app.clone();
@@ -2601,37 +2975,32 @@ fn preview_mux(
     request: MuxStartRequest,
 ) -> Result<Vec<MuxPreviewResult>, String> {
     let settings = request.settings;
+    let jobs = request.jobs;
     let mut results = Vec::new();
+    let mut output_counts: HashMap<String, usize> = HashMap::new();
 
-    for job in request.jobs {
-        let (output_path, _final_path, _overwrite) = get_output_paths(&job, &settings);
+    for job in &jobs {
+        let (_output_path, final_path, _overwrite) = get_output_paths(job, &settings);
+        let key = final_path.to_string_lossy().to_ascii_lowercase();
+        *output_counts.entry(key).or_insert(0) += 1;
+    }
+
+    for job in jobs {
+        let (output_path, final_path, _overwrite) = get_output_paths(&job, &settings);
         let command_args = build_mkvmerge_command(&job, &settings, &output_path, &state);
         let command_line = join_mkvmerge_command(&command_args);
-        let mut warnings = Vec::new();
-
-        if !Path::new(&job.video.path).exists() {
-            warnings.push(format!("Video file missing: {}", job.video.path));
-        }
-        for audio in &job.audios {
-            if !Path::new(&audio.path).exists() {
-                warnings.push(format!("Audio file missing: {}", audio.path));
-            }
-        }
-        for subtitle in &job.subtitles {
-            if !Path::new(&subtitle.path).exists() {
-                warnings.push(format!("Subtitle file missing: {}", subtitle.path));
-            }
-        }
-        for chapter in &job.chapters {
-            if !Path::new(&chapter.path).exists() {
-                warnings.push(format!("Chapter file missing: {}", chapter.path));
-            }
-        }
-        for attachment in &job.attachments {
-            if !Path::new(&attachment.path).exists() {
-                warnings.push(format!("Attachment file missing: {}", attachment.path));
-            }
-        }
+        let duplicate_output = output_counts
+            .get(&final_path.to_string_lossy().to_ascii_lowercase())
+            .copied()
+            .unwrap_or(0)
+            > 1;
+        let warnings = validate_job_preflight(
+            &job,
+            &settings,
+            &output_path,
+            &final_path,
+            duplicate_output,
+        );
 
         let plan = MuxPreviewPlan {
             video: job.video.path.clone(),
@@ -2669,13 +3038,7 @@ fn resume_muxing(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 fn stop_muxing(state: State<AppState>) -> Result<(), String> {
-    let mut mux_state = state.mux_state.lock().unwrap();
-    mux_state.stop = true;
-    for (_, handle) in mux_state.children.drain() {
-        if let Ok(mut child) = handle.lock() {
-            let _ = child.kill();
-        }
-    }
+    abort_mux_queue(&state);
     Ok(())
 }
 
@@ -2726,6 +3089,61 @@ fn open_log_file(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     Err("Failed to open log file".to_string())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0))
+            .as_nanos();
+        std::env::temp_dir().join(format!("mkvbatchmux-{name}-{suffix}"))
+    }
+
+    #[test]
+    fn safe_replace_source_restores_source_when_output_missing() {
+        let dir = unique_test_dir("missing-output");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.mkv");
+        let output = dir.join("source.tmp.mkv");
+        fs::write(&source, b"original").unwrap();
+
+        let result = safe_replace_source(&source, &output, &source);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"original");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn safe_replace_source_swaps_output_and_removes_backup() {
+        let dir = unique_test_dir("replace");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.mkv");
+        let output = dir.join("source.tmp.mkv");
+        fs::write(&source, b"original").unwrap();
+        fs::write(&output, b"muxed").unwrap();
+
+        safe_replace_source(&source, &output, &source).unwrap();
+
+        assert_eq!(fs::read(&source).unwrap(), b"muxed");
+        assert!(!output.exists());
+        let backups: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("mkvbatchmux-backup")
+            })
+            .collect();
+        assert!(backups.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -2740,6 +3158,7 @@ fn main() {
             let state = AppState {
                 paths,
                 mux_state: Arc::new(Mutex::new(MuxState::default())),
+                cancelled_scans: Arc::new(Mutex::new(HashSet::new())),
             };
             app.manage(state);
             Ok(())
@@ -2751,15 +3170,13 @@ fn main() {
             scan_media,
             inspect_paths,
             inspect_paths_stream,
+            cancel_scan,
             start_muxing,
             preview_mux,
             pause_muxing,
             resume_muxing,
             stop_muxing,
             open_log_file,
-            session::save_session,
-            session::load_session,
-            session::clear_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

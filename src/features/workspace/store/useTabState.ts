@@ -1,26 +1,4 @@
 import { create } from "zustand";
-import { persist, type StorageValue } from "zustand/middleware";
-
-// Debounced storage — batches localStorage writes to avoid per-keystroke lag
-const debouncedStorage = (() => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return {
-    getItem: (name: string): StorageValue<unknown> | null => {
-      const item = localStorage.getItem(name);
-      return item ? JSON.parse(item) : null;
-    },
-    setItem: (name: string, value: StorageValue<unknown>) => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        localStorage.setItem(name, JSON.stringify(value));
-      }, 300);
-    },
-    removeItem: (name: string) => {
-      clearTimeout(timer);
-      localStorage.removeItem(name);
-    },
-  };
-})();
 
 export interface TrackConfig {
   sourceFolder: string;
@@ -95,7 +73,6 @@ interface TabState {
   setSubtitlePresetApplied: (value: boolean) => void;
   updateChapterTabState: (updates: Partial<ChapterTabState>) => void;
   updateAttachmentTabState: (updates: Partial<AttachmentTabState>) => void;
-  resetSession: () => void;
 }
 
 const defaultChapterTabState: ChapterTabState = {
@@ -115,94 +92,65 @@ const defaultAttachmentTabState: AttachmentTabState = {
   expertMode: false,
 };
 
-export const useTabState = create<TabState>()(
-  persist(
-    (set) => ({
-      audioTracks: ["1"],
-      activeAudioTrack: "1",
-      audioTrackConfigs: { "1": { ...defaultAudioConfig } },
-      audioPresetApplied: false,
-      subtitleTracks: ["1"],
-      activeSubtitleTrack: "1",
-      subtitleTrackConfigs: { "1": { ...defaultSubtitleConfig } },
-      subtitlePresetApplied: false,
-      chapterTabState: { ...defaultChapterTabState },
-      attachmentTabState: { ...defaultAttachmentTabState },
-      setAudioTracks: (tracks) => set({ audioTracks: tracks }),
-      setActiveAudioTrack: (track) => set({ activeAudioTrack: track }),
-      updateAudioTrackConfig: (track, updates) =>
-        set((state) => ({
-          audioTrackConfigs: {
-            ...state.audioTrackConfigs,
-            [track]: {
-              ...(state.audioTrackConfigs[track] || defaultAudioConfig),
-              ...updates,
-            },
-          },
-        })),
-      removeAudioTrackConfig: (track) =>
-        set((state) => {
-          const next = { ...state.audioTrackConfigs };
-          delete next[track];
-          return { audioTrackConfigs: next };
-        }),
-      setAudioPresetApplied: (value) => set({ audioPresetApplied: value }),
-      setSubtitleTracks: (tracks) => set({ subtitleTracks: tracks }),
-      setActiveSubtitleTrack: (track) => set({ activeSubtitleTrack: track }),
-      updateSubtitleTrackConfig: (track, updates) =>
-        set((state) => ({
-          subtitleTrackConfigs: {
-            ...state.subtitleTrackConfigs,
-            [track]: {
-              ...(state.subtitleTrackConfigs[track] || defaultSubtitleConfig),
-              ...updates,
-            },
-          },
-        })),
-      removeSubtitleTrackConfig: (track) =>
-        set((state) => {
-          const next = { ...state.subtitleTrackConfigs };
-          delete next[track];
-          return { subtitleTrackConfigs: next };
-        }),
-      setSubtitlePresetApplied: (value) => set({ subtitlePresetApplied: value }),
-      updateChapterTabState: (updates) =>
-        set((state) => ({
-          chapterTabState: { ...state.chapterTabState, ...updates },
-        })),
-      updateAttachmentTabState: (updates) =>
-        set((state) => ({
-          attachmentTabState: { ...state.attachmentTabState, ...updates },
-        })),
-      resetSession: () =>
-        set({
-          audioTracks: ["1"],
-          activeAudioTrack: "1",
-          audioTrackConfigs: { "1": { ...defaultAudioConfig } },
-          audioPresetApplied: false,
-          subtitleTracks: ["1"],
-          activeSubtitleTrack: "1",
-          subtitleTrackConfigs: { "1": { ...defaultSubtitleConfig } },
-          subtitlePresetApplied: false,
-          chapterTabState: { ...defaultChapterTabState },
-          attachmentTabState: { ...defaultAttachmentTabState },
-        }),
+const freshWorkspaceState = () => ({
+  audioTracks: ["1"],
+  activeAudioTrack: "1",
+  audioTrackConfigs: { "1": { ...defaultAudioConfig } },
+  audioPresetApplied: false,
+  subtitleTracks: ["1"],
+  activeSubtitleTrack: "1",
+  subtitleTrackConfigs: { "1": { ...defaultSubtitleConfig } },
+  subtitlePresetApplied: false,
+  chapterTabState: { ...defaultChapterTabState },
+  attachmentTabState: { ...defaultAttachmentTabState },
+});
+
+export const useTabState = create<TabState>()((set) => ({
+  ...freshWorkspaceState(),
+  setAudioTracks: (tracks) => set({ audioTracks: tracks }),
+  setActiveAudioTrack: (track) => set({ activeAudioTrack: track }),
+  updateAudioTrackConfig: (track, updates) =>
+    set((state) => ({
+      audioTrackConfigs: {
+        ...state.audioTrackConfigs,
+        [track]: {
+          ...(state.audioTrackConfigs[track] || defaultAudioConfig),
+          ...updates,
+        },
+      },
+    })),
+  removeAudioTrackConfig: (track) =>
+    set((state) => {
+      const next = { ...state.audioTrackConfigs };
+      delete next[track];
+      return { audioTrackConfigs: next };
     }),
-    {
-      name: "mkv-tab-state",
-      storage: debouncedStorage,
-      partialize: (state) => ({
-        // Only persist audio/subtitle tracks and configs (not chapter/attachment - session only)
-        audioTracks: state.audioTracks,
-        activeAudioTrack: state.activeAudioTrack,
-        audioTrackConfigs: state.audioTrackConfigs,
-        audioPresetApplied: state.audioPresetApplied,
-        subtitleTracks: state.subtitleTracks,
-        activeSubtitleTrack: state.activeSubtitleTrack,
-        subtitleTrackConfigs: state.subtitleTrackConfigs,
-        subtitlePresetApplied: state.subtitlePresetApplied,
-        // chapterTabState and attachmentTabState are NOT persisted (session-only)
-      }),
-    }
-  )
-);
+  setAudioPresetApplied: (value) => set({ audioPresetApplied: value }),
+  setSubtitleTracks: (tracks) => set({ subtitleTracks: tracks }),
+  setActiveSubtitleTrack: (track) => set({ activeSubtitleTrack: track }),
+  updateSubtitleTrackConfig: (track, updates) =>
+    set((state) => ({
+      subtitleTrackConfigs: {
+        ...state.subtitleTrackConfigs,
+        [track]: {
+          ...(state.subtitleTrackConfigs[track] || defaultSubtitleConfig),
+          ...updates,
+        },
+      },
+    })),
+  removeSubtitleTrackConfig: (track) =>
+    set((state) => {
+      const next = { ...state.subtitleTrackConfigs };
+      delete next[track];
+      return { subtitleTrackConfigs: next };
+    }),
+  setSubtitlePresetApplied: (value) => set({ subtitlePresetApplied: value }),
+  updateChapterTabState: (updates) =>
+    set((state) => ({
+      chapterTabState: { ...state.chapterTabState, ...updates },
+    })),
+  updateAttachmentTabState: (updates) =>
+    set((state) => ({
+      attachmentTabState: { ...state.attachmentTabState, ...updates },
+    })),
+}));

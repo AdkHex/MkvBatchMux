@@ -13,6 +13,9 @@ export interface ScanRequest {
   folder: string;
   extensions: string[];
   recursive: boolean;
+  include_patterns?: string[];
+  exclude_patterns?: string[];
+  ignore_patterns?: string[];
   type: "video" | "audio" | "subtitle" | "chapter" | "attachment";
   include_tracks: boolean;
 }
@@ -80,7 +83,7 @@ export interface InspectStreamErrorEvent {
 
 export interface MuxProgressEvent {
   job_id: string;
-  status: "queued" | "processing" | "completed" | "error";
+  status: "queued" | "processing" | "completed" | "error" | "stopped";
   progress: number;
   message?: string;
   size_after?: number;
@@ -109,6 +112,10 @@ export async function inspectPaths(request: InspectRequest) {
 
 export async function inspectPathsStream(request: InspectStreamRequest) {
   return invoke<void>("inspect_paths_stream", { request });
+}
+
+export async function cancelScan(scanId: string) {
+  return invoke<void>("cancel_scan", { scanId });
 }
 
 export async function startMuxing(request: MuxStartRequest) {

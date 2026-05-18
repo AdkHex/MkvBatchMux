@@ -94,11 +94,11 @@ export interface OptionsData {
   Dark_Mode: boolean;
   Attachment_Expert_Mode_Info_Message_Show: boolean;
   Choose_Preset_On_Startup: boolean;
-  Show_Session_Recovery_Dialog?: boolean;
 }
 
 export interface MuxSettings {
   destinationDir: string;
+  outputNamingPattern?: string;
   overwriteSource: boolean;
   addCrc: boolean;
   removeOldCrc: boolean;

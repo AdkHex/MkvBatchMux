@@ -21,10 +21,8 @@ import { pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { AUDIO_EXTENSIONS } from "@/shared/lib/extensions";
 import {
-  assignExternalFileToVideo,
   getUnlinkedExternalFiles,
   linkExternalFilesByOrder,
-  matchExternalToVideos,
 } from "@/shared/lib/matchUtils";
 import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/shared/data/languages-iso6393";
 
@@ -35,6 +33,9 @@ interface AudiosTabProps {
   onVideoFilesChange?: (files: VideoFile[]) => void;
   onAddTrack?: () => void;
   preset?: Preset | null;
+  searchValue?: string;
+  filterValue?: string;
+  sortValue?: string;
 }
 
 interface TrackConfig {
@@ -89,9 +90,12 @@ export function AudiosTab({
   onVideoFilesChange,
   onAddTrack,
   preset,
+  searchValue = "",
+  filterValue = "all",
+  sortValue = "loaded",
 }: AudiosTabProps) {
   const syncAudioLinks = useCallback(
-    (files: ExternalFile[]) => matchExternalToVideos(files, videoFiles, true),
+    (files: ExternalFile[]) => linkExternalFilesByOrder(files, videoFiles),
     [videoFiles],
   );
 
@@ -193,16 +197,33 @@ export function AudiosTab({
     () => videoFiles.find((file) => file.id === importSourceVideoId) || null,
     [videoFiles, importSourceVideoId],
   );
-  const selectedAudioFile = selectedAudioIndex !== null ? audioFiles[selectedAudioIndex] || null : null;
-  const selectedVideoFile = selectedVideoIndex !== null ? videoFiles[selectedVideoIndex] || null : null;
-  const linkedVideoNameById = useMemo(
-    () => new Map(videoFiles.map((file) => [file.id, file.name] as const)),
-    [videoFiles],
-  );
   const unlinkedCount = useMemo(
     () => getUnlinkedExternalFiles(audioFiles, videoFiles).length,
     [audioFiles, videoFiles],
   );
+  const visibleVideoFiles = useMemo(() => {
+    const term = searchValue.trim().toLowerCase();
+    const filtered = videoFiles.filter((file) =>
+      term ? `${file.name} ${file.path}`.toLowerCase().includes(term) : true,
+    );
+    if (sortValue === "name-asc") return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+    if (sortValue === "name-desc") return [...filtered].sort((a, b) => b.name.localeCompare(a.name));
+    if (sortValue === "size-desc") return [...filtered].sort((a, b) => (b.size || 0) - (a.size || 0));
+    return filtered;
+  }, [searchValue, sortValue, videoFiles]);
+  const visibleAudioFiles = useMemo(() => {
+    const term = searchValue.trim().toLowerCase();
+    const filtered = audioFiles.filter((file) => {
+      if (term && !`${file.name} ${file.path}`.toLowerCase().includes(term)) return false;
+      if (filterValue === "linked") return Boolean(file.matchedVideoId);
+      if (filterValue === "unlinked") return !file.matchedVideoId;
+      return true;
+    });
+    if (sortValue === "name-asc") return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+    if (sortValue === "name-desc") return [...filtered].sort((a, b) => b.name.localeCompare(a.name));
+    if (sortValue === "size-desc") return [...filtered].sort((a, b) => (b.size || 0) - (a.size || 0));
+    return filtered;
+  }, [audioFiles, filterValue, searchValue, sortValue]);
 
   const importableTracks = useMemo(
     () =>
@@ -292,26 +313,6 @@ export function AudiosTab({
     });
   };
 
-  const linkSelectedAudioToVideo = useCallback(() => {
-    if (!selectedAudioFile || !selectedVideoFile) return;
-    onAudioFilesChange(
-      assignExternalFileToVideo(audioFiles, selectedAudioFile.id, selectedVideoFile.id),
-    );
-    toast({
-      title: "Audio Linked",
-      description: `${selectedAudioFile.name} linked to ${selectedVideoFile.name}.`,
-    });
-  }, [audioFiles, onAudioFilesChange, selectedAudioFile, selectedVideoFile]);
-
-  const linkAudioFilesByOrder = useCallback(() => {
-    if (audioFiles.length === 0 || videoFiles.length === 0) return;
-    onAudioFilesChange(linkExternalFilesByOrder(audioFiles, videoFiles));
-    toast({
-      title: "Audio Links Updated",
-      description: "Audio files are now linked to videos by their visible order.",
-    });
-  }, [audioFiles, onAudioFilesChange, videoFiles]);
-
   const reorderAudioFile = (fromIndex: number, toIndex: number) => {
     if (toIndex < 0 || toIndex >= audioFiles.length) return;
     const updated = [...audioFiles];
@@ -371,11 +372,11 @@ export function AudiosTab({
     };
     const updated = [...audioFiles];
     updated.splice(index + 1, 0, newFile);
-    onAudioFilesChange(syncAudioLinks(updated));
+    onAudioFilesChange(linkExternalFilesByOrder(updated, videoFiles));
     setSelectedAudioIndex(index + 1);
     toast({
       title: "Audio Duplicated",
-      description: `${original.name} duplicated.`,
+      description: `${original.name} duplicated and matched by row order.`,
     });
   };
 
@@ -395,6 +396,7 @@ export function AudiosTab({
       isForced: file.isForced || false,
       muxAfter: file.muxAfter || "video",
       applyDelayToAll: false,
+      applyToAllFiles: false,
       includedTrackIds: file.includedTrackIds !== undefined ? [...file.includedTrackIds] : defaultIncluded,
       includeSubtitles: getDefaultIncludeSubtitles(file),
       includedSubtitleTrackIds:
@@ -748,13 +750,9 @@ export function AudiosTab({
 
   useEffect(() => {
     if (audioFiles.length === 0) return;
-    // Re-match only when some file's matchedVideoId is missing or points to a removed video
-    const videoIdSet = new Set(videoFiles.map((v) => v.id));
-    const needsRematch = audioFiles.some(
-      (f) => !f.matchedVideoId || !videoIdSet.has(f.matchedVideoId),
-    );
-    if (needsRematch) {
-      onAudioFilesChange(matchExternalToVideos(audioFiles, videoFiles, true));
+    const needsRowMatch = audioFiles.some((file, index) => file.matchedVideoId !== videoFiles[index]?.id);
+    if (needsRowMatch) {
+      onAudioFilesChange(linkExternalFilesByOrder(audioFiles, videoFiles));
     }
   }, [audioFiles, onAudioFilesChange, videoFiles]);
 
@@ -1069,7 +1067,9 @@ export function AudiosTab({
             </div>
           </div>
           <div className="flex-1 overflow-auto scrollbar-thin">
-            {videoFiles.map((file, index) => (
+            {visibleVideoFiles.map((file) => {
+              const index = videoFiles.findIndex((entry) => entry.id === file.id);
+              return (
               <div
                 key={file.id}
                 onClick={() => setSelectedVideoIndex(index)}
@@ -1081,7 +1081,8 @@ export function AudiosTab({
                 <span className="media-row-index">{`${index + 1}.`}</span>
                 <span className="media-row-name">{file.name}</span>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -1126,24 +1127,6 @@ export function AudiosTab({
                 variant="ghost"
                 size="sm"
                 className="panel-text-btn"
-                onClick={linkAudioFilesByOrder}
-                disabled={videoFiles.length === 0 || audioFiles.length === 0}
-              >
-                Link by Order
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="panel-text-btn"
-                onClick={linkSelectedAudioToVideo}
-                disabled={!selectedAudioFile || !selectedVideoFile}
-              >
-                Link Selected
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="panel-text-btn"
                 onClick={() => {
                   setBulkSelectedVideoIds(videoFiles.map((file) => file.id));
                   setBulkSelectedAudioIds(audioFiles.map((file) => file.id));
@@ -1158,7 +1141,7 @@ export function AudiosTab({
           <div className="flex-1 overflow-auto scrollbar-thin">
             {unlinkedCount > 0 && (
               <div className="px-3 py-2 text-[11px] text-warning border-b border-panel-border/30 bg-warning/8">
-                {unlinkedCount} audio file{unlinkedCount === 1 ? "" : "s"} still need a linked video before muxing.
+                {unlinkedCount} audio file{unlinkedCount === 1 ? "" : "s"} do not have a matching video row before muxing.
               </div>
             )}
             {audioFiles.length === 0 ? (
@@ -1168,95 +1151,73 @@ export function AudiosTab({
                 description="Click the folder icon above or drag and drop files here"
                 className="h-full"
               />
+            ) : visibleAudioFiles.length === 0 ? (
+              <EmptyState
+                icon={<AudioLines className="w-5 h-5 text-muted-foreground/65" />}
+                title="No audio files match the current filter"
+                description="Clear search or change the filter to show all audio files"
+                className="h-full"
+              />
             ) : (
-              audioFiles.map((file, index) => (
-                <div
-                  key={file.id}
-                  draggable
-                  onDragStart={() => handleDragStart(index)}
-                  onDragEnter={() => handleDragEnter(index)}
-                  onDragEnd={handleDragEnd}
-                  onDragOver={(e) => e.preventDefault()}
-                  onClick={() => setSelectedAudioIndex(index)}
-                  onDoubleClick={() => openEditDialog(file.id)}
-                  className={cn("file-item-audio", selectedAudioIndex === index && "selected", draggedIndex === index && "opacity-60")}
-                >
-                  <span className="media-row-handle">
-                    <GripVertical className="w-4 h-4" />
-                  </span>
-                  <span className="media-row-index">{`${index + 1}.`}</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="media-row-name">{file.name}</div>
-                    <div className={cn("media-row-link", file.matchedVideoId ? "text-muted-foreground" : "text-warning")}>
-                      {file.matchedVideoId
-                        ? `Linked to: ${linkedVideoNameById.get(file.matchedVideoId) || "Selected video"}`
-                        : "Not linked to any video"}
+              visibleAudioFiles.map((file) => {
+                const index = audioFiles.findIndex((entry) => entry.id === file.id);
+                return (
+                  <div
+                    key={file.id}
+                    draggable
+                    onDragStart={() => handleDragStart(index)}
+                    onDragEnter={() => handleDragEnter(index)}
+                    onDragEnd={handleDragEnd}
+                    onDragOver={(e) => e.preventDefault()}
+                    onClick={() => setSelectedAudioIndex(index)}
+                    onDoubleClick={() => openEditDialog(file.id)}
+                    className={cn("file-item-audio", selectedAudioIndex === index && "selected", draggedIndex === index && "opacity-60")}
+                  >
+                    <span className="media-row-handle">
+                      <GripVertical className="w-4 h-4" />
+                    </span>
+                    <span className="media-row-index">{index + 1}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="media-row-name">{file.name}</div>
+                    </div>
+                    <div className="media-row-actions">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="file-action-btn file-action-btn--delete"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          removeAudioFile(index);
+                        }}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="file-action-btn file-action-btn--muted"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openEditDialog(file.id);
+                        }}
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="file-action-btn file-action-btn--muted"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          duplicateAudioFile(index);
+                        }}
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </Button>
                     </div>
                   </div>
-                  <Select
-                    value={file.matchedVideoId || "__unlinked__"}
-                    onValueChange={(value) =>
-                      onAudioFilesChange(
-                        value === "__unlinked__"
-                          ? audioFiles.map((entry) =>
-                              entry.id === file.id ? { ...entry, matchedVideoId: undefined } : entry,
-                            )
-                          : assignExternalFileToVideo(audioFiles, file.id, value),
-                      )
-                    }
-                  >
-                    <SelectTrigger
-                      className="media-row-select h-8 text-[11px] bg-input/70"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <SelectValue placeholder="Link to video" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__unlinked__">Not linked</SelectItem>
-                      {videoFiles.map((video, videoIndex) => (
-                        <SelectItem key={video.id} value={video.id}>
-                          {`${videoIndex + 1}. ${video.name}`}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <div className="media-row-actions">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="file-action-btn file-action-btn--delete"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        removeAudioFile(index);
-                      }}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="file-action-btn file-action-btn--muted"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openEditDialog(file.id);
-                      }}
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="file-action-btn file-action-btn--muted"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        duplicateAudioFile(index);
-                      }}
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>

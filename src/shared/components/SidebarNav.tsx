@@ -23,12 +23,13 @@ export function SidebarNav({ items, activeId, collapsed, onSelect, onToggleColla
     <aside
       className={cn(
         "fluent-sidebar flex flex-col shrink-0 transition-all duration-200 ease-out",
-        "w-12",
+        collapsed ? "w-12" : "w-44",
       )}
     >
       <div
         className={cn(
-          "h-12 flex items-center justify-center shrink-0",
+          "h-12 flex items-center shrink-0 px-1.5",
+          collapsed ? "justify-center" : "justify-start",
         )}
       >
         {brand}
@@ -45,22 +46,25 @@ export function SidebarNav({ items, activeId, collapsed, onSelect, onToggleColla
                 onClick={() => onSelect(item.id)}
                 className={cn(
                   "fluent-sidebar-item border border-transparent",
-                  "min-h-10 px-0",
+                  collapsed ? "min-h-10 px-0 justify-center" : "min-h-10 px-3 justify-start gap-2",
                   isActive && "is-active",
                 )}
                 aria-label={item.label}
               >
                 <Icon className="w-[18px] h-[18px] shrink-0" />
+                {!collapsed && <span className="truncate text-xs font-medium">{item.label}</span>}
               </button>
             );
 
-            return (
+            return collapsed ? (
               <Tooltip key={item.id}>
                 <TooltipTrigger asChild>{button}</TooltipTrigger>
                 <TooltipContent side="right" className="text-xs">
                   {item.label}
                 </TooltipContent>
               </Tooltip>
+            ) : (
+              <React.Fragment key={item.id}>{button}</React.Fragment>
             );
           })}
         </div>
@@ -71,11 +75,12 @@ export function SidebarNav({ items, activeId, collapsed, onSelect, onToggleColla
           onClick={onToggleCollapse}
           className={cn(
             "fluent-sidebar-item border border-transparent",
-            "min-h-10 px-0",
+            collapsed ? "min-h-10 px-0 justify-center" : "min-h-10 px-3 justify-start gap-2",
           )}
           aria-label="Toggle sidebar"
         >
           {collapsed ? <PanelLeft className="w-[18px] h-[18px]" /> : <PanelLeftClose className="w-[18px] h-[18px]" />}
+          {!collapsed && <span className="truncate text-xs font-medium">Collapse</span>}
         </button>
       </div>
     </aside>

@@ -1,6 +1,7 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, RefreshCw, FolderOpen, Film, Trash2 } from "lucide-react";
 import { Button } from "@/shared/ui/button";
+import { Checkbox } from "@/shared/ui/checkbox";
 import {
   Select,
   SelectItem,
@@ -11,6 +12,7 @@ import { VideoFileEditDialog } from "./VideoFileEditDialog";
 import { MediaInfoDialog } from "./MediaInfoDialog";
 import type { Preset, VideoFile, ExternalFile } from "@/shared/types";
 import {
+  cancelScan as cancelBackendScan,
   pickDirectory,
   scanMedia,
   inspectPathsStream,
@@ -52,6 +54,9 @@ interface VideosTabProps {
   externalFilesByVideoId?: Record<string, { audios: ExternalFile[]; subtitles: ExternalFile[] }>;
   onExternalFilesChange?: (videoFileId: string, type: "audio" | "subtitle", files: ExternalFile[]) => void;
   preset?: Preset | null;
+  searchValue?: string;
+  filterValue?: string;
+  sortValue?: string;
 }
 
 function formatFileSize(bytes?: number): string {
@@ -69,9 +74,16 @@ export function VideosTab({
   externalFilesByVideoId,
   onExternalFilesChange,
   preset,
+  searchValue = "",
+  filterValue = "all",
+  sortValue = "loaded",
 }: VideosTabProps) {
   const videoExtensions = VIDEO_EXTENSIONS.map((ext) => ext.toLowerCase());
   const [videoExtension, setVideoExtension] = useState("all");
+  const [recursiveScan, setRecursiveScan] = useState(false);
+  const [includePatterns, setIncludePatterns] = useState("");
+  const [excludePatterns, setExcludePatterns] = useState("");
+  const [ignorePatterns, setIgnorePatterns] = useState("");
   const [durationFps, setDurationFps] = useState("default");
   const [isModifyTracksOpen, setIsModifyTracksOpen] = useState(false);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
@@ -87,37 +99,70 @@ export function VideosTab({
   const dropTokenRef = useRef(0);
   const scanTokenRef = useRef(0);
   const scanAbortRef = useRef(false);
+  const activeScanIdRef = useRef<string | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
 
   const ROW_HEIGHT = 44;
   const OVERSCAN_ROWS = 8;
-  const shouldVirtualize = files.length > 120;
+  const normalizedSearch = searchValue.trim().toLowerCase();
+  const displayFiles = useMemo(() => {
+    const filtered = files.filter((file) => {
+      if (normalizedSearch && !`${file.name} ${file.path}`.toLowerCase().includes(normalizedSearch)) {
+        return false;
+      }
+      if (filterValue === "linked") {
+        return Boolean(externalFilesByVideoId?.[file.id]?.audios.length || externalFilesByVideoId?.[file.id]?.subtitles.length);
+      }
+      if (filterValue === "unlinked") {
+        return !(externalFilesByVideoId?.[file.id]?.audios.length || externalFilesByVideoId?.[file.id]?.subtitles.length);
+      }
+      return true;
+    });
+    if (sortValue === "name-asc") {
+      return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+    }
+    if (sortValue === "name-desc") {
+      return [...filtered].sort((a, b) => b.name.localeCompare(a.name));
+    }
+    if (sortValue === "size-desc") {
+      return [...filtered].sort((a, b) => (b.size || 0) - (a.size || 0));
+    }
+    return filtered;
+  }, [externalFilesByVideoId, files, filterValue, normalizedSearch, sortValue]);
+
+  useEffect(() => {
+    setSelectedFileIds([]);
+    setSelectedFileId(null);
+    setLastSelectedIndex(null);
+  }, [normalizedSearch]);
+
+  const shouldVirtualize = displayFiles.length > 120;
 
   const virtualRange = useMemo(() => {
     if (!shouldVirtualize) {
       return {
         startIndex: 0,
-        endIndex: files.length,
+        endIndex: displayFiles.length,
         topSpacer: 0,
         bottomSpacer: 0,
       };
     }
     const visibleRows = Math.ceil(viewportHeight / ROW_HEIGHT);
     const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN_ROWS);
-    const endIndex = Math.min(files.length, startIndex + visibleRows + OVERSCAN_ROWS * 2);
+    const endIndex = Math.min(displayFiles.length, startIndex + visibleRows + OVERSCAN_ROWS * 2);
     return {
       startIndex,
       endIndex,
       topSpacer: startIndex * ROW_HEIGHT,
-      bottomSpacer: Math.max(0, (files.length - endIndex) * ROW_HEIGHT),
+      bottomSpacer: Math.max(0, (displayFiles.length - endIndex) * ROW_HEIGHT),
     };
-  }, [files.length, scrollTop, viewportHeight, shouldVirtualize]);
+  }, [displayFiles.length, scrollTop, viewportHeight, shouldVirtualize]);
 
   const visibleFiles = shouldVirtualize
-    ? files.slice(virtualRange.startIndex, virtualRange.endIndex)
-    : files;
+    ? displayFiles.slice(virtualRange.startIndex, virtualRange.endIndex)
+    : displayFiles;
 
   const updateFiles = useCallback((next: VideoFile[]) => {
     startTransition(() => {
@@ -155,14 +200,14 @@ export function VideosTab({
           (target as HTMLElement).isContentEditable);
       if (isEditable) return;
       event.preventDefault();
-      const allIds = files.map((file) => file.id);
+      const allIds = displayFiles.map((file) => file.id);
       setSelectedFileIds(allIds);
       setSelectedFileId(allIds[0] ?? null);
-      setLastSelectedIndex(files.length > 0 ? files.length - 1 : null);
+      setLastSelectedIndex(displayFiles.length > 0 ? displayFiles.length - 1 : null);
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [files]);
+  }, [displayFiles]);
 
   const handleRowClick = useCallback((event: React.MouseEvent, index: number, fileId: string) => {
     const isToggle = event.metaKey || event.ctrlKey;
@@ -170,7 +215,7 @@ export function VideosTab({
     if (isRange && lastSelectedIndex !== null) {
       const start = Math.min(lastSelectedIndex, index);
       const end = Math.max(lastSelectedIndex, index);
-      const rangeIds = files.slice(start, end + 1).map((file) => file.id);
+      const rangeIds = displayFiles.slice(start, end + 1).map((file) => file.id);
       setSelectedFileIds(rangeIds);
       setSelectedFileId(fileId);
       setLastSelectedIndex(index);
@@ -198,7 +243,7 @@ export function VideosTab({
     setSelectedFileIds([fileId]);
     setSelectedFileId(fileId);
     setLastSelectedIndex(index);
-  }, [files, lastSelectedIndex, selectedFileId]);
+  }, [displayFiles, lastSelectedIndex, selectedFileId]);
 
   const handleSaveFile = (updatedFile: VideoFile) => {
     onFilesChange(files.map((f) => (f.id === updatedFile.id ? updatedFile : f)));
@@ -332,6 +377,9 @@ export function VideosTab({
 
   const cancelScan = () => {
     scanAbortRef.current = true;
+    if (activeScanIdRef.current) {
+      void cancelBackendScan(activeScanIdRef.current);
+    }
     setIsScanning(false);
     setShowScanOverlay(false);
   };
@@ -355,7 +403,10 @@ export function VideosTab({
       const results = (await scanMedia({
         folder: folderPath,
         extensions,
-        recursive: false,
+        recursive: recursiveScan,
+        include_patterns: includePatterns.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean),
+        exclude_patterns: excludePatterns.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean),
+        ignore_patterns: ignorePatterns.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean),
         type: "video",
         include_tracks: false,
       })) as VideoFile[];
@@ -386,6 +437,7 @@ export function VideosTab({
       };
 
       const streamId = `video-scan-${scanToken}`;
+      activeScanIdRef.current = streamId;
       let resolveDone: () => void = () => undefined;
       let rejectDone: (error: Error) => void = () => undefined;
       const donePromise = new Promise<void>((resolve, reject) => {
@@ -424,6 +476,9 @@ export function VideosTab({
         });
         await donePromise;
       } finally {
+        if (activeScanIdRef.current === streamId) {
+          activeScanIdRef.current = null;
+        }
         unlistenChunk();
         unlistenDone();
         unlistenError();
@@ -537,7 +592,7 @@ export function VideosTab({
           </div>
         </div>
 
-        <div className="flex items-center gap-6 mt-4 pt-4 border-t border-panel-border">
+        <div className="flex flex-wrap items-center gap-6 mt-4 pt-4 border-t border-panel-border">
           <div className="flex items-center gap-2">
             <label className="text-sm text-muted-foreground">Extension</label>
             <Select value={videoExtension} onValueChange={setVideoExtension}>
@@ -573,6 +628,17 @@ export function VideosTab({
             </Select>
           </div>
 
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="video-recursive-scan"
+              checked={recursiveScan}
+              onCheckedChange={(checked) => setRecursiveScan(checked as boolean)}
+            />
+            <label htmlFor="video-recursive-scan" className="text-sm text-muted-foreground cursor-pointer">
+              Recursive
+            </label>
+          </div>
+
           <div className="flex-1" />
 
           <div className="flex items-center gap-2">
@@ -588,6 +654,26 @@ export function VideosTab({
               Media Info
             </Button>
           </div>
+        </div>
+        <div className="grid grid-cols-3 gap-3 mt-3">
+          <TextField
+            value={includePatterns}
+            onChange={(event) => setIncludePatterns(event.target.value)}
+            placeholder="Include patterns, e.g. *E01*,Season 01/*"
+            className="h-8 text-xs"
+          />
+          <TextField
+            value={excludePatterns}
+            onChange={(event) => setExcludePatterns(event.target.value)}
+            placeholder="Exclude patterns, e.g. *sample*,*trailer*"
+            className="h-8 text-xs"
+          />
+          <TextField
+            value={ignorePatterns}
+            onChange={(event) => setIgnorePatterns(event.target.value)}
+            placeholder="Ignore folders/files, e.g. @eaDir,node_modules"
+            className="h-8 text-xs"
+          />
         </div>
       </div>
 
@@ -623,6 +709,12 @@ export function VideosTab({
                     ? "Loading video metadata"
                     : "Click the folder icon above or drag & drop MKV files here"
                 }
+              />
+            ) : displayFiles.length === 0 ? (
+              <EmptyState
+                icon={<Film className="w-6 h-6 text-muted-foreground/60" />}
+                title="No videos match the search"
+                description="Clear the search field to show all loaded videos"
               />
             ) : (
               <>

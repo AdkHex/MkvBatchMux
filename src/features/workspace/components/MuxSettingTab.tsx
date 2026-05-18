@@ -103,11 +103,23 @@ export function MuxSettingTab({
   const removeGlobalTags = muxSettings.removeGlobalTags;
   const fileCount = jobs.length > 0 ? jobs.length : videoFiles.length;
   const autoParallelJobs = Math.min(fileCount, 12);
+  const maxParallelJobs = Math.max(1, Math.min(12, muxSettings.maxParallelJobs || autoParallelJobs || 1));
   const isProcessing = jobs.some((job) => job.status === 'processing');
   const hasJobs = jobs.length > 0;
   const completedJobs = jobs.filter((job) => job.status === 'completed').length;
   const stoppedJobs = jobs.filter((job) => job.status === 'stopped').length;
   const statusLabel = isProcessing ? "Running" : stoppedJobs > 0 ? "Stopped" : "Idle";
+  const namingPreview = useMemo(() => {
+    const sample = videoFiles[0]?.name || "Example.E01.mkv";
+    const stem = sample.replace(/\.[^/.]+$/, "");
+    const pattern = settings.namingPattern.trim() || "{original_filename}";
+    return `${pattern
+      .split("{original_filename}").join(stem)
+      .split("{filename}").join(stem)
+      .split("{name}").join(stem)
+      .split("{extension}").join("mkv")
+      .split("{id}").join(videoFiles[0]?.id || "video-id")}.mkv`;
+  }, [settings.namingPattern, videoFiles]);
   const warningCount = useMemo(
     () => Object.values(previewResults).reduce((acc, result) => acc + result.warnings.length, 0),
     [previewResults],
@@ -168,6 +180,18 @@ export function MuxSettingTab({
               <FolderOpen className="w-4 h-4" />
             </Button>
           </div>
+          <div className="grid grid-cols-[150px_minmax(0,1fr)] items-center gap-2">
+            <label className="text-xs text-muted-foreground">Naming Template</label>
+            <Input
+              value={settings.namingPattern}
+              onChange={(event) => {
+                onSettingsChange({ namingPattern: event.target.value });
+                onMuxSettingsChange({ outputNamingPattern: event.target.value });
+              }}
+              placeholder="{original_filename}"
+              className="app-input h-8 font-mono text-xs"
+            />
+          </div>
           <div className="flex items-center gap-2 pt-0.5">
             <Checkbox
               id="overwrite-source"
@@ -183,7 +207,7 @@ export function MuxSettingTab({
             </label>
           </div>
           <p className="text-[11px] text-muted-foreground/70">
-            Files are written to this folder when set.
+            Preview: <span className="font-mono text-foreground/80">{namingPreview}</span>. Tokens: {"{original_filename}"}, {"{id}"}, {"{extension}"}.
           </p>
         </div>
 
@@ -542,7 +566,7 @@ export function MuxSettingTab({
                   title={
                     fastMuxAvailable
                       ? undefined
-                      : "Fast mux only works without external tracks, removals, or language filters."
+                      : "Fast mux only works for in-place metadata-only edits with overwrite source enabled."
                   }
                 >
                   Fast Mux (metadata-only)
@@ -552,11 +576,20 @@ export function MuxSettingTab({
             <div className="space-y-2">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Parallel Jobs</div>
               <div className="inline-flex items-center gap-2">
-                <span className="inline-flex items-center justify-center h-7 px-2.5 rounded-md border border-panel-border/40 bg-input text-xs">
-                  Auto{autoParallelJobs > 0 ? ` • ${autoParallelJobs}` : ""}
-                </span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={12}
+                  value={maxParallelJobs}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (!Number.isFinite(value)) return;
+                    onMuxSettingsChange({ maxParallelJobs: Math.max(1, Math.min(12, Math.round(value))) });
+                  }}
+                  className="h-7 w-16 text-xs"
+                />
                 <span className="text-[11px] text-muted-foreground/70">
-                  Matches file count (max 12)
+                  Auto suggestion {autoParallelJobs || 1}, max 12
                 </span>
               </div>
             </div>
@@ -621,10 +654,9 @@ export function MuxSettingTab({
                   <div className="px-4 text-sm truncate font-mono flex items-center">
                     <span className="text-muted-foreground/60 mr-2">{index + 1}.</span>
                     {warnings.length > 0 && (
-                      <AlertTriangle
-                        className="w-3.5 h-3.5 text-warning mr-2 shrink-0"
-                        title={warnings.join("\n")}
-                      />
+                      <span title={warnings.join("\n")} className="mr-2 inline-flex shrink-0">
+                        <AlertTriangle className="w-3.5 h-3.5 text-warning" />
+                      </span>
                     )}
                     {job.videoFile.name}
                   </div>

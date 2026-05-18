@@ -20,11 +20,7 @@ import { MuxSettingTab } from "@/features/workspace/components/MuxSettingTab";
 import { OptionsDialog } from "@/features/workspace/components/OptionsDialog";
 import { ModifyTracksDialog } from "@/features/workspace/components/ModifyTracksDialog";
 import { KeyboardShortcutsDialog } from "@/features/workspace/components/KeyboardShortcutsDialog";
-import { SessionRecoveryDialog } from "@/features/session/components/SessionRecoveryDialog";
-import { HistoryToolbar } from "@/features/history/components/HistoryToolbar";
 import { useKeyboardShortcuts } from "@/features/workspace/hooks/useKeyboardShortcuts";
-import { useCommand } from "@/features/history/hooks/useCommand";
-import { useHistoryStore } from "@/features/history/store/useHistoryStore";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { toast } from "@/shared/hooks/use-toast";
 import type {
@@ -55,13 +51,6 @@ import { AppShell } from "@/shared/components/AppShell";
 import { SidebarNav } from "@/shared/components/SidebarNav";
 import { CommandBar } from "@/shared/components/CommandBar";
 import { IconButton } from "@/shared/components/IconButton";
-import { checkForPendingSession, scheduleSave, clearSession, forceSave } from "@/features/session/lib/sessionManager";
-import type { SessionState } from "@/features/session/store/useSessionStore";
-import { AddVideosCommand } from "@/features/history/lib/commands/AddVideosCommand";
-import { RemoveVideosCommand } from "@/features/history/lib/commands/RemoveVideosCommand";
-import { ModifyTracksCommand } from "@/features/history/lib/commands/ModifyTracksCommand";
-import { AddExternalFilesCommand } from "@/features/history/lib/commands/AddExternalFilesCommand";
-import { RemoveExternalFilesCommand } from "@/features/history/lib/commands/RemoveExternalFilesCommand";
 import { buildMuxJobRequests } from "@/features/workspace/lib/muxJobBuilder";
 import { areVideoFilesEquivalent } from "@/features/workspace/lib/videoCompare";
 import type { MuxProgressEvent } from "@/shared/lib/backend";
@@ -80,10 +69,7 @@ const navItems: { id: TabId; label: string; icon: React.ElementType }[] = [
 
 const WorkspacePage = () => {
   const [isDarkMode, setIsDarkMode] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    const saved = localStorage.getItem("sidebar-collapsed");
-    return saved === "true";
-  });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("videos");
   const [videoFiles, setVideoFiles] = useState<VideoFile[]>([]);
   const [subtitleFilesByTrack, setSubtitleFilesByTrack] = useState<Record<string, ExternalFile[]>>({});
@@ -96,6 +82,9 @@ const WorkspacePage = () => {
   const [jobs, setJobs] = useState<MuxJob[]>([]);
   const [previewResults, setPreviewResults] = useState<Record<string, MuxPreviewResult>>({});
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [searchValue, setSearchValue] = useState("");
+  const [fileFilter, setFileFilter] = useState("all");
+  const [fileSort, setFileSort] = useState("loaded");
   const [options, setOptions] = useState<OptionsData | null>(null);
   const [activePreset, setActivePreset] = useState<Preset | null>(null);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
@@ -104,8 +93,6 @@ const WorkspacePage = () => {
   const [videoSourceFolder, setVideoSourceFolder] = useState("");
   const activeAudioTrack = useTabState((state) => state.activeAudioTrack);
   const activeSubtitleTrack = useTabState((state) => state.activeSubtitleTrack);
-  const { dispatch, undo, redo } = useCommand();
-  const clearHistory = useHistoryStore((s) => s.clear);
   const createExternalId = () =>
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -163,6 +150,7 @@ const WorkspacePage = () => {
   });
   const [muxSettings, setMuxSettings] = useState<MuxSettings>({
     destinationDir: "",
+    outputNamingPattern: "{original_filename}",
     overwriteSource: false,
     addCrc: false,
     removeOldCrc: false,
@@ -184,29 +172,6 @@ const WorkspacePage = () => {
   });
 
   // Refs to access current state inside event listeners without stale closures
-  const videoFilesRef = useRef(videoFiles);
-  const audioFilesByTrackRef = useRef(audioFilesByTrack);
-  const subtitleFilesByTrackRef = useRef(subtitleFilesByTrack);
-  const chapterFilesRef = useRef(chapterFiles);
-  const attachmentFilesRef = useRef(attachmentFiles);
-  const perVideoExternalRef = useRef(perVideoExternal);
-  const jobsRef = useRef(jobs);
-  const muxSettingsRef = useRef(muxSettings);
-  const outputSettingsRef = useRef(outputSettings);
-  const activeTabRef = useRef(activeTab);
-  const videoSourceFolderRef = useRef(videoSourceFolder);
-  useEffect(() => { videoFilesRef.current = videoFiles; }, [videoFiles]);
-  useEffect(() => { audioFilesByTrackRef.current = audioFilesByTrack; }, [audioFilesByTrack]);
-  useEffect(() => { subtitleFilesByTrackRef.current = subtitleFilesByTrack; }, [subtitleFilesByTrack]);
-  useEffect(() => { chapterFilesRef.current = chapterFiles; }, [chapterFiles]);
-  useEffect(() => { attachmentFilesRef.current = attachmentFiles; }, [attachmentFiles]);
-  useEffect(() => { perVideoExternalRef.current = perVideoExternal; }, [perVideoExternal]);
-  useEffect(() => { jobsRef.current = jobs; }, [jobs]);
-  useEffect(() => { muxSettingsRef.current = muxSettings; }, [muxSettings]);
-  useEffect(() => { outputSettingsRef.current = outputSettings; }, [outputSettings]);
-  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
-  useEffect(() => { videoSourceFolderRef.current = videoSourceFolder; }, [videoSourceFolder]);
-
   // Apply theme
   useEffect(() => {
     if (isDarkMode) {
@@ -242,72 +207,6 @@ const WorkspacePage = () => {
       mounted = false;
     };
   }, []);
-
-  useEffect(() => {
-    useTabState.getState().resetSession();
-    localStorage.removeItem("mkv-tab-state");
-    // Check for a pending session from a previous run
-    void checkForPendingSession();
-  }, []);
-
-  // Persist sidebar state
-  useEffect(() => {
-    localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
-  }, [sidebarCollapsed]);
-
-  const buildSessionSnapshot = useCallback(
-    (): SessionState => ({
-      version: "1.0.0",
-      timestamp: Math.floor(Date.now() / 1000),
-      videoFiles: videoFilesRef.current,
-      audioFiles: audioFilesByTrackRef.current,
-      subtitleFiles: subtitleFilesByTrackRef.current,
-      chapterFiles: chapterFilesRef.current,
-      attachmentFiles: attachmentFilesRef.current,
-      perVideoExternal: perVideoExternalRef.current,
-      jobs: jobsRef.current,
-      muxSettings: muxSettingsRef.current,
-      outputSettings: outputSettingsRef.current,
-      activeTab: activeTabRef.current,
-      videoSourceFolder: videoSourceFolderRef.current,
-    }),
-    [],
-  );
-
-  // Auto-save session on any state change (debounced 5s) without rebuilding the full snapshot eagerly.
-  useEffect(() => {
-    scheduleSave(buildSessionSnapshot);
-  }, [
-    buildSessionSnapshot,
-    videoFiles,
-    audioFilesByTrack,
-    subtitleFilesByTrack,
-    chapterFiles,
-    attachmentFiles,
-    perVideoExternal,
-    jobs,
-    muxSettings,
-    outputSettings,
-    activeTab,
-    videoSourceFolder,
-  ]);
-
-  useEffect(() => {
-    const flushSession = () => {
-      void forceSave(buildSessionSnapshot());
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        flushSession();
-      }
-    };
-    window.addEventListener("beforeunload", flushSession);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      window.removeEventListener("beforeunload", flushSession);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [buildSessionSnapshot]);
 
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((prev) => !prev);
@@ -480,51 +379,27 @@ const WorkspacePage = () => {
 
       if (type === "video") {
         const added = results as VideoFile[];
-        dispatch(new AddVideosCommand(
-          added,
-          () => videoFilesRef.current,
-          setVideoFiles,
-        ));
+        setVideoFiles((prev) => [...prev, ...added]);
       } else if (type === "subtitle") {
         const added = results as ExternalFile[];
         const track = activeSubtitleTrack;
-        dispatch(new AddExternalFilesCommand(
-          added,
-          "subtitle",
-          () => subtitleFilesByTrackRef.current[track] || [],
-          (files) => setSubtitleFilesByTrack((prev) => ({ ...prev, [track]: files })),
-        ));
+        setSubtitleFilesByTrack((prev) => ({ ...prev, [track]: [...(prev[track] || []), ...added] }));
       } else if (type === "audio") {
         const added = results as ExternalFile[];
         const track = activeAudioTrack;
-        dispatch(new AddExternalFilesCommand(
-          added,
-          "audio",
-          () => audioFilesByTrackRef.current[track] || [],
-          (files) => setAudioFilesByTrack((prev) => ({ ...prev, [track]: files })),
-        ));
+        setAudioFilesByTrack((prev) => ({ ...prev, [track]: [...(prev[track] || []), ...added] }));
       } else if (type === "chapter") {
         const added = results as ExternalFile[];
-        dispatch(new AddExternalFilesCommand(
-          added,
-          "chapter",
-          () => chapterFilesRef.current,
-          setChapterFiles,
-        ));
+        setChapterFiles((prev) => [...prev, ...added]);
       } else {
         const added = results as ExternalFile[];
-        dispatch(new AddExternalFilesCommand(
-          added,
-          "attachment",
-          () => attachmentFilesRef.current,
-          setAttachmentFiles,
-        ));
+        setAttachmentFiles((prev) => [...prev, ...added]);
       }
     });
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [activePreset, activeTab, activeAudioTrack, activeSubtitleTrack, dispatch]);
+  }, [activePreset, activeTab, activeAudioTrack, activeSubtitleTrack]);
 
   const handleAddToQueue = () => {
     const queuedJobIds = new Set(jobs.map((job) => job.id));
@@ -742,6 +617,7 @@ const WorkspacePage = () => {
   );
 
   const fastMuxAvailable = useMemo(() => {
+    const inPlaceOverwrite = outputSettings.directory.trim() === "" && outputSettings.overwriteExisting;
     const hasExternal =
       audioFilesCount > 0 ||
       subtitleFilesCount > 0 ||
@@ -758,7 +634,7 @@ const WorkspacePage = () => {
       muxSettings.onlyKeepSubtitlesEnabled ||
       Boolean(muxSettings.makeAudioDefaultLanguage) ||
       Boolean(muxSettings.makeSubtitleDefaultLanguage);
-    return !hasExternal && !hasPerVideoExternal && !hasRemovedTracks && !hasLanguageFilters;
+    return inPlaceOverwrite && !hasExternal && !hasPerVideoExternal && !hasRemovedTracks && !hasLanguageFilters;
   }, [
     audioFilesCount,
     attachmentFiles.length,
@@ -768,6 +644,8 @@ const WorkspacePage = () => {
     muxSettings.makeSubtitleDefaultLanguage,
     muxSettings.onlyKeepAudiosEnabled,
     muxSettings.onlyKeepSubtitlesEnabled,
+    outputSettings.directory,
+    outputSettings.overwriteExisting,
     perVideoExternal,
     videoFiles,
   ]);
@@ -787,12 +665,12 @@ const WorkspacePage = () => {
       const autoParallelJobs = Math.min(jobCount, cpuCount, 12);
       const settings: MuxSettings = {
         ...muxSettings,
-        maxParallelJobs: Math.max(1, autoParallelJobs),
-        addCrc: false,
-        removeOldCrc: false,
-        keepLogFile: false,
-        abortOnErrors: false,
+        maxParallelJobs: Math.max(
+          1,
+          Math.min(jobCount || 1, muxSettings.maxParallelJobs || autoParallelJobs || 1),
+        ),
         destinationDir: outputSettings.directory,
+        outputNamingPattern: outputSettings.namingPattern,
         overwriteSource: outputSettings.overwriteExisting,
       };
       return settings;
@@ -909,7 +787,19 @@ const WorkspacePage = () => {
 
   const handleSaveOptions = useCallback((updated: OptionsData) => {
     setOptions(updated);
-    saveOptions(updated).catch(() => undefined);
+    saveOptions(updated).catch((error) => {
+      const message =
+        typeof error === "string"
+          ? error
+          : error instanceof Error
+            ? error.message
+            : "Options could not be saved.";
+      toast({
+        title: "Options save failed",
+        description: message,
+        variant: "destructive",
+      });
+    });
     const preset = updated.Presets[updated.FavoritePresetId] || updated.Presets[0];
     setActivePreset(preset);
     setIsDarkMode(Boolean(updated.Dark_Mode));
@@ -924,10 +814,7 @@ const WorkspacePage = () => {
     }));
   }, []);
 
-  /**
-   * Smart video file change handler — dispatches the appropriate Command
-   * based on what changed (add, remove, or modify).
-   */
+  /** Smart video file change handler for add, remove, and modify updates. */
   const handleVideoFilesChange = useCallback(
     (newFiles: VideoFile[]) => {
       const currentIds = new Set(videoFiles.map((v) => v.id));
@@ -936,19 +823,18 @@ const WorkspacePage = () => {
       const removed = videoFiles.filter((v) => !newIds.has(v.id));
 
       if (added.length > 0 && removed.length === 0) {
-        dispatch(new AddVideosCommand(added, () => videoFiles, setVideoFiles));
+        setVideoFiles((prev) => [...prev, ...added]);
       } else if (removed.length > 0 && added.length === 0) {
-        dispatch(new RemoveVideosCommand(removed, () => videoFiles, setVideoFiles));
+        const removedIds = new Set(removed.map((file) => file.id));
+        setVideoFiles((prev) => prev.filter((file) => !removedIds.has(file.id)));
       } else if (added.length === 0 && removed.length === 0) {
         const modified = newFiles.filter((v) => {
           const orig = videoFiles.find((o) => o.id === v.id);
           return orig && !areVideoFilesEquivalent(orig, v);
         });
         if (modified.length > 0) {
-          const prevModified = videoFiles.filter((v) => modified.some((m) => m.id === v.id));
-          dispatch(
-            new ModifyTracksCommand(prevModified, modified, () => videoFiles, setVideoFiles),
-          );
+          const modifiedById = new Map(modified.map((file) => [file.id, file] as const));
+          setVideoFiles((prev) => prev.map((file) => modifiedById.get(file.id) || file));
         } else {
           setVideoFiles(newFiles);
         }
@@ -956,29 +842,8 @@ const WorkspacePage = () => {
         setVideoFiles(newFiles);
       }
     },
-    [videoFiles, dispatch],
+    [videoFiles],
   );
-
-  const handleRestoreSession = useCallback((session: SessionState) => {
-    setVideoFiles(session.videoFiles ?? []);
-    setAudioFilesByTrack(session.audioFiles ?? {});
-    setSubtitleFilesByTrack(session.subtitleFiles ?? {});
-    setChapterFiles(session.chapterFiles ?? []);
-    setAttachmentFiles(session.attachmentFiles ?? []);
-    setPerVideoExternal(session.perVideoExternal ?? {});
-    setJobs(session.jobs ?? []);
-    if (session.muxSettings) setMuxSettings(session.muxSettings);
-    if (session.outputSettings) setOutputSettings(session.outputSettings);
-    if (session.activeTab) setActiveTab(session.activeTab as TabId);
-    if (session.videoSourceFolder) setVideoSourceFolder(session.videoSourceFolder);
-    // Clear history when restoring a session
-    clearHistory();
-    toast({ title: "Session Restored", description: "Your previous session has been restored." });
-  }, [clearHistory]);
-
-  const handleDiscardSession = useCallback(async () => {
-    await clearSession();
-  }, []);
 
   const handleNewTrack = useCallback(() => {
     if (activeTab === "subtitles" && window.__subtitlesAddTrack) {
@@ -1089,8 +954,6 @@ const WorkspacePage = () => {
     onNewTrack: handleNewTrack,
     onShowHelp: () => setIsShortcutsOpen(true),
     onToggleSidebar: toggleSidebar,
-    onUndo: undo,
-    onRedo: redo,
   });
 
   const renderTabContent = () => {
@@ -1106,6 +969,9 @@ const WorkspacePage = () => {
             onExternalFilesChange={handleExternalFilesChange}
             externalFilesByVideoId={perVideoExternal}
             preset={activePreset}
+            searchValue={searchValue}
+            filterValue={fileFilter}
+            sortValue={fileSort}
           />
         );
       case "subtitles":
@@ -1122,6 +988,9 @@ const WorkspacePage = () => {
             onVideoFilesChange={handleVideoFilesChange}
             onAddTrack={handleNewTrack}
             preset={activePreset}
+            searchValue={searchValue}
+            filterValue={fileFilter}
+            sortValue={fileSort}
           />
         );
       case "audios":
@@ -1138,6 +1007,9 @@ const WorkspacePage = () => {
             onVideoFilesChange={handleVideoFilesChange}
             onAddTrack={handleNewTrack}
             preset={activePreset}
+            searchValue={searchValue}
+            filterValue={fileFilter}
+            sortValue={fileSort}
           />
         );
       case "chapters":
@@ -1148,6 +1020,9 @@ const WorkspacePage = () => {
             onChapterFilesChange={setChapterFiles}
             preset={activePreset}
             onMuxSettingsChange={(updates) => setMuxSettings((prev) => ({ ...prev, ...updates }))}
+            searchValue={searchValue}
+            filterValue={fileFilter}
+            sortValue={fileSort}
           />
         );
       case "attachments":
@@ -1157,6 +1032,8 @@ const WorkspacePage = () => {
             onAttachmentFilesChange={setAttachmentFiles}
             preset={activePreset}
             onMuxSettingsChange={(updates) => setMuxSettings((prev) => ({ ...prev, ...updates }))}
+            searchValue={searchValue}
+            sortValue={fileSort}
           />
         );
       case "mux-setting":
@@ -1210,9 +1087,15 @@ const WorkspacePage = () => {
         topbar={
           <CommandBar
             title={activeNavItem?.label || "Videos"}
+            searchValue={searchValue}
+            onSearchChange={setSearchValue}
+            searchPlaceholder={`Search ${activeNavItem?.label?.toLowerCase() || "files"}...`}
+            filterValue={fileFilter}
+            onFilterChange={setFileFilter}
+            sortValue={fileSort}
+            onSortChange={setFileSort}
             rightActions={
               <>
-                <HistoryToolbar />
                 <IconButton onClick={() => setIsOptionsOpen(true)} aria-label="Settings">
                   <Settings />
                 </IconButton>
@@ -1243,10 +1126,6 @@ const WorkspacePage = () => {
 
         <KeyboardShortcutsDialog open={isShortcutsOpen} onOpenChange={setIsShortcutsOpen} />
 
-        <SessionRecoveryDialog
-          onRestore={handleRestoreSession}
-          onDiscard={handleDiscardSession}
-        />
       </AppShell>
     </TooltipProvider>
   );
