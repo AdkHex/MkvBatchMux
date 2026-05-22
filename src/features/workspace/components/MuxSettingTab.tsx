@@ -22,6 +22,8 @@ import type { OutputSettings, MuxJob, VideoFile, MuxSettings, MuxPreviewResult }
 import { pickDirectory } from "@/shared/lib/backend";
 import { BaseModal } from "@/shared/components/BaseModal";
 
+const MAX_PARALLEL_JOBS = 16;
+
 interface MuxSettingTabProps {
   settings: OutputSettings;
   onSettingsChange: (settings: Partial<OutputSettings>) => void;
@@ -102,8 +104,7 @@ export function MuxSettingTab({
   const discardOldAttachments = muxSettings.discardOldAttachments;
   const removeGlobalTags = muxSettings.removeGlobalTags;
   const fileCount = jobs.length > 0 ? jobs.length : videoFiles.length;
-  const autoParallelJobs = Math.min(fileCount, 12);
-  const maxParallelJobs = Math.max(1, Math.min(12, muxSettings.maxParallelJobs || autoParallelJobs || 1));
+  const autoParallelJobs = Math.max(1, Math.min(fileCount || 1, MAX_PARALLEL_JOBS));
   const isProcessing = jobs.some((job) => job.status === 'processing');
   const hasJobs = jobs.length > 0;
   const completedJobs = jobs.filter((job) => job.status === 'completed').length;
@@ -579,17 +580,14 @@ export function MuxSettingTab({
                 <Input
                   type="number"
                   min={1}
-                  max={12}
-                  value={maxParallelJobs}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    if (!Number.isFinite(value)) return;
-                    onMuxSettingsChange({ maxParallelJobs: Math.max(1, Math.min(12, Math.round(value))) });
-                  }}
+                  max={MAX_PARALLEL_JOBS}
+                  value={autoParallelJobs}
+                  readOnly
                   className="h-7 w-16 text-xs"
+                  title="Automatically follows the queued file count, capped at 16."
                 />
                 <span className="text-[11px] text-muted-foreground/70">
-                  Auto suggestion {autoParallelJobs || 1}, max 12
+                  Auto set from queue, max {MAX_PARALLEL_JOBS}
                 </span>
               </div>
             </div>

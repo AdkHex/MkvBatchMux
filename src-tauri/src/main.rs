@@ -20,6 +20,8 @@ use walkdir::WalkDir;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const MAX_PARALLEL_JOBS: usize = 16;
+
 static MEDIAINFO_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static MKVMERGE_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static FILE_INFO_CACHE: OnceLock<Mutex<HashMap<String, serde_json::Value>>> = OnceLock::new();
@@ -2892,7 +2894,12 @@ fn run_mux_queue(app: AppHandle, state: AppState) {
         mux_state.queue.clone()
     };
 
-    let max_parallel = settings.max_parallel_jobs.unwrap_or(1).max(1);
+    let max_parallel = settings
+        .max_parallel_jobs
+        .unwrap_or(1)
+        .max(1)
+        .min(MAX_PARALLEL_JOBS)
+        .min(jobs.len().max(1));
     let (tx, rx) = mpsc::channel::<MuxJobRequest>();
     for job in jobs {
         let _ = tx.send(job);

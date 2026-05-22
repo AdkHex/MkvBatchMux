@@ -57,6 +57,7 @@ import type { MuxProgressEvent } from "@/shared/lib/backend";
 import { getUnlinkedExternalFiles } from "@/shared/lib/matchUtils";
 
 type TabId = "videos" | "subtitles" | "audios" | "chapters" | "attachments" | "mux-setting";
+const MAX_PARALLEL_JOBS = 16;
 
 const navItems: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "videos", label: "Videos", icon: Video },
@@ -69,7 +70,13 @@ const navItems: { id: TabId; label: string; icon: React.ElementType }[] = [
 
 const WorkspacePage = () => {
   const [isDarkMode, setIsDarkMode] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("sidebar-collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
   const [activeTab, setActiveTab] = useState<TabId>("videos");
   const [videoFiles, setVideoFiles] = useState<VideoFile[]>([]);
   const [subtitleFilesByTrack, setSubtitleFilesByTrack] = useState<Record<string, ExternalFile[]>>({});
@@ -211,6 +218,14 @@ const WorkspacePage = () => {
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((prev) => !prev);
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
+    } catch {
+      // Sidebar preference is non-critical.
+    }
+  }, [sidebarCollapsed]);
 
   useEffect(() => {
     const bufferedProgress = new Map<string, MuxProgressEvent>();
@@ -414,7 +429,14 @@ const WorkspacePage = () => {
         sizeBefore: f.size,
       }));
     if (newJobs.length === 0) return;
-    setJobs((prev) => [...prev, ...newJobs]);
+    setJobs((prev) => {
+      const next = [...prev, ...newJobs];
+      setMuxSettings((current) => ({
+        ...current,
+        maxParallelJobs: Math.max(1, Math.min(next.length || 1, MAX_PARALLEL_JOBS)),
+      }));
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -658,17 +680,10 @@ const WorkspacePage = () => {
 
   const buildEffectiveMuxSettings = useCallback(
     (jobCount: number) => {
-      const cpuCount =
-        typeof navigator !== "undefined" && navigator.hardwareConcurrency
-          ? navigator.hardwareConcurrency
-          : 12;
-      const autoParallelJobs = Math.min(jobCount, cpuCount, 12);
+      const autoParallelJobs = Math.max(1, Math.min(jobCount || 1, MAX_PARALLEL_JOBS));
       const settings: MuxSettings = {
         ...muxSettings,
-        maxParallelJobs: Math.max(
-          1,
-          Math.min(jobCount || 1, muxSettings.maxParallelJobs || autoParallelJobs || 1),
-        ),
+        maxParallelJobs: autoParallelJobs,
         destinationDir: outputSettings.directory,
         outputNamingPattern: outputSettings.namingPattern,
         overwriteSource: outputSettings.overwriteExisting,

@@ -1,7 +1,6 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, RefreshCw, FolderOpen, Film, Trash2 } from "lucide-react";
 import { Button } from "@/shared/ui/button";
-import { Checkbox } from "@/shared/ui/checkbox";
 import {
   Select,
   SelectItem,
@@ -65,6 +64,54 @@ function formatFileSize(bytes?: number): string {
   return gb.toFixed(2) + " GB";
 }
 
+const normalizeVideoIdentity = (value: string) =>
+  value
+    .trim()
+    .replace(/^\\\\\?\\/, "")
+    .replace(/\\/g, "/")
+    .replace(/\/+/g, "/")
+    .toLowerCase();
+
+const videoIdentityKey = (file: Pick<VideoFile, "path" | "name">) =>
+  normalizeVideoIdentity(file.path || file.name);
+
+const videoNameKey = (file: Pick<VideoFile, "name">) => normalizeVideoIdentity(file.name);
+
+const sizesMatch = (a?: number, b?: number) =>
+  !Number.isFinite(a) || !Number.isFinite(b) || a === b;
+
+const mergeVideoFiles = (files: VideoFile[]) => {
+  const merged: VideoFile[] = [];
+  const indexByKey = new Map<string, number>();
+  const indexesByName = new Map<string, number[]>();
+
+  for (const file of files) {
+    const key = videoIdentityKey(file);
+    const nameKey = videoNameKey(file);
+    const existingIndex =
+      indexByKey.get(key) ??
+      indexesByName.get(nameKey)?.find((index) => sizesMatch(merged[index]?.size, file.size));
+    if (existingIndex === undefined) {
+      indexByKey.set(key, merged.length);
+      indexesByName.set(nameKey, [...(indexesByName.get(nameKey) || []), merged.length]);
+      merged.push(file);
+    } else {
+      const existing = merged[existingIndex];
+      merged[existingIndex] = {
+        ...existing,
+        ...file,
+        id: existing.id,
+      };
+      indexByKey.set(key, existingIndex);
+    }
+  }
+
+  return merged;
+};
+
+const mergeVideoFile = (existing: VideoFile | undefined, next: VideoFile) =>
+  existing ? mergeVideoFiles([existing, next])[0] : next;
+
 export function VideosTab({
   files,
   sourceFolder,
@@ -80,10 +127,6 @@ export function VideosTab({
 }: VideosTabProps) {
   const videoExtensions = VIDEO_EXTENSIONS.map((ext) => ext.toLowerCase());
   const [videoExtension, setVideoExtension] = useState("all");
-  const [recursiveScan, setRecursiveScan] = useState(false);
-  const [includePatterns, setIncludePatterns] = useState("");
-  const [excludePatterns, setExcludePatterns] = useState("");
-  const [ignorePatterns, setIgnorePatterns] = useState("");
   const [durationFps, setDurationFps] = useState("default");
   const [isModifyTracksOpen, setIsModifyTracksOpen] = useState(false);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
@@ -166,7 +209,7 @@ export function VideosTab({
 
   const updateFiles = useCallback((next: VideoFile[]) => {
     startTransition(() => {
-      onFilesChange(next);
+      onFilesChange(mergeVideoFiles(next));
     });
   }, [onFilesChange]);
 
@@ -263,8 +306,8 @@ export function VideosTab({
     if (videoPaths.length === 0) return;
 
     // Deduplicate against existing files
-    const existingPaths = new Set(files.map((f) => f.path));
-    const newPaths = videoPaths.filter((p) => !existingPaths.has(p));
+    const existingPaths = new Set(files.map((file) => normalizeVideoIdentity(file.path)));
+    const newPaths = videoPaths.filter((path) => !existingPaths.has(normalizeVideoIdentity(path)));
     if (newPaths.length === 0) return;
 
     dropTokenRef.current += 1;
@@ -284,7 +327,7 @@ export function VideosTab({
     updateFiles(combined);
 
     // Now inspect them to fill in tracks/duration/fps/size
-    const byPath = new Map(combined.map((f) => [f.path, f]));
+    const byPath = new Map(combined.map((file) => [videoIdentityKey(file), file]));
     const streamId = `drop-${dropToken}`;
 
     let resolveDone: () => void = () => undefined;
@@ -293,7 +336,9 @@ export function VideosTab({
     const unlistenChunk = await listenInspectPathsStreamChunk((payload) => {
       if (payload.scanId !== streamId) return;
       for (const item of payload.items as VideoFile[]) {
-        byPath.set(item.path, item);
+        const key = videoIdentityKey(item);
+        const existing = byPath.get(key);
+        byPath.set(key, mergeVideoFile(existing, item));
       }
       updateFiles(Array.from(byPath.values()));
     });
@@ -403,25 +448,22 @@ export function VideosTab({
       const results = (await scanMedia({
         folder: folderPath,
         extensions,
-        recursive: recursiveScan,
-        include_patterns: includePatterns.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean),
-        exclude_patterns: excludePatterns.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean),
-        ignore_patterns: ignorePatterns.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean),
+        recursive: false,
         type: "video",
         include_tracks: false,
       })) as VideoFile[];
       const normalizedExtensions = new Set(extensions.map((ext) => ext.toLowerCase()));
-      let currentFiles = results.filter((file) => {
+      let currentFiles = mergeVideoFiles(results.filter((file) => {
         const ext = file.path.split(".").pop()?.toLowerCase();
         return ext ? normalizedExtensions.has(ext) : false;
-      });
+      }));
       if (scanAbortRef.current || scanTokenRef.current !== scanToken) return;
       updateFiles(currentFiles);
 
       const paths = currentFiles.map((file) => file.path);
       setScanProgress({ current: 0, total: paths.length });
 
-      const byPath = new Map(currentFiles.map((file) => [file.path, file]));
+      const byPath = new Map(currentFiles.map((file) => [videoIdentityKey(file), file]));
       let processed = 0;
       let updateQueued = false;
       const queueUiUpdate = () => {
@@ -452,7 +494,9 @@ export function VideosTab({
           firstChunkAt = typeof performance !== "undefined" ? performance.now() : Date.now();
         }
         for (const item of payload.items as VideoFile[]) {
-          byPath.set(item.path, item);
+          const key = videoIdentityKey(item);
+          const existing = byPath.get(key);
+          byPath.set(key, mergeVideoFile(existing, item));
         }
         processed = payload.processed;
         queueUiUpdate();
@@ -628,17 +672,6 @@ export function VideosTab({
             </Select>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id="video-recursive-scan"
-              checked={recursiveScan}
-              onCheckedChange={(checked) => setRecursiveScan(checked as boolean)}
-            />
-            <label htmlFor="video-recursive-scan" className="text-sm text-muted-foreground cursor-pointer">
-              Recursive
-            </label>
-          </div>
-
           <div className="flex-1" />
 
           <div className="flex items-center gap-2">
@@ -654,26 +687,6 @@ export function VideosTab({
               Media Info
             </Button>
           </div>
-        </div>
-        <div className="grid grid-cols-3 gap-3 mt-3">
-          <TextField
-            value={includePatterns}
-            onChange={(event) => setIncludePatterns(event.target.value)}
-            placeholder="Include patterns, e.g. *E01*,Season 01/*"
-            className="h-8 text-xs"
-          />
-          <TextField
-            value={excludePatterns}
-            onChange={(event) => setExcludePatterns(event.target.value)}
-            placeholder="Exclude patterns, e.g. *sample*,*trailer*"
-            className="h-8 text-xs"
-          />
-          <TextField
-            value={ignorePatterns}
-            onChange={(event) => setIgnorePatterns(event.target.value)}
-            placeholder="Ignore folders/files, e.g. @eaDir,node_modules"
-            className="h-8 text-xs"
-          />
         </div>
       </div>
 
