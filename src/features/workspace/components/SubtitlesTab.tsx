@@ -162,7 +162,10 @@ export function SubtitlesTab({
     const primaryTracks = videoFiles[0]?.tracks || [];
     const trackCount =
       primaryTracks.length || Math.max(0, ...videoFiles.map((video) => video.tracks?.length || 0));
-    const options = [{ value: "audio", label: "Audio" }];
+    const options = [
+      { value: "subtitle-first", label: "First subtitle track" },
+      { value: "audio", label: "After audio tracks" },
+    ];
     for (let i = 1; i <= trackCount; i += 1) {
       const track = primaryTracks[i - 1];
       const trackLabel = track
@@ -1368,9 +1371,10 @@ export function SubtitlesTab({
           }
         }}
         title="Edit Subtitle Track"
-        subtitle={editingFile?.name || "Update subtitle track settings."}
+        subtitle="Update subtitle track settings."
         icon={<FileText className="w-5 h-5 text-primary" />}
-        className="max-w-lg"
+        className="max-w-3xl"
+        bodyClassName="max-h-[72vh] overflow-y-auto px-5 py-4"
         footerRight={
           <>
             <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setEditDialogOpen(false)}>
@@ -1380,7 +1384,16 @@ export function SubtitlesTab({
           </>
         }
       >
-        <div className="space-y-3">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Source File</label>
+            <div
+              className="h-9 px-3 flex items-center rounded-md border border-panel-border/50 bg-panel-header/60 text-sm text-foreground truncate"
+              title={editingFile?.name || ""}
+            >
+              {editingFile?.name || "—"}
+            </div>
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-muted-foreground">Language</label>
@@ -1408,7 +1421,7 @@ export function SubtitlesTab({
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Mux After</label>
+              <label className="text-xs font-medium text-muted-foreground">Track Order</label>
               <Select
                 value={editForm.muxAfter}
                 onValueChange={(value) => setEditForm((prev) => ({ ...prev, muxAfter: value }))}
@@ -1427,11 +1440,11 @@ export function SubtitlesTab({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] items-start gap-3">
-            <div className="rounded-md border border-panel-border/60 bg-panel/40 px-3 py-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Track Flags</div>
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                <label className="inline-flex items-center gap-3 cursor-pointer">
+          <div className="grid grid-cols-1 md:grid-cols-2 items-stretch gap-3">
+            <div className="rounded-md border border-panel-border/60 bg-panel/40 px-4 py-3 space-y-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Track Flags</div>
+              <div className="space-y-3">
+                <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer">
                   <Checkbox
                     id="sub-edit-default"
                     checked={editForm.isDefault}
@@ -1439,9 +1452,14 @@ export function SubtitlesTab({
                       setEditForm((prev) => ({ ...prev, isDefault: checked as boolean }))
                     }
                   />
-                  <span className="text-sm">Default</span>
+                  <div className="min-w-0">
+                    <span className="block text-sm font-medium">Default subtitle</span>
+                    <span className="block text-[11px] leading-snug text-muted-foreground">
+                      Marks the first included subtitle track as default.
+                    </span>
+                  </div>
                 </label>
-                <label className="inline-flex items-center gap-3 cursor-pointer">
+                <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer">
                   <Checkbox
                     id="sub-edit-forced"
                     checked={editForm.isForced}
@@ -1449,7 +1467,30 @@ export function SubtitlesTab({
                       setEditForm((prev) => ({ ...prev, isForced: checked as boolean }))
                     }
                   />
-                  <span className="text-sm">Forced</span>
+                  <div className="min-w-0">
+                    <span className="block text-sm font-medium">Forced subtitle</span>
+                    <span className="block text-[11px] leading-snug text-muted-foreground">
+                      Mark copied subtitle tracks as forced display.
+                    </span>
+                  </div>
+                </label>
+                <label className="flex items-start gap-3 rounded-md border border-primary/35 bg-primary/10 px-3 py-2 cursor-pointer">
+                  <Checkbox
+                    checked={editForm.muxAfter === "subtitle-first" && editForm.isDefault}
+                    onCheckedChange={(checked) =>
+                      setEditForm((prev) => ({
+                        ...prev,
+                        isDefault: checked ? true : prev.isDefault,
+                        muxAfter: checked ? "subtitle-first" : prev.muxAfter === "subtitle-first" ? "audio" : prev.muxAfter,
+                      }))
+                    }
+                  />
+                  <div className="min-w-0">
+                    <span className="block text-sm font-medium">First + default subtitle</span>
+                    <span className="block text-[11px] leading-snug text-muted-foreground">
+                      Place this subtitle before existing subtitles and make the first included track default.
+                    </span>
+                  </div>
                 </label>
               </div>
             </div>

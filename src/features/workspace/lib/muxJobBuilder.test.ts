@@ -27,6 +27,20 @@ const makeAudio = (id: string, name: string, matchedVideoId?: string): ExternalF
   matchedVideoId,
 });
 
+const makeSubtitle = (
+  id: string,
+  name: string,
+  matchedVideoId?: string,
+  muxAfter?: string,
+): ExternalFile => ({
+  id,
+  name,
+  path: `/subtitles/${name}`,
+  type: "subtitle",
+  matchedVideoId,
+  muxAfter,
+});
+
 const makeAttachment = (id: string, name: string): ExternalFile => ({
   id,
   name,
@@ -110,5 +124,26 @@ describe("buildMuxJobRequests", () => {
     expect(requests[0].attachments.map((file) => file.id)).toEqual(["att1", "att2"]);
     expect(requests[1].attachments.map((file) => file.id)).toEqual(["att1", "att2"]);
     expect(requests[0].attachments.every((file) => file.source === "bulk")).toBe(true);
+  });
+
+  it("orders subtitle-first files before regular subtitle files", () => {
+    const video = makeVideo("v1", "Show.S01E01.mkv");
+
+    const requests = buildMuxJobRequests({
+      videoFiles: [video],
+      jobs: [makeQueuedJob(video)],
+      audioFilesByTrack: {},
+      subtitleFilesByTrack: {
+        "1": [
+          makeSubtitle("regular", "Show.S01E01.Regular.ass", "v1", "audio"),
+          makeSubtitle("first", "Show.S01E01.Signs.ass", "v1", "subtitle-first"),
+        ],
+      },
+      chapterFiles: [],
+      attachmentFiles: [],
+      perVideoExternal: {},
+    });
+
+    expect(requests[0].subtitles.map((subtitle) => subtitle.id)).toEqual(["first", "regular"]);
   });
 });

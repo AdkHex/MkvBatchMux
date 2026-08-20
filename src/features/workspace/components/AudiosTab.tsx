@@ -167,6 +167,9 @@ export function AudiosTab({
     includedTrackIds: [] as number[],
     includeSubtitles: false,
     includedSubtitleTrackIds: [] as number[],
+    includedSubtitlesDefault: false,
+    includedSubtitlesForced: false,
+    includedSubtitlesFirst: false,
   });
 
   const currentConfig = audioTrackConfigs[activeAudioTrack] || defaultTrackConfig;
@@ -403,6 +406,9 @@ export function AudiosTab({
         file.includedSubtitleTrackIds !== undefined
           ? [...file.includedSubtitleTrackIds]
           : getSubtitleTrackIds(file),
+      includedSubtitlesDefault: file.includedSubtitlesDefault || false,
+      includedSubtitlesForced: file.includedSubtitlesForced || false,
+      includedSubtitlesFirst: file.includedSubtitlesFirst || false,
     });
     setEditDialogOpen(true);
   };
@@ -469,6 +475,9 @@ export function AudiosTab({
           includedTrackIds: fileAudioTracks.length > 0 ? newAudioIds : file.includedTrackIds,
           includeSubtitles: editForm.includeSubtitles,
           includedSubtitleTrackIds: fileSubTracks.length > 0 ? newSubIds : file.includedSubtitleTrackIds,
+          includedSubtitlesDefault: editForm.includeSubtitles && editForm.includedSubtitlesDefault,
+          includedSubtitlesForced: editForm.includeSubtitles && editForm.includedSubtitlesForced,
+          includedSubtitlesFirst: editForm.includeSubtitles && editForm.includedSubtitlesFirst,
           isManuallyEdited: true,
         };
       });
@@ -493,6 +502,9 @@ export function AudiosTab({
           includedTrackIds: editForm.includedTrackIds,
           includeSubtitles: editForm.includeSubtitles,
           includedSubtitleTrackIds: editForm.includedSubtitleTrackIds,
+          includedSubtitlesDefault: editForm.includeSubtitles && editForm.includedSubtitlesDefault,
+          includedSubtitlesForced: editForm.includeSubtitles && editForm.includedSubtitlesForced,
+          includedSubtitlesFirst: editForm.includeSubtitles && editForm.includedSubtitlesFirst,
           trackOverrides: file.trackOverrides,
           isManuallyEdited: true,
         };
@@ -513,6 +525,9 @@ export function AudiosTab({
           includedTrackIds: [...editForm.includedTrackIds],
           includeSubtitles: editForm.includeSubtitles,
           includedSubtitleTrackIds: [...editForm.includedSubtitleTrackIds],
+          includedSubtitlesDefault: editForm.includeSubtitles && editForm.includedSubtitlesDefault,
+          includedSubtitlesForced: editForm.includeSubtitles && editForm.includedSubtitlesForced,
+          includedSubtitlesFirst: editForm.includeSubtitles && editForm.includedSubtitlesFirst,
           trackOverrides: { ...(file.trackOverrides || {}) },
           isManuallyEdited: true,
         };
@@ -1424,7 +1439,8 @@ export function AudiosTab({
         title="Edit Audio Track"
         subtitle="Update audio track settings."
         icon={<AudioLines className="w-5 h-5 text-primary" />}
-        className="max-w-lg"
+        className="max-w-3xl"
+        bodyClassName="max-h-[72vh] overflow-y-auto px-5 py-4"
         footerRight={
           <>
             <Button
@@ -1494,11 +1510,11 @@ export function AudiosTab({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] items-start gap-3">
-            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 items-stretch gap-3">
+            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Track Flags</div>
-              <div className="flex flex-wrap items-start gap-x-5 gap-y-2">
-                <label className="inline-flex items-center gap-3 cursor-pointer">
+              <div className="space-y-3">
+                <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer">
                   <Checkbox
                     id="audio-edit-default"
                     checked={editForm.isDefault}
@@ -1506,9 +1522,14 @@ export function AudiosTab({
                       setEditForm((prev) => ({ ...prev, isDefault: checked as boolean }))
                     }
                   />
-                  <span className="text-sm">Default</span>
+                  <div className="min-w-0">
+                    <span className="block text-sm font-medium">Default audio</span>
+                    <span className="block text-[11px] leading-snug text-muted-foreground">
+                      Marks the first included audio track as default.
+                    </span>
+                  </div>
                 </label>
-                <div className="inline-flex items-start gap-3">
+                <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer">
                   <Checkbox
                     id="audio-edit-forced"
                     checked={editForm.isForced}
@@ -1516,15 +1537,13 @@ export function AudiosTab({
                       setEditForm((prev) => ({ ...prev, isForced: checked as boolean }))
                     }
                   />
-                  <div className="flex flex-col">
-                    <label htmlFor="audio-edit-forced" className="text-sm cursor-pointer">
-                      Forced
-                    </label>
-                    <span className="max-w-[190px] text-[11px] leading-tight text-muted-foreground">
+                  <div className="min-w-0">
+                    <span className="block text-sm font-medium">Forced audio</span>
+                    <span className="block text-[11px] leading-snug text-muted-foreground">
                       Rare for audio; some players may ignore.
                     </span>
                   </div>
-                </div>
+                </label>
               </div>
             </div>
             <div className="rounded-md border border-panel-border/50 bg-panel-header/30 px-4 py-3 space-y-2">
@@ -1547,12 +1566,12 @@ export function AudiosTab({
                     setEditForm((prev) => ({ ...prev, applyToAllFiles: checked as boolean }))
                   }
                 />
-                <div className="flex flex-col">
-                  <span className="text-sm">Apply to all files</span>
-                  <span className="text-[11px] text-muted-foreground leading-tight">Track selection applied by position</span>
-                </div>
-              </label>
-            </div>
+                  <div className="min-w-0">
+                    <span className="block text-sm">Apply to all files</span>
+                    <span className="block text-[11px] text-muted-foreground leading-tight">Track selection applied by position</span>
+                  </div>
+                </label>
+              </div>
           </div>
 
           {editingFile?.tracks && editingFile.tracks.length > 0 && (
@@ -1676,36 +1695,92 @@ export function AudiosTab({
                       >
                         Copy All
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-                        onClick={() =>
-                          setEditForm((prev) => ({
-                            ...prev,
-                            includeSubtitles: false,
-                            includedSubtitleTrackIds: [],
-                          }))
-                        }
-                      >
+	                      <Button
+	                        variant="ghost"
+	                        size="sm"
+	                        className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+	                        onClick={() =>
+	                          setEditForm((prev) => ({
+	                            ...prev,
+	                            includeSubtitles: false,
+	                            includedSubtitleTrackIds: [],
+	                            includedSubtitlesDefault: false,
+	                            includedSubtitlesForced: false,
+	                            includedSubtitlesFirst: false,
+	                          }))
+	                        }
+	                      >
                         Uncopy All
                       </Button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Checkbox
-                      checked={editForm.includeSubtitles}
-                      onCheckedChange={(value) =>
-                        setEditForm((prev) => ({
-                          ...prev,
-                          includeSubtitles: value as boolean,
-                          includedSubtitleTrackIds: value
-                            ? getSubtitleTrackIds(editingFile)
-                            : [],
-                        }))
-                      }
-                    />
-                    Include subtitle tracks from this file
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer">
+                      <Checkbox
+                        checked={editForm.includeSubtitles}
+                        onCheckedChange={(value) =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            includeSubtitles: value as boolean,
+                            includedSubtitleTrackIds: value
+                              ? getSubtitleTrackIds(editingFile)
+                              : [],
+                            includedSubtitlesDefault: value ? prev.includedSubtitlesDefault : false,
+                            includedSubtitlesForced: value ? prev.includedSubtitlesForced : false,
+                            includedSubtitlesFirst: value ? prev.includedSubtitlesFirst : false,
+                          }))
+                        }
+                      />
+                      <div className="min-w-0">
+                        <span className="block text-sm font-medium">Include subtitles</span>
+                        <span className="block text-[11px] leading-snug text-muted-foreground">
+                          Copy subtitle tracks embedded in this audio file.
+                        </span>
+                      </div>
+                    </label>
+                    <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer">
+                      <Checkbox
+                        checked={editForm.includedSubtitlesFirst && editForm.includedSubtitlesDefault}
+                        onCheckedChange={(value) =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            includeSubtitles: true,
+                            includedSubtitleTrackIds: prev.includedSubtitleTrackIds.length
+                              ? prev.includedSubtitleTrackIds
+                              : getSubtitleTrackIds(editingFile),
+                            includedSubtitlesFirst: value as boolean,
+                            includedSubtitlesDefault: value as boolean,
+                          }))
+                        }
+                      />
+                      <div className="min-w-0">
+                        <span className="block text-sm font-medium">First + default subtitle</span>
+                        <span className="block text-[11px] leading-snug text-muted-foreground">
+                          Put copied subtitles before existing subtitles and make the first one default.
+                        </span>
+                      </div>
+                    </label>
+                    <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer md:col-span-2">
+                      <Checkbox
+                        checked={editForm.includedSubtitlesForced}
+                        onCheckedChange={(value) =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            includeSubtitles: true,
+                            includedSubtitleTrackIds: prev.includedSubtitleTrackIds.length
+                              ? prev.includedSubtitleTrackIds
+                              : getSubtitleTrackIds(editingFile),
+                            includedSubtitlesForced: value as boolean,
+                          }))
+                        }
+                      />
+                      <div className="min-w-0">
+                        <span className="block text-sm font-medium">Forced copied subtitles</span>
+                        <span className="block text-[11px] leading-snug text-muted-foreground">
+                          Mark copied subtitle tracks as forced display tracks.
+                        </span>
+                      </div>
+                    </label>
                   </div>
                   <div className="space-y-2">
                     {editingFile.tracks

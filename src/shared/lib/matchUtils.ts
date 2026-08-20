@@ -18,11 +18,39 @@ const EPISODE_PATTERNS: RegExp[] = [
   /[[(](\d{1,4})[\])]/,                              // [05] or (05)
 ];
 
-// Resolutions & codec numbers we should NOT confuse with episode numbers
+/**
+ * Numbers that are never a plausible episode number on their own.
+ * Deliberately limited to resolutions and codec identifiers.
+ *
+ * Frame rates and small values (10, 24, 25, 30, 50, 60...) are NOT listed:
+ * they are extremely common episode numbers, and excluding them made episodes
+ * 10/24/25/30/50/60 unmatchable. Frame-rate and resolution tokens are instead
+ * rejected contextually by TECHNICAL_TOKEN below, which looks at the suffix
+ * attached to the number (1080p, x264, 23.976fps, 5.1ch ...).
+ */
 const NON_EPISODE_NUMBERS = new Set([
-  240, 360, 480, 540, 720, 1080, 1440, 2160, 4096, 4320,
-  264, 265, 10, 23, 24, 25, 29, 30, 48, 50, 60, 120,
+  240, 360, 480, 540, 720, 1080, 1440, 2160, 4096, 4320, 264, 265,
 ]);
+
+/**
+ * Matches a number that is part of a technical tag rather than an episode
+ * number, e.g. "1080p", "x264", "H.265", "23.976fps", "10bit", "5.1ch",
+ * "AAC2.0", "8bit". Applied to the raw filename around a candidate number.
+ */
+const TECHNICAL_TOKEN =
+  /(?:^|[^a-z0-9])(?:x|h|hevc|avc)[\s._-]?\d{3,4}|\d+(?:\.\d+)?\s*(?:p|i|fps|hz|bit|ch|khz|kbps|mbps)(?:$|[^a-z0-9])/i;
+
+/**
+ * True when the number at `matchIndex` in `name` is glued to a technical
+ * suffix/prefix (resolution, codec, frame rate, channel count).
+ */
+function isTechnicalContext(name: string, matchIndex: number, raw: string): boolean {
+  // Look at a small window around the match so "1080p"/"x264"/"23.976fps" are
+  // recognised while a bare " - 24 " episode marker is not.
+  const start = Math.max(0, matchIndex - 6);
+  const window = name.slice(start, matchIndex + raw.length + 5);
+  return TECHNICAL_TOKEN.test(window);
+}
 
 /**
  * Extract the episode/sequence number from a filename.
@@ -32,27 +60,34 @@ export function extractEpisodeNumber(filename: string): number | null {
   // Strip file extension
   const name = filename.replace(/\.[^.]+$/, "");
 
-  // Try explicit patterns first (unambiguous)
+  // Try explicit patterns first (unambiguous). These carry their own episode
+  // marker (S01E24, "EP24", "第24話"), so a technical-context check is not
+  // needed and would wrongly reject e.g. "S01E24.1080p".
   for (const pattern of EPISODE_PATTERNS) {
     const m = name.match(pattern);
     if (m?.[1]) {
       const n = parseInt(m[1], 10);
-      if (!isNaN(n) && n > 0 && n < 10000 && !NON_EPISODE_NUMBERS.has(n)) {
+      if (!isNaN(n) && n > 0 && n < 10000) {
         return n;
       }
     }
   }
 
-  // Fallback: look for a standalone 2–3 digit number that isn't a resolution/codec
-  // Split on common separators and scan from the end (more likely to be ep number)
-  const parts = name.split(/[\s._[\](){},-]+/).reverse();
-  for (const part of parts) {
-    if (/^\d{2,3}$/.test(part)) {
-      const n = parseInt(part, 10);
-      if (n > 0 && !NON_EPISODE_NUMBERS.has(n)) {
-        return n;
-      }
-    }
+  // Fallback: a standalone 2–3 digit number that is not a resolution/codec and
+  // is not glued to a technical suffix (1080p, x264, 23.976fps, 10bit, 5.1ch).
+  // Scan from the end -- trailing numbers are more likely to be episode numbers.
+  const separator = /[\s._[\](){},-]+/;
+  const parts = name.split(separator);
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i];
+    if (!/^\d{2,3}$/.test(part)) continue;
+    const n = parseInt(part, 10);
+    if (n <= 0 || NON_EPISODE_NUMBERS.has(n)) continue;
+
+    const matchIndex = name.indexOf(part);
+    if (matchIndex >= 0 && isTechnicalContext(name, matchIndex, part)) continue;
+
+    return n;
   }
 
   return null;
@@ -147,7 +182,11 @@ export function matchExternalToVideos(
         if (!assignedVideoIds.has(backward.id)) return backward.id;
       }
     }
-    return preferred?.id;
+    // Every video is already claimed. Returning `preferred` here would hand the
+    // same video to two external files, so the extra file stays unmatched and
+    // surfaces in the UI as unlinked rather than silently muxing into the wrong
+    // episode.
+    return undefined;
   };
 
   return externalFiles.map((file, index) => {

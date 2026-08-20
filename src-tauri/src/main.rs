@@ -25,6 +25,9 @@ const MAX_PARALLEL_JOBS: usize = 16;
 static MEDIAINFO_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static MKVMERGE_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static FILE_INFO_CACHE: OnceLock<Mutex<HashMap<String, serde_json::Value>>> = OnceLock::new();
+/// Monotonic counter making temporary output filenames unique even when two
+/// parallel jobs read the same clock value.
+static TEMP_OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Preset {
@@ -166,10 +169,16 @@ struct ExternalFileInfo {
     tracks: Vec<TrackInfo>,
     #[serde(rename = "includedTrackIds", default)]
     included_track_ids: Option<Vec<u64>>,
-    #[serde(rename = "includeSubtitles")]
+    #[serde(rename = "includeSubtitles", default)]
     include_subtitles: Option<bool>,
     #[serde(rename = "includedSubtitleTrackIds", default)]
     included_subtitle_track_ids: Option<Vec<u64>>,
+    #[serde(rename = "includedSubtitlesDefault", default)]
+    included_subtitles_default: Option<bool>,
+    #[serde(rename = "includedSubtitlesForced", default)]
+    included_subtitles_forced: Option<bool>,
+    #[serde(rename = "includedSubtitlesFirst", default)]
+    included_subtitles_first: Option<bool>,
     #[serde(rename = "trackOverrides", default)]
     track_overrides: HashMap<String, TrackOverride>,
     #[serde(skip)]
@@ -334,6 +343,35 @@ struct AppState {
     paths: AppPaths,
     mux_state: Arc<Mutex<MuxState>>,
     cancelled_scans: Arc<Mutex<HashSet<String>>>,
+}
+
+/// Lock a mutex, recovering the guard if a previous holder panicked.
+///
+/// The muxing state is plain data (flags, a queue, child handles); a panic
+/// elsewhere does not leave it logically corrupt. Previously every call site
+/// used `.lock().unwrap()`, so a single panic poisoned the mutex and made every
+/// later command -- including pause and stop -- panic too, permanently bricking
+/// the app. Recovering the guard degrades gracefully instead.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+impl AppState {
+    fn mux(&self) -> std::sync::MutexGuard<'_, MuxState> {
+        lock_or_recover(&self.mux_state)
+    }
+
+    fn scans(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        lock_or_recover(&self.cancelled_scans)
+    }
+
+    /// Read the stop flag without holding the lock afterwards.
+    fn stop_requested(&self) -> bool {
+        self.mux().stop
+    }
 }
 
 impl Default for MuxState {
@@ -1004,11 +1042,11 @@ fn scan_files(request: &ScanRequest) -> Result<Vec<PathBuf>, String> {
 }
 
 fn scan_cancelled(state: &AppState, scan_id: &str) -> bool {
-    state.cancelled_scans.lock().unwrap().contains(scan_id)
+    state.scans().contains(scan_id)
 }
 
 fn clear_scan_cancel(state: &AppState, scan_id: &str) {
-    state.cancelled_scans.lock().unwrap().remove(scan_id);
+    state.scans().remove(scan_id);
 }
 
 fn build_file_info(
@@ -1194,6 +1232,9 @@ fn build_file_info(
             included_track_ids: None,
             include_subtitles: None,
             included_subtitle_track_ids: None,
+            included_subtitles_default: None,
+            included_subtitles_forced: None,
+            included_subtitles_first: None,
             track_overrides: HashMap::new(),
             apply_language: true,
         };
@@ -1346,20 +1387,29 @@ fn inspect_paths_stream(
 
 #[tauri::command]
 fn cancel_scan(state: State<AppState>, scan_id: String) -> Result<(), String> {
-    state.cancelled_scans.lock().unwrap().insert(scan_id);
+    state.scans().insert(scan_id);
     Ok(())
 }
 
+/// Serializes all log writes. Up to MAX_PARALLEL_JOBS worker threads plus their
+/// stdout/stderr readers append to one file; without this lock their lines
+/// interleave mid-line and the log becomes unparseable.
+static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
 fn write_log_line(paths: &AppPaths, line: &str) -> Result<(), String> {
+    let _guard = lock_or_recover(&LOG_WRITE_LOCK);
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&paths.log_path)
         .map_err(|e| format!("Failed to open log file: {e}"))?;
-    writeln!(file, "{line}").map_err(|e| format!("Failed to write log: {e}"))
+    // Single write_all so the line and its newline reach the file together.
+    file.write_all(format!("{line}\n").as_bytes())
+        .map_err(|e| format!("Failed to write log: {e}"))
 }
 
 fn clear_log(paths: &AppPaths) -> Result<(), String> {
+    let _guard = lock_or_recover(&LOG_WRITE_LOCK);
     File::create(&paths.log_path).map_err(|e| format!("Failed to create log file: {e}"))?;
     Ok(())
 }
@@ -1384,11 +1434,16 @@ fn get_output_paths(job: &MuxJobRequest, settings: &MuxSettings) -> (PathBuf, Pa
     let overwrite_mode = settings.destination_dir.trim().is_empty() || settings.overwrite_source;
 
     if overwrite_mode {
-        let suffix = SystemTime::now()
+        // Nanosecond clock PLUS a per-process monotonic counter. Second-level
+        // resolution let two parallel jobs with the same output stem pick the
+        // same temp path and corrupt each other; even nanoseconds alone can
+        // repeat on coarse clocks, so the counter guarantees uniqueness.
+        let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::from_secs(0))
-            .as_secs();
-        let temp_name = format!("{}#{}{}.mkv", output_stem, suffix, "");
+            .as_nanos();
+        let sequence = TEMP_OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp_name = format!("{}#{}-{}.mkv", output_stem, nanos, sequence);
         let output_path = output_dir.join(temp_name);
         let final_path = output_dir.join(format!("{}.mkv", output_stem));
         (output_path, final_path, true)
@@ -1537,13 +1592,20 @@ fn emit_job_error(
 }
 
 fn abort_mux_queue(state: &AppState) {
-    let mut mux_state = state.mux_state.lock().unwrap();
-    mux_state.stop = true;
-    mux_state.pause = false;
-    for (_, handle) in mux_state.children.drain() {
-        if let Ok(mut child) = handle.lock() {
-            let _ = child.kill();
-        }
+    // Drain the child handles while holding the state lock, then RELEASE it
+    // before killing anything. Killing while holding mux_state inverts the lock
+    // order used by wait_for_child_or_stop and deadlocks the UI.
+    let handles: Vec<Arc<Mutex<Child>>> = {
+        let mut mux_state = state.mux();
+        mux_state.stop = true;
+        mux_state.pause = false;
+        mux_state.queue.clear();
+        mux_state.children.drain().map(|(_, handle)| handle).collect()
+    };
+
+    for handle in handles {
+        let mut child = lock_or_recover(&handle);
+        let _ = child.kill();
     }
 }
 
@@ -2109,12 +2171,22 @@ fn build_mkvmerge_command(
         if resolved_ids.is_empty() {
             continue;
         }
-        for track_id in resolved_ids.iter() {
+        let set_default_on_first = audio.included_subtitles_default.unwrap_or(false);
+        let set_forced = audio.included_subtitles_forced.unwrap_or(false);
+        let place_first = audio.included_subtitles_first.unwrap_or(false);
+        for (index, track_id) in resolved_ids.iter().enumerate() {
             let mut cloned = audio.clone();
             cloned.track_id = Some(*track_id);
             cloned.apply_language = false;
-            cloned.is_default = None;
-            cloned.is_forced = None;
+            cloned.is_default = if set_default_on_first {
+                Some(index == 0)
+            } else {
+                None
+            };
+            cloned.is_forced = if set_forced { Some(true) } else { None };
+            if place_first {
+                cloned.mux_after = Some("subtitle-first".to_string());
+            }
             resolved_external_subtitles_from_audio.push((cloned, *track_id));
         }
     }
@@ -2149,6 +2221,7 @@ fn build_mkvmerge_command(
 
     let external_subtitle_default = resolved_external_subtitles
         .iter()
+        .chain(resolved_external_subtitles_from_audio.iter())
         .any(|(subtitle, _)| subtitle.is_default.unwrap_or(false));
     if external_subtitle_default {
         for (index, track) in job.video.tracks.iter().enumerate() {
@@ -2301,10 +2374,7 @@ fn build_mkvmerge_command(
             order.push(format!("0:{}", id));
         }
 
-        for id in source_subtitle_tracks {
-            order.push(format!("0:{}", id));
-        }
-
+        let mut first_subtitle_entries: Vec<String> = Vec::new();
         let mut bulk_subtitle_entries: Vec<String> = Vec::new();
         let mut per_video_subtitle_entries: Vec<String> = Vec::new();
         let all_subtitles: Vec<(ExternalFileInfo, u64)> = resolved_external_subtitles
@@ -2315,12 +2385,21 @@ fn build_mkvmerge_command(
         for (subtitle, track_id) in &all_subtitles {
             let entry = format!("{}:{}", file_index, track_id);
             let is_per_video = subtitle.source.as_deref() == Some("per-file");
-            if is_per_video {
+            if subtitle.mux_after.as_deref() == Some("subtitle-first") {
+                first_subtitle_entries.push(entry);
+            } else if is_per_video {
                 per_video_subtitle_entries.push(entry);
             } else {
                 bulk_subtitle_entries.push(entry);
             }
             file_index += 1;
+        }
+        // Subtitle order: externals explicitly flagged "place first" win, then the
+        // source file's own subtitle tracks, then bulk externals, then per-video
+        // externals. Only tracks the user flagged may precede source subtitles.
+        order.extend(first_subtitle_entries);
+        for id in source_subtitle_tracks {
+            order.push(format!("0:{}", id));
         }
         order.extend(bulk_subtitle_entries);
         order.extend(per_video_subtitle_entries);
@@ -2528,7 +2607,7 @@ fn run_command_with_logs(
 
     let handle = Arc::new(Mutex::new(child));
     {
-        let mut mux_state = state.mux_state.lock().unwrap();
+        let mut mux_state = state.mux();
         mux_state.children.insert(job.id.clone(), handle.clone());
     }
 
@@ -2546,29 +2625,35 @@ fn emit_progress(app: &AppHandle, event: MuxProgressEvent) {
     let _ = app.emit_all("mux-progress", event);
 }
 
+/// Wait for a child process, killing it if a stop was requested.
+///
+/// Lock discipline: the mux_state lock is ALWAYS released before the child
+/// handle is locked, and the two are never held simultaneously. `abort_mux_queue`
+/// follows the same rule. Previously this function held mux_state while taking
+/// the child lock, while abort_mux_queue did the same in the opposite effective
+/// order, so pressing Stop while a worker sat in `try_wait` deadlocked the app.
 fn wait_for_child_or_stop(handle: Arc<Mutex<Child>>, state: &AppState) -> Option<i32> {
     loop {
-        {
-            let mux_state = state.mux_state.lock().unwrap();
-            if mux_state.stop {
-                drop(mux_state);
-                if let Ok(mut child) = handle.lock() {
-                    let _ = child.kill();
-                }
-            }
+        // Read the flag and drop the guard immediately -- never hold it across
+        // a child-handle lock.
+        let should_stop = state.stop_requested();
+        if should_stop {
+            let mut child = lock_or_recover(&handle);
+            let _ = child.kill();
+            // Reap the killed process so it does not linger as a zombie.
+            return match child.wait() {
+                Ok(status) => status.code(),
+                Err(_) => None,
+            };
         }
 
-        let status = {
-            let mut child = handle.lock().unwrap();
+        {
+            let mut child = lock_or_recover(&handle);
             match child.try_wait() {
                 Ok(Some(status)) => return status.code(),
-                Ok(None) => None,
+                Ok(None) => {}
                 Err(_) => return None,
             }
-        };
-
-        if status.is_some() {
-            return status;
         }
 
         thread::sleep(Duration::from_millis(200));
@@ -2585,7 +2670,7 @@ fn parse_progress(line: &str) -> Option<u8> {
 }
 
 fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: MuxJobRequest) {
-    if state.mux_state.lock().unwrap().stop {
+    if state.mux().stop {
         return;
     }
 
@@ -2693,13 +2778,13 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
 
             let handle = Arc::new(Mutex::new(child));
             {
-                let mut mux_state = state.mux_state.lock().unwrap();
+                let mut mux_state = state.mux();
                 mux_state.children.insert(job.id.clone(), handle.clone());
             }
 
             let status = wait_for_child_or_stop(handle.clone(), state);
             {
-                let mut mux_state = state.mux_state.lock().unwrap();
+                let mut mux_state = state.mux();
                 mux_state.children.remove(&job.id);
             }
 
@@ -2790,12 +2875,22 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
 
     let exit_code = wait_for_child_or_stop(handle.clone(), state).unwrap_or(-1);
     {
-        let mut mux_state = state.mux_state.lock().unwrap();
+        let mut mux_state = state.mux();
         mux_state.children.remove(&job.id);
     }
 
     if exit_code != 0 {
-        let treat_as_success = exit_code == 1 && (output_path.exists() || final_path.exists());
+        // mkvmerge exits 1 for warnings, having still written a valid file.
+        // Only `output_path` proves THIS run produced output: in overwrite mode
+        // it is a fresh uniquely-named temp file, and in destination mode it is
+        // the file we just asked mkvmerge to write. `final_path` was also
+        // accepted before, but it can be left over from an earlier successful
+        // run, which made genuinely failed jobs report as completed.
+        // Require a non-empty file so a truncated/aborted write is not accepted.
+        let produced_output = fs::metadata(&output_path)
+            .map(|meta| meta.is_file() && meta.len() > 0)
+            .unwrap_or(false);
+        let treat_as_success = exit_code == 1 && produced_output;
         if treat_as_success {
             let _ = write_log_line(
                 &state.paths,
@@ -2872,7 +2967,11 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
         &format!("Job {} completed successfully", job.id),
     );
 
-    if settings.keep_log_file && !settings.destination_dir.trim().is_empty() {
+    // `output_dir` already resolves to the destination folder, or to the source
+    // folder when overwriting in place. Gating on a non-empty destination_dir
+    // silently dropped the log for every overwrite-source run, which is the
+    // common case.
+    if settings.keep_log_file {
         let _ = fs::copy(
             &state.paths.log_path,
             output_dir.join("muxing_log_file.txt"),
@@ -2882,7 +2981,7 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
 
 fn run_mux_queue(app: AppHandle, state: AppState) {
     let settings = {
-        let mux_state = state.mux_state.lock().unwrap();
+        let mux_state = state.mux();
         mux_state.settings.clone()
     };
     let Some(settings) = settings else {
@@ -2890,7 +2989,7 @@ fn run_mux_queue(app: AppHandle, state: AppState) {
     };
 
     let jobs = {
-        let mux_state = state.mux_state.lock().unwrap();
+        let mux_state = state.mux();
         mux_state.queue.clone()
     };
 
@@ -2916,7 +3015,7 @@ fn run_mux_queue(app: AppHandle, state: AppState) {
         let rx_clone = receiver.clone();
         workers.push(thread::spawn(move || loop {
             {
-                let mux_state = state_clone.mux_state.lock().unwrap();
+                let mux_state = state_clone.mux();
                 if mux_state.stop {
                     break;
                 }
@@ -2928,7 +3027,7 @@ fn run_mux_queue(app: AppHandle, state: AppState) {
             }
 
             let job = {
-                let rx_lock = rx_clone.lock().unwrap();
+                let rx_lock = lock_or_recover(&rx_clone);
                 rx_lock.recv_timeout(Duration::from_millis(200))
             };
 
@@ -2944,7 +3043,7 @@ fn run_mux_queue(app: AppHandle, state: AppState) {
         let _ = worker.join();
     }
 
-    let mut mux_state = state.mux_state.lock().unwrap();
+    let mut mux_state = state.mux();
     mux_state.running = false;
     mux_state.children.clear();
 }
@@ -2955,7 +3054,7 @@ fn start_muxing(
     state: State<AppState>,
     request: MuxStartRequest,
 ) -> Result<(), String> {
-    let mut mux_state = state.mux_state.lock().unwrap();
+    let mut mux_state = state.mux();
     if mux_state.running {
         return Err("Muxing is already running.".to_string());
     }
@@ -3029,16 +3128,30 @@ fn preview_mux(
     Ok(results)
 }
 
+/// Pause the QUEUE, not the running processes.
+///
+/// Jobs already handed to mkvmerge run to completion -- suspending an external
+/// process portably would require OS-specific signalling that this app does not
+/// link. Workers stop picking up new jobs immediately. The log records this so
+/// the delay between pressing Pause and work actually stopping is explainable.
 #[tauri::command]
 fn pause_muxing(state: State<AppState>) -> Result<(), String> {
-    let mut mux_state = state.mux_state.lock().unwrap();
+    let mut mux_state = state.mux();
     mux_state.pause = true;
+    let in_flight = mux_state.children.len();
+    drop(mux_state);
+    let _ = write_log_line(
+        &state.paths,
+        &format!(
+            "Pause requested: no further jobs will start; {in_flight} job(s) already running will finish first."
+        ),
+    );
     Ok(())
 }
 
 #[tauri::command]
 fn resume_muxing(state: State<AppState>) -> Result<(), String> {
-    let mut mux_state = state.mux_state.lock().unwrap();
+    let mut mux_state = state.mux();
     mux_state.pause = false;
     Ok(())
 }
@@ -3187,4 +3300,97 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    #[test]
+    fn external_file_info_tolerates_missing_optional_keys() {
+        // Payloads written by older frontend versions omit the newer keys.
+        let json = r#"{"id":"1","name":"a.mka","path":"/a.mka","type":"audio"}"#;
+        let parsed: Result<ExternalFileInfo, _> = serde_json::from_str(json);
+        assert!(parsed.is_ok(), "failed to parse: {:?}", parsed.err());
+    }
+
+    fn video(path: &str) -> VideoFileInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": "v1",
+            "name": "Episode.mkv",
+            "path": path,
+            "size": 1024_u64,
+            "status": "pending",
+            "tracks": [],
+        }))
+        .expect("valid video fixture")
+    }
+
+    fn job(path: &str) -> MuxJobRequest {
+        serde_json::from_value(serde_json::json!({
+            "id": "job-1",
+            "video": serde_json::to_value(video(path)).unwrap(),
+            "audios": [],
+            "subtitles": [],
+            "chapters": [],
+            "attachments": [],
+        }))
+        .expect("valid job fixture")
+    }
+
+    fn overwrite_settings() -> MuxSettings {
+        serde_json::from_value(serde_json::json!({
+            "destinationDir": "",
+            "outputNamingPattern": null,
+            "overwriteSource": true,
+            "addCrc": false,
+            "removeOldCrc": false,
+            "keepLogFile": false,
+            "abortOnErrors": false,
+            "maxParallelJobs": null,
+            "onlyKeepAudiosEnabled": false,
+            "onlyKeepSubtitlesEnabled": false,
+            "onlyKeepAudioLanguages": [],
+            "onlyKeepSubtitleLanguages": [],
+            "discardOldChapters": false,
+            "discardOldAttachments": false,
+            "allowDuplicateAttachments": false,
+            "attachmentsExpertMode": false,
+            "removeGlobalTags": false,
+            "makeAudioDefaultLanguage": null,
+            "makeSubtitleDefaultLanguage": null,
+            "useMkvpropedit": false,
+        }))
+        .expect("valid settings fixture")
+    }
+
+    /// Two jobs sharing an output stem must never pick the same temp path.
+    /// Second-resolution timestamps previously collided under parallel muxing,
+    /// letting two mkvmerge processes write the same file.
+    #[test]
+    fn temp_output_paths_are_unique_for_identical_stems() {
+        let settings = overwrite_settings();
+        let mut seen = HashSet::new();
+
+        for _ in 0..256 {
+            let (output_path, _final_path, overwrite) =
+                get_output_paths(&job("/media/show/Episode.mkv"), &settings);
+            assert!(overwrite, "expected overwrite mode for empty destination");
+            assert!(
+                seen.insert(output_path.clone()),
+                "duplicate temp output path generated: {}",
+                output_path.to_string_lossy()
+            );
+        }
+    }
+
+    /// The temp file must differ from the final path, otherwise
+    /// safe_replace_source refuses to run.
+    #[test]
+    fn temp_output_path_differs_from_final_path() {
+        let settings = overwrite_settings();
+        let (output_path, final_path, _) = get_output_paths(&job("/media/show/Episode.mkv"), &settings);
+        assert_ne!(output_path, final_path);
+        assert_eq!(final_path.file_name().unwrap(), "Episode.mkv");
+    }
 }

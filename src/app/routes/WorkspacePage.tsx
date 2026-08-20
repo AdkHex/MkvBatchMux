@@ -767,6 +767,13 @@ const WorkspacePage = () => {
 
   const handlePauseMuxing = useCallback(() => {
     pauseMuxing();
+    // Pause stops the queue from starting new jobs; anything already handed to
+    // mkvmerge finishes first. Say so, otherwise Pause looks broken.
+    toast({
+      title: "Pausing after current job",
+      description:
+        "No new jobs will start. Jobs already running will finish first — use Stop to cancel them immediately.",
+    });
   }, []);
 
   const handleResumeMuxing = useCallback(() => {

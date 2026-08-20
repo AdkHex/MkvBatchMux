@@ -45,6 +45,9 @@ export interface ExternalFile {
   includedTrackIds?: number[];
   includeSubtitles?: boolean;
   includedSubtitleTrackIds?: number[];
+  includedSubtitlesDefault?: boolean;
+  includedSubtitlesForced?: boolean;
+  includedSubtitlesFirst?: boolean;
   trackOverrides?: Record<number, { language?: string; delay?: number; trackName?: string }>;
   muxAfter?: string;
   isManuallyEdited?: boolean;

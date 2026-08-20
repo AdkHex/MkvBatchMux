@@ -31,6 +31,7 @@ import {
   DataTableCell,
 } from "@/shared/components/DataTable";
 import { EmptyState } from "@/shared/components/EmptyState";
+import { mergeVideoFiles, normalizeVideoIdentity } from "../lib/videoMerge";
 
 interface VideosTabProps {
   files: VideoFile[];
@@ -63,54 +64,6 @@ function formatFileSize(bytes?: number): string {
   const gb = bytes / 1073741824;
   return gb.toFixed(2) + " GB";
 }
-
-const normalizeVideoIdentity = (value: string) =>
-  value
-    .trim()
-    .replace(/^\\\\\?\\/, "")
-    .replace(/\\/g, "/")
-    .replace(/\/+/g, "/")
-    .toLowerCase();
-
-const videoIdentityKey = (file: Pick<VideoFile, "path" | "name">) =>
-  normalizeVideoIdentity(file.path || file.name);
-
-const videoNameKey = (file: Pick<VideoFile, "name">) => normalizeVideoIdentity(file.name);
-
-const sizesMatch = (a?: number, b?: number) =>
-  !Number.isFinite(a) || !Number.isFinite(b) || a === b;
-
-const mergeVideoFiles = (files: VideoFile[]) => {
-  const merged: VideoFile[] = [];
-  const indexByKey = new Map<string, number>();
-  const indexesByName = new Map<string, number[]>();
-
-  for (const file of files) {
-    const key = videoIdentityKey(file);
-    const nameKey = videoNameKey(file);
-    const existingIndex =
-      indexByKey.get(key) ??
-      indexesByName.get(nameKey)?.find((index) => sizesMatch(merged[index]?.size, file.size));
-    if (existingIndex === undefined) {
-      indexByKey.set(key, merged.length);
-      indexesByName.set(nameKey, [...(indexesByName.get(nameKey) || []), merged.length]);
-      merged.push(file);
-    } else {
-      const existing = merged[existingIndex];
-      merged[existingIndex] = {
-        ...existing,
-        ...file,
-        id: existing.id,
-      };
-      indexByKey.set(key, existingIndex);
-    }
-  }
-
-  return merged;
-};
-
-const mergeVideoFile = (existing: VideoFile | undefined, next: VideoFile) =>
-  existing ? mergeVideoFiles([existing, next])[0] : next;
 
 export function VideosTab({
   files,
@@ -327,7 +280,7 @@ export function VideosTab({
     updateFiles(combined);
 
     // Now inspect them to fill in tracks/duration/fps/size
-    const byPath = new Map(combined.map((file) => [videoIdentityKey(file), file]));
+    let scannedFiles = combined;
     const streamId = `drop-${dropToken}`;
 
     let resolveDone: () => void = () => undefined;
@@ -335,12 +288,8 @@ export function VideosTab({
 
     const unlistenChunk = await listenInspectPathsStreamChunk((payload) => {
       if (payload.scanId !== streamId) return;
-      for (const item of payload.items as VideoFile[]) {
-        const key = videoIdentityKey(item);
-        const existing = byPath.get(key);
-        byPath.set(key, mergeVideoFile(existing, item));
-      }
-      updateFiles(Array.from(byPath.values()));
+      scannedFiles = mergeVideoFiles([...scannedFiles, ...(payload.items as VideoFile[])]);
+      updateFiles(scannedFiles);
     });
     const unlistenDone = await listenInspectPathsStreamDone((payload) => {
       if (payload.scanId !== streamId) return;
@@ -364,7 +313,7 @@ export function VideosTab({
       unlistenChunk();
       unlistenDone();
       unlistenError();
-      updateFiles(Array.from(byPath.values()));
+      updateFiles(scannedFiles);
     }
   }, [files, updateFiles, videoExtensions]);
 
@@ -463,7 +412,7 @@ export function VideosTab({
       const paths = currentFiles.map((file) => file.path);
       setScanProgress({ current: 0, total: paths.length });
 
-      const byPath = new Map(currentFiles.map((file) => [videoIdentityKey(file), file]));
+      let scannedFiles = currentFiles;
       let processed = 0;
       let updateQueued = false;
       const queueUiUpdate = () => {
@@ -472,8 +421,8 @@ export function VideosTab({
         requestAnimationFrame(() => {
           updateQueued = false;
           if (scanAbortRef.current || scanTokenRef.current !== scanToken) return;
-          currentFiles = Array.from(byPath.values());
-          updateFiles(currentFiles);
+          currentFiles = scannedFiles;
+          updateFiles(scannedFiles);
           setScanProgress({ current: processed, total: paths.length });
         });
       };
@@ -493,11 +442,7 @@ export function VideosTab({
         if (firstChunkAt === null) {
           firstChunkAt = typeof performance !== "undefined" ? performance.now() : Date.now();
         }
-        for (const item of payload.items as VideoFile[]) {
-          const key = videoIdentityKey(item);
-          const existing = byPath.get(key);
-          byPath.set(key, mergeVideoFile(existing, item));
-        }
+        scannedFiles = mergeVideoFiles([...scannedFiles, ...(payload.items as VideoFile[])]);
         processed = payload.processed;
         queueUiUpdate();
       });
@@ -530,8 +475,8 @@ export function VideosTab({
 
       if (scanAbortRef.current || scanTokenRef.current !== scanToken) return;
       if (!updateQueued) {
-        currentFiles = Array.from(byPath.values());
-        updateFiles(currentFiles);
+        currentFiles = scannedFiles;
+        updateFiles(scannedFiles);
         setScanProgress({ current: paths.length, total: paths.length });
       }
 

@@ -68,13 +68,30 @@ const buildStrictVideoMatcher = (videoFiles: VideoFile[]) => {
   return { byId, resolve };
 };
 
+/**
+ * Rank used to order external tracks by their `muxAfter` placement.
+ * Lower sorts earlier.
+ *
+ * Unrecognised values are reported rather than silently ranked as "video" --
+ * a typo'd or newly-added placement previously sorted next to the video track
+ * with no indication anything was wrong.
+ */
 const muxAfterRank = (value?: string) => {
+  if (value === "subtitle-first") return -1;
   if (!value || value === "video") return 0;
+  if (value === "audio") return 1;
   if (value.startsWith("track-")) {
     const index = Number(value.replace("track-", ""));
-    return Number.isFinite(index) ? index : 1;
+    if (Number.isFinite(index)) return index;
+    if (import.meta.env?.DEV) {
+      console.warn(`muxAfterRank: malformed track placement "${value}"; treating as first track.`);
+    }
+    return 1;
   }
   if (value === "end") return 99;
+  if (import.meta.env?.DEV) {
+    console.warn(`muxAfterRank: unknown muxAfter value "${value}"; treating as "video".`);
+  }
   return 0;
 };
 
