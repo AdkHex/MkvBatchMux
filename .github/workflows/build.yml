@@ -151,23 +151,26 @@ jobs:
       - name: Inspect bundle output
         shell: powershell
         run: |
-          Write-Host "== src-tauri/target/release =="
-          Get-ChildItem -Force -ErrorAction SilentlyContinue "src-tauri/target/release"
-          Write-Host "== src-tauri/target/release/bundle =="
-          Get-ChildItem -Force -ErrorAction SilentlyContinue "src-tauri/target/release/bundle"
+          # Recursive: the bundler's output directory moved between Tauri
+          # versions (bundle/nsis vs a top-level nsis), and a listing of a
+          # fixed path that no longer exists explains nothing.
+          Write-Host "== installers and updater bundles under target/release =="
+          Get-ChildItem -Path "src-tauri/target/release" -Include "*-setup.exe","*.zip","*.sig" -Recurse -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length | Format-Table -AutoSize
 
       - name: Collect bundles
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          # The NSIS installer, named *-setup.exe by the bundler. Matched on
-          # that suffix so the app's own bare .exe cannot be mistaken for it.
-          $setup = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -ErrorAction SilentlyContinue
+          # Searched from target/release rather than a fixed subdirectory: the
+          # bundler emits to bundle/nsis on some versions and a top-level nsis
+          # on others, and pinning the wrong one fails a build that succeeded.
+          # *-setup.exe also distinguishes the installer from the app's own exe.
+          $setup = Get-ChildItem -Path "src-tauri/target/release" -Filter "*-setup.exe" -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
           if ($setup) { $setup | Copy-Item -Destination artifacts -Force }
-          # The updater bundle: the archive the app downloads, plus its
-          # signature. Searched across the whole bundle tree rather than a
-          # fixed subdirectory, since the bundler's layout differs per target.
-          $upd = Get-ChildItem -Path "src-tauri/target/release/bundle" -Include "*-setup.exe.zip","*-setup.exe.zip.sig" -Recurse -ErrorAction SilentlyContinue
+          # The updater bundle: the archive the app downloads, plus its signature.
+          $upd = Get-ChildItem -Path "src-tauri/target/release" -Include "*-setup.exe.zip","*-setup.exe.zip.sig" -Recurse -ErrorAction SilentlyContinue
           if ($upd) { $upd | Copy-Item -Destination artifacts -Force }
           # A bare .exe is not a release. The bundler silently doing nothing
           # previously produced a green build whose release had no installer at
