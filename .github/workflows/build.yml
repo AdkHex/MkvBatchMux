@@ -170,7 +170,7 @@ jobs:
             Select-Object -First 1
           if ($setup) { $setup | Copy-Item -Destination artifacts -Force }
           # The updater bundle: the archive the app downloads, plus its signature.
-          $upd = Get-ChildItem -Path "src-tauri/target/release" -Include "*-setup.exe.zip","*-setup.exe.zip.sig" -Recurse -ErrorAction SilentlyContinue
+          $upd = Get-ChildItem -Path "src-tauri/target/release" -Include "*-setup.nsis.zip","*-setup.nsis.zip.sig" -Recurse -ErrorAction SilentlyContinue
           if ($upd) { $upd | Copy-Item -Destination artifacts -Force }
           # A bare .exe is not a release. The bundler silently doing nothing
           # previously produced a green build whose release had no installer at
@@ -181,7 +181,7 @@ jobs:
             exit 1
           }
           if (-not $upd) {
-            Write-Error "No updater bundle (-setup.exe.zip + .sig) produced, so auto-update would silently break. Check that TAURI_PRIVATE_KEY is set and 'updater' is in --bundles."
+            Write-Error "No updater bundle (-setup.nsis.zip + .sig) produced, so auto-update would silently break. Check that TAURI_PRIVATE_KEY is set and 'updater' is in --bundles."
             exit 1
           }
           Get-ChildItem -Path artifacts | Select-Object Name, Length | Format-Table
@@ -202,8 +202,8 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-          $zip = Get-ChildItem -Path artifacts -Filter "*-setup.exe.zip" | Select-Object -First 1
-          $sigFile = Get-ChildItem -Path artifacts -Filter "*-setup.exe.zip.sig" | Select-Object -First 1
+          $zip = Get-ChildItem -Path artifacts -Filter "*-setup.nsis.zip" | Select-Object -First 1
+          $sigFile = Get-ChildItem -Path artifacts -Filter "*-setup.nsis.zip.sig" | Select-Object -First 1
 
           # Collect bundles already fails the build if these are missing, so
           # reaching here without them means that check regressed.
