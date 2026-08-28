@@ -159,7 +159,13 @@ jobs:
           }
 
           $signature = Get-Content $sigFile.FullName -Raw
-          $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$($zip.Name)"
+
+          # GitHub rewrites spaces in asset names to dots on upload, so the
+          # local filename is not the published one. Building the URL from the
+          # raw name yields a link that 404s at update time -- the app finds an
+          # update it can never download.
+          $assetName = $zip.Name -replace ' ', '.'
+          $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$assetName"
 
           $manifest = [ordered]@{
             version   = $version
@@ -173,7 +179,15 @@ jobs:
             }
           }
 
-          $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath "artifacts/latest.json" -Encoding utf8
+          # Written without a BOM: PowerShell's -Encoding utf8 emits one on
+          # Windows PowerShell, and serde_json rejects a leading BOM, so the
+          # updater fails to parse the manifest before it ever sees a version.
+          $json = $manifest | ConvertTo-Json -Depth 5
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD "artifacts/latest.json"),
+            $json,
+            (New-Object System.Text.UTF8Encoding $false)
+          )
           Write-Host "== latest.json =="
           Get-Content artifacts/latest.json
           "published=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -203,3 +217,32 @@ jobs:
 
             Installed apps update to this build automatically.
           files: artifacts/**
+
+      - name: Verify the published update is reachable
+        shell: powershell
+        # The manifest has been wrong twice in ways a green build hid: a URL
+        # built from the local filename (GitHub rewrites spaces to dots) and a
+        # BOM that made it unparseable. Both only surfaced when an installed
+        # app tried to update. Fetching what the app fetches catches it here.
+        run: |
+          $endpoint = "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+          $raw = (Invoke-WebRequest -Uri $endpoint -UseBasicParsing).Content
+          if ($raw[0] -eq [char]0xFEFF) {
+            Write-Error "latest.json starts with a BOM; the updater cannot parse it."
+            exit 1
+          }
+          $manifest = $raw | ConvertFrom-Json
+          Write-Host "Published version: $($manifest.version)"
+
+          $url = $manifest.platforms.'windows-x86_64'.url
+          Write-Host "Update URL: $url"
+          $status = (Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing).StatusCode
+          if ($status -ne 200) {
+            Write-Error "The update download URL returned $status."
+            exit 1
+          }
+          if (-not $manifest.platforms.'windows-x86_64'.signature) {
+            Write-Error "The manifest carries no signature; the app would reject this update."
+            exit 1
+          }
+          Write-Host "Update manifest verified: reachable, signed, parseable."
