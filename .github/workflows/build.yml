@@ -113,8 +113,10 @@ jobs:
           $exe = Get-ChildItem -Path "src-tauri/target/release" -Filter "*.exe" -ErrorAction SilentlyContinue
           if ($msi) { $msi | Copy-Item -Destination artifacts -Force }
           if ($exe) { $exe | Copy-Item -Destination artifacts -Force }
-          # The updater bundle: the archive the app downloads, plus its signature.
-          $upd = Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Include "*.msi.zip","*.msi.zip.sig" -Recurse -ErrorAction SilentlyContinue
+          # The updater bundle: the archive the app downloads, plus its
+          # signature. Searched across the whole bundle tree rather than a
+          # fixed subdirectory, since the bundler's layout differs per target.
+          $upd = Get-ChildItem -Path "src-tauri/target/release/bundle" -Include "*.msi.zip","*.msi.zip.sig" -Recurse -ErrorAction SilentlyContinue
           if ($upd) { $upd | Copy-Item -Destination artifacts -Force }
           # A bare .exe is not a release. The bundler silently doing nothing
           # previously produced a green build whose release had no installer at
