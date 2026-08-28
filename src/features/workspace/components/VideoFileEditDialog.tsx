@@ -599,7 +599,7 @@ export function VideoFileEditDialog({
       footerLeft={
         <Button
           variant="ghost"
-          className="h-9 px-4 text-sm text-muted-foreground hover:text-foreground gap-2"
+          className="h-[30px] px-4 text-sm text-muted-foreground hover:text-foreground gap-2"
           onClick={handleReset}
         >
           <RotateCcw className="w-4 h-4" />
@@ -608,10 +608,10 @@ export function VideoFileEditDialog({
       }
       footerRight={
         <>
-          <Button variant="outline" className="h-9 px-5 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" className="h-[30px] px-5 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button className="h-9 px-5 text-sm" onClick={handleApplyChanges}>
+          <Button className="h-[30px] px-5 text-sm" onClick={handleApplyChanges}>
             Apply Changes
           </Button>
         </>
@@ -651,7 +651,7 @@ export function VideoFileEditDialog({
             <Button
               variant="outline"
               size="sm"
-              className="h-8 px-3"
+              className="h-[30px] px-3"
               onClick={() => openAddExternalDialog("subtitle")}
             >
               <Plus className="w-4 h-4" />
@@ -662,7 +662,7 @@ export function VideoFileEditDialog({
             <Button
               variant="outline"
               size="sm"
-              className="h-8 px-3"
+              className="h-[30px] px-3"
               onClick={() => openAddExternalDialog("audio")}
             >
               <Plus className="w-4 h-4" />
@@ -673,7 +673,7 @@ export function VideoFileEditDialog({
             <Button
               variant="outline"
               size="sm"
-              className="h-8 px-3"
+              className="h-[30px] px-3"
               onClick={handleOpenImportStreams}
             >
               <Download className="w-4 h-4" />
@@ -684,7 +684,7 @@ export function VideoFileEditDialog({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-foreground rounded-l-md rounded-r-none border border-panel-border"
+              className="h-[30px] w-[30px] text-muted-foreground hover:text-foreground rounded-l-md rounded-r-none border border-panel-border"
               onClick={() => moveTrack("up")}
               disabled={!selectedTrackId}
             >
@@ -693,7 +693,7 @@ export function VideoFileEditDialog({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-foreground rounded-r-md rounded-l-none border border-l-0 border-panel-border"
+              className="h-[30px] w-[30px] text-muted-foreground hover:text-foreground rounded-r-md rounded-l-none border border-l-0 border-panel-border"
               onClick={() => moveTrack("down")}
               disabled={!selectedTrackId}
             >
@@ -717,7 +717,7 @@ export function VideoFileEditDialog({
             <ReorderableTableCell className="center">#</ReorderableTableCell>
             <ReorderableTableCell className="center">
               <div className="flex flex-col items-center gap-0.5">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Copy</span>
+                <span className="text-xs text-muted-foreground">Copy</span>
                 <Checkbox
                   className="h-3.5 w-7"
                   checked={allCopyChecked}
@@ -727,7 +727,7 @@ export function VideoFileEditDialog({
             </ReorderableTableCell>
             <ReorderableTableCell className="center">
               <div className="flex flex-col items-center gap-0.5">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Default</span>
+                <span className="text-xs text-muted-foreground">Default</span>
                 <Checkbox
                   className="h-3.5 w-7"
                   checked={allDefaultChecked}
@@ -737,7 +737,7 @@ export function VideoFileEditDialog({
             </ReorderableTableCell>
             <ReorderableTableCell className="center">
               <div className="flex flex-col items-center gap-0.5">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Forced</span>
+                <span className="text-xs text-muted-foreground">Forced</span>
                 <Checkbox
                   className="h-3.5 w-7"
                   checked={allForcedChecked}
@@ -746,7 +746,7 @@ export function VideoFileEditDialog({
               </div>
             </ReorderableTableCell>
             {activeTab === "audios" && <ReorderableTableCell className="center">Bitrate</ReorderableTableCell>}
-            <ReorderableTableCell>Track Name</ReorderableTableCell>
+            <ReorderableTableCell>Track name</ReorderableTableCell>
             <ReorderableTableCell className="right">Language</ReorderableTableCell>
             <ReorderableTableCell className="center" />
           </ReorderableTableHeader>
@@ -856,7 +856,7 @@ export function VideoFileEditDialog({
                           }
                         }}
                         autoFocus
-                        className="h-7 text-sm"
+                        className="h-[26px] text-sm"
                       />
                     ) : (
                       <div
@@ -866,7 +866,7 @@ export function VideoFileEditDialog({
                       >
                         <span className="truncate">{track.trackName}</span>
                         {track.source === "external" && (
-                          <span className="ml-2 inline-flex items-center rounded-full border border-panel-border/60 bg-panel-header/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                          <span className="ml-2 inline-flex items-center rounded-full border border-panel-border bg-panel-header/60 px-2 py-0.5 text-xs text-muted-foreground">
                             External
                           </span>
                         )}
@@ -877,14 +877,14 @@ export function VideoFileEditDialog({
                     <LanguageSelect
                       value={track.language}
                       onChange={(value) => handleTrackChange(track.id, "language", value)}
-                      className="h-8 justify-end bg-input/40 border border-panel-border/40 hover:bg-input/60"
+                      className="h-[30px] justify-end bg-input/40 border border-panel-border hover:bg-input/60"
                     />
                   </ReorderableTableCell>
                   <ReorderableTableCell data-no-drag="true" className="center" onClick={(e) => e.stopPropagation()}>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                      className="h-[26px] w-[26px] text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                       onClick={() => deleteTrack(track.id)}
                     >
                       <Trash2 className="w-4 h-4" />
@@ -912,12 +912,12 @@ export function VideoFileEditDialog({
           <>
             <Button
               variant="ghost"
-              className="h-9 px-5 text-sm text-muted-foreground hover:text-foreground"
+              className="h-[30px] px-5 text-sm text-muted-foreground hover:text-foreground"
               onClick={() => setAddExternalOpen(false)}
             >
               Cancel
             </Button>
-            <Button className="h-9 px-5 text-sm" onClick={handleConfirmAddExternal}>
+            <Button className="h-[30px] px-5 text-sm" onClick={handleConfirmAddExternal}>
               Add Track
             </Button>
           </>
@@ -925,28 +925,28 @@ export function VideoFileEditDialog({
       >
         <div className="space-y-4">
           <div className="grid gap-3">
-            <label className="text-xs uppercase tracking-wide text-muted-foreground">Track Name</label>
+            <label className="text-xs text-muted-foreground">Track name</label>
             <TextField
               value={addExternalForm.trackName}
               onChange={(e) => setAddExternalForm((prev) => ({ ...prev, trackName: e.target.value }))}
               placeholder="Optional"
-              className="h-9"
+              className="h-[30px]"
             />
           </div>
           <div className="grid gap-3">
-            <label className="text-xs uppercase tracking-wide text-muted-foreground">Language</label>
+            <label className="text-xs text-muted-foreground">Language</label>
             <LanguageSelect
               value={addExternalForm.language}
               onChange={(value) => setAddExternalForm((prev) => ({ ...prev, language: value }))}
-              className="h-9"
+              className="h-[30px]"
             />
           </div>
           <div className="grid gap-3">
-            <label className="text-xs uppercase tracking-wide text-muted-foreground">Delay (sec)</label>
+            <label className="text-xs text-muted-foreground">Delay (sec)</label>
             <TextField
               value={addExternalForm.delay}
               onChange={(e) => setAddExternalForm((prev) => ({ ...prev, delay: e.target.value }))}
-              className="h-9 w-32"
+              className="h-[30px] w-32"
             />
           </div>
           <div className="flex items-center gap-6">
@@ -983,13 +983,13 @@ export function VideoFileEditDialog({
           <>
             <Button
               variant="ghost"
-              className="h-9 px-5 text-sm text-muted-foreground hover:text-foreground"
+              className="h-[30px] px-5 text-sm text-muted-foreground hover:text-foreground"
               onClick={() => setImportStreamsOpen(false)}
             >
               Cancel
             </Button>
             <Button
-              className="h-9 px-5 text-sm"
+              className="h-[30px] px-5 text-sm"
               disabled={!importSourceVideoId || importSelectedTrackIds.length === 0}
               onClick={handleConfirmImportStreams}
             >
@@ -1000,7 +1000,7 @@ export function VideoFileEditDialog({
       >
         <div className="space-y-4">
           <div className="grid gap-2">
-            <label className="text-xs uppercase tracking-wide text-muted-foreground">Source Video File</label>
+            <label className="text-xs text-muted-foreground">Source Video File</label>
             <Select
               value={importSourceVideoId}
               onValueChange={(value) => {
@@ -1008,7 +1008,7 @@ export function VideoFileEditDialog({
                 setImportSelectedTrackIds([]);
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger className="h-[30px]">
                 <SelectValue placeholder="Select loaded video file" />
               </SelectTrigger>
               <SelectContent>
@@ -1027,9 +1027,9 @@ export function VideoFileEditDialog({
             </Select>
           </div>
 
-          <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-3 space-y-2">
+          <div className="rounded-md border border-panel-border bg-panel-header px-3 py-3 space-y-2">
             <div className="flex items-center justify-between">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <div className="text-xs font-semibold text-muted-foreground">
                 {activeTab === "audios" ? "Audio Streams" : "Subtitle Streams"}
               </div>
               {importableTracks.length > 0 && (
@@ -1037,7 +1037,7 @@ export function VideoFileEditDialog({
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-7 px-2 text-[11px]"
+                    className="h-[26px] px-2 text-xs"
                     onClick={() =>
                       setImportSelectedTrackIds(
                         importableTracks
@@ -1051,7 +1051,7 @@ export function VideoFileEditDialog({
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-7 px-2 text-[11px]"
+                    className="h-[26px] px-2 text-xs"
                     onClick={() => setImportSelectedTrackIds([])}
                   >
                     Clear

@@ -352,7 +352,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
       footerLeft={
         <Button
           variant="ghost"
-          className="h-9 px-4 text-sm text-muted-foreground hover:text-foreground gap-2"
+          className="h-[30px] px-4 text-sm text-muted-foreground hover:text-foreground gap-2"
           onClick={() => {
             setVideoTracks(buildAggregatedRows("video"));
             setSubtitleTracks(buildAggregatedRows("subtitle"));
@@ -365,16 +365,16 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
       }
       footerRight={
         <>
-          <Button variant="outline" className="h-9 px-5 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" className="h-[30px] px-5 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button className="h-9 px-5 text-sm" onClick={applyChanges}>
+          <Button className="h-[30px] px-5 text-sm" onClick={applyChanges}>
             Apply Changes
           </Button>
         </>
       }
     >
-      <div className="px-6 h-11 border-b border-panel-border/70 flex items-center justify-between">
+      <div className="px-6 h-11 border-b border-panel-border flex items-center justify-between">
         <div className="flex items-center gap-2">
           {tabConfig.map((tab) => {
             const Icon = tab.icon;
@@ -407,7 +407,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-foreground rounded-l-md rounded-r-none border border-panel-border"
+              className="h-[30px] w-[30px] text-muted-foreground hover:text-foreground rounded-l-md rounded-r-none border border-panel-border"
               onClick={() => moveTrack("up")}
               disabled={!selectedTrackId}
             >
@@ -416,7 +416,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-foreground rounded-r-md rounded-l-none border border-l-0 border-panel-border"
+              className="h-[30px] w-[30px] text-muted-foreground hover:text-foreground rounded-r-md rounded-l-none border border-l-0 border-panel-border"
               onClick={() => moveTrack("down")}
               disabled={!selectedTrackId}
             >
@@ -440,7 +440,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
             <ReorderableTableCell className="center">#</ReorderableTableCell>
             <ReorderableTableCell className="center">
               <div className="flex flex-col items-center gap-0.5">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Copy</span>
+                <span className="text-xs text-muted-foreground">Copy</span>
                 <Checkbox
                   className="h-3.5 w-7"
                   checked={allCopyChecked}
@@ -450,7 +450,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
             </ReorderableTableCell>
             <ReorderableTableCell className="center">
               <div className="flex flex-col items-center gap-0.5">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Default</span>
+                <span className="text-xs text-muted-foreground">Default</span>
                 <Checkbox
                   className="h-3.5 w-7"
                   checked={allDefaultChecked}
@@ -460,7 +460,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
             </ReorderableTableCell>
             <ReorderableTableCell className="center">
               <div className="flex flex-col items-center gap-0.5">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Forced</span>
+                <span className="text-xs text-muted-foreground">Forced</span>
                 <Checkbox
                   className="h-3.5 w-7"
                   checked={allForcedChecked}
@@ -469,7 +469,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
               </div>
             </ReorderableTableCell>
             {activeTab === "audios" && <ReorderableTableCell className="center">Bitrate</ReorderableTableCell>}
-            <ReorderableTableCell>Track Name</ReorderableTableCell>
+            <ReorderableTableCell>Track name</ReorderableTableCell>
             <ReorderableTableCell className="right">Language</ReorderableTableCell>
             <ReorderableTableCell className="center" />
           </ReorderableTableHeader>
@@ -572,7 +572,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                           }
                         }}
                         autoFocus
-                        className="h-7 text-sm"
+                        className="h-[26px] text-sm"
                       />
                   ) : (
                     <div
@@ -588,7 +588,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                     <LanguageSelect
                       value={track.language}
                       onChange={(value) => handleTrackChange(track.id, "language", value)}
-                      className="h-8 justify-end bg-input/40 border border-panel-border/40 hover:bg-input/60"
+                      className="h-[30px] justify-end bg-input/40 border border-panel-border hover:bg-input/60"
                     />
                   </ReorderableTableCell>
                   {activeTab !== "videos" ? (
@@ -596,7 +596,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="h-[26px] w-[26px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
                         onClick={() => deleteTrack(track.id)}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -612,10 +612,10 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
         </ReorderableTable>
       </div>
 
-      <div className="px-6 pt-3 pb-3 border-t border-panel-border/40 shrink-0">
+      <div className="px-6 pt-3 pb-3 border-t border-panel-border shrink-0">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Track Info Across Videos</h3>
-          <span className="text-[11px] text-muted-foreground bg-muted/40 px-2 py-1 rounded-full">
+          <h3 className="text-xs font-semibold text-muted-foreground">Track Info Across Videos</h3>
+          <span className="text-xs text-muted-foreground bg-muted/40 px-2 py-1 rounded-full">
             Track {String(selectedTrackNumber).padStart(2, "0")}
           </span>
         </div>

@@ -994,7 +994,7 @@ export function AudiosTab({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Select value={activeAudioTrack} onValueChange={setActiveAudioTrack}>
-              <SelectTrigger className="w-36 h-8 bg-panel-header text-secondary-foreground border border-panel-border font-medium">
+              <SelectTrigger className="w-36 h-[30px] bg-panel-header text-secondary-foreground border border-panel-border font-medium">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1007,7 +1007,7 @@ export function AudiosTab({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                className="h-[30px] w-[30px] text-destructive hover:text-destructive hover:bg-destructive/10"
                 onClick={() => confirmDeleteTrack(activeAudioTrack)}
               >
                 <Trash2 className="w-4 h-4" />
@@ -1027,7 +1027,7 @@ export function AudiosTab({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-2"
+                  className="h-[30px] gap-2"
                   onClick={cancelMeasuring}
                 >
                   <Ban className="w-4 h-4" />
@@ -1038,26 +1038,33 @@ export function AudiosTab({
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    {/* A span keeps the tooltip reachable while the button is
-                        disabled, which is exactly when the reason matters. */}
-                    <span>
+                    {/* A disabled button emits no pointer events, so the span
+                        must be inline-block (it needs a box of its own) for the
+                        tooltip to fire — which is exactly when the reason for
+                        the button being disabled matters most. */}
+                    <span className="inline-block">
                       <Button
                         variant="outline"
                         size="sm"
-                        className="h-8 gap-2"
+                        className="h-[30px] gap-2"
                         disabled={!measurementAvailable || audioFiles.length === 0}
                         onClick={() => startMeasuring()}
+                        aria-describedby="measure-delays-reason"
                       >
                         <Gauge className="w-4 h-4" />
                         Measure delays
                       </Button>
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent className="max-w-xs">
-                    {audiosyncEngine?.message ??
-                      (audioFiles.length === 0
-                        ? "Add audio files to measure their delays."
-                        : "Measure each audio file's delay against the video it will be muxed into.")}
+                  <TooltipContent id="measure-delays-reason" className="max-w-xs">
+                    {/* Order matters: report the blocking reason, not the
+                        happy-path description, whenever the button is off. */}
+                    {audiosyncEngine === null
+                      ? "Checking for the audio analysis engine…"
+                      : (audiosyncEngine.message ??
+                        (audioFiles.length === 0
+                          ? "Add audio files to measure their delays."
+                          : "Measure each audio file's delay against the video it will be muxed into."))}
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
@@ -1065,7 +1072,7 @@ export function AudiosTab({
             <Button
               variant="outline"
               size="sm"
-              className="h-8 gap-2"
+              className="h-[30px] gap-2"
               onClick={handleImportAudios}
             >
               Import Audios
@@ -1073,7 +1080,7 @@ export function AudiosTab({
             <Button
               variant="outline"
               size="sm"
-              className="h-8 gap-2"
+              className="h-[30px] gap-2"
               onClick={duplicateTrack}
             >
               <Copy className="w-4 h-4" />
@@ -1082,7 +1089,7 @@ export function AudiosTab({
             <Button
               variant="default"
               size="sm"
-              className="h-8 gap-2"
+              className="h-[30px] gap-2"
               onClick={addNewTrack}
             >
               <Plus className="w-4 h-4" />
@@ -1094,22 +1101,22 @@ export function AudiosTab({
 
       {/* Track Configuration Card */}
       <div className="config-card space-y-4 min-h-[188px]">
-        <h3 className="text-[12px] uppercase tracking-[0.5px] text-muted-foreground font-semibold">Track Configuration</h3>
+        <h3 className="text-xs text-muted-foreground font-semibold">Track configuration</h3>
         
         {/* Source Folder */}
         <div className="flex items-center gap-3">
-          <label className="config-label">Source Folder</label>
+          <label className="config-label">Source folder</label>
           <div className="flex-1 flex items-center gap-2">
             <Input
               value={currentConfig.sourceFolder}
               onChange={(e) => updateCurrentConfig({ sourceFolder: e.target.value })}
               placeholder="Select audio folder path..."
-              className="h-8 flex-1 font-mono"
+              className="h-[30px] flex-1 font-mono"
             />
             <Button
               variant="outline"
               size="icon"
-              className="h-8 w-8"
+              className="h-[30px] w-[30px]"
               onClick={async () => {
                 const folder = await pickDirectory();
                 if (folder) {
@@ -1123,7 +1130,7 @@ export function AudiosTab({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 bg-primary/10 text-primary hover:bg-primary/20"
+              className="h-[30px] w-[30px] border border-panel-border bg-[hsl(var(--control))] hover:bg-[hsl(var(--control-hover))] text-foreground"
               onClick={() => scanAudios(currentConfig.sourceFolder)}
             >
               <RefreshCw className="w-4 h-4" />
@@ -1131,7 +1138,7 @@ export function AudiosTab({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 bg-destructive/10 text-destructive hover:bg-destructive/20"
+              className="h-[30px] w-[30px] border border-panel-border bg-[hsl(var(--control))] hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
               onClick={() => {
                 updateCurrentConfig({ sourceFolder: '' });
                 onAudioFilesChange([]);
@@ -1147,7 +1154,7 @@ export function AudiosTab({
           <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2">
             <label className="config-label">Extension</label>
             <Select value={currentConfig.extension} onValueChange={(v) => updateCurrentConfig({ extension: v })}>
-              <SelectTrigger className="h-8 flex-1">
+              <SelectTrigger className="h-[30px] flex-1">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1166,17 +1173,17 @@ export function AudiosTab({
             <LanguageSelect
               value={currentConfig.language}
               onChange={(v) => updateCurrentConfig({ language: v })}
-              className="h-8 flex-1"
+              className="h-[30px] flex-1"
             />
           </div>
 
           <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2">
-            <label className="config-label">Track Name</label>
+            <label className="config-label">Track name</label>
             <Input
               value={currentConfig.trackName}
               onChange={(e) => updateCurrentConfig({ trackName: e.target.value })}
               placeholder="Enter name"
-              className="h-8 flex-1"
+              className="h-[30px] flex-1"
             />
           </div>
 
@@ -1184,9 +1191,9 @@ export function AudiosTab({
 
         <div className="flex flex-wrap items-center gap-5">
           <div className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-2 min-w-[240px]">
-            <label className="config-label">Mux After</label>
+            <label className="config-label">Mux after</label>
             <Select value={currentConfig.muxAfter} onValueChange={(v) => updateCurrentConfig({ muxAfter: v })}>
-              <SelectTrigger className="h-8 w-40">
+              <SelectTrigger className="h-[30px] w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1204,9 +1211,9 @@ export function AudiosTab({
             <Input
               value={currentConfig.delay}
               onChange={(e) => updateCurrentConfig({ delay: e.target.value })}
-              className="h-8 w-20 text-center font-mono"
+              className="h-[30px] w-20 text-center font-mono"
             />
-            <span className="text-[12px] text-muted-foreground">sec</span>
+            <span className="text-xs text-muted-foreground">sec</span>
           </div>
 
           <div className="grid grid-cols-2 gap-14 pl-3 items-center">
@@ -1216,7 +1223,7 @@ export function AudiosTab({
                 checked={currentConfig.isDefault}
                 onCheckedChange={(checked) => updateCurrentConfig({ isDefault: checked as boolean })}
               />
-              <label htmlFor="audio-default" className="text-[12px] cursor-pointer">Default</label>
+              <label htmlFor="audio-default" className="text-xs cursor-pointer">Default</label>
             </div>
             <div className="flex items-center gap-2 min-w-[120px]">
               <Checkbox
@@ -1224,7 +1231,7 @@ export function AudiosTab({
                 checked={currentConfig.isForced}
                 onCheckedChange={(checked) => updateCurrentConfig({ isForced: checked as boolean })}
               />
-              <label htmlFor="audio-forced" className="text-[12px] cursor-pointer">Forced</label>
+              <label htmlFor="audio-forced" className="text-xs cursor-pointer">Forced</label>
             </div>
           </div>
         </div>
@@ -1245,8 +1252,8 @@ export function AudiosTab({
         <div className="panel-card flex flex-col min-h-0 overflow-hidden">
           <div className="panel-card-header">
             <div className="flex items-center gap-2">
-              <h4 className="panel-card-title">Video Files</h4>
-              <span className="text-[11px] font-mono text-muted-foreground">{videoFiles.length}</span>
+              <h4 className="panel-card-title">Video files</h4>
+              <span className="text-xs font-mono text-muted-foreground">{videoFiles.length}</span>
             </div>
           </div>
           <div className="flex-1 overflow-auto scrollbar-thin">
@@ -1272,7 +1279,7 @@ export function AudiosTab({
         {/* Audio Files Card */}
         <div className="panel-card flex flex-col min-h-0 overflow-hidden">
           <div className="panel-card-header">
-            <h4 className="panel-card-title">Audio Files</h4>
+            <h4 className="panel-card-title">Audio files</h4>
             <div className="panel-card-actions">
               <Button
                 variant="ghost"
@@ -1323,7 +1330,7 @@ export function AudiosTab({
           </div>
           <div className="flex-1 overflow-auto scrollbar-thin">
             {unlinkedCount > 0 && (
-              <div className="px-3 py-2 text-[11px] text-warning border-b border-panel-border/30 bg-warning/8">
+              <div className="px-3 py-2 text-xs text-warning border-b border-panel-border bg-warning/8">
                 {unlinkedCount} audio file{unlinkedCount === 1 ? "" : "s"} do not have a matching video row before muxing.
               </div>
             )}
@@ -1470,12 +1477,12 @@ export function AudiosTab({
       >
         <div className="space-y-4">
           <div className="space-y-2">
-            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Source Video</label>
+            <label className="text-xs font-semibold text-muted-foreground">Source Video</label>
             <Select value={importSourceVideoId} onValueChange={(value) => {
               setImportSourceVideoId(value);
               setImportSelectedTrackKeys([]);
             }}>
-              <SelectTrigger className="h-8">
+              <SelectTrigger className="h-[30px]">
                 <SelectValue placeholder="Choose source video" />
               </SelectTrigger>
               <SelectContent>
@@ -1488,8 +1495,8 @@ export function AudiosTab({
             </Select>
           </div>
           <div className="space-y-2">
-            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Audio Streams</label>
-            <div className="max-h-56 overflow-y-auto rounded border border-panel-border/60 p-2 space-y-2">
+            <label className="text-xs font-semibold text-muted-foreground">Audio Streams</label>
+            <div className="max-h-56 overflow-y-auto rounded border border-panel-border p-2 space-y-2">
               {importableTracks.length === 0 ? (
                 <div className="text-xs text-muted-foreground px-1 py-2">No audio streams available in selected video.</div>
               ) : (
@@ -1543,8 +1550,8 @@ export function AudiosTab({
       >
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-2 space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Videos</div>
+            <div className="rounded-md border border-panel-border bg-panel-header px-3 py-2 space-y-2">
+              <div className="text-xs font-semibold text-muted-foreground">Videos</div>
               <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
                 {videoFiles.map((file) => {
                   const checked = bulkSelectedVideoIds.includes(file.id);
@@ -1564,8 +1571,8 @@ export function AudiosTab({
                 })}
               </div>
             </div>
-            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-2 space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Audio Files</div>
+            <div className="rounded-md border border-panel-border bg-panel-header px-3 py-2 space-y-2">
+              <div className="text-xs font-semibold text-muted-foreground">Audio files</div>
               <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
                 {audioFiles.map((file) => {
                   const checked = bulkSelectedAudioIds.includes(file.id);
@@ -1588,14 +1595,14 @@ export function AudiosTab({
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-6 px-2 text-[10px]"
+                          className="h-6 px-2 text-xs"
                           onClick={() => openEditDialog(file.id)}
                         >
                           Tracks
                         </Button>
                       )}
                       {trackCount > 1 && (
-                        <span className="text-[10px] text-muted-foreground/70 shrink-0">{trackCount} tracks</span>
+                        <span className="text-xs text-muted-foreground/70 shrink-0">{trackCount} tracks</span>
                       )}
                     </div>
                   );
@@ -1603,8 +1610,8 @@ export function AudiosTab({
               </div>
             </div>
           </div>
-          <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-3 py-2 space-y-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Track Subset</div>
+          <div className="rounded-md border border-panel-border bg-panel-header px-3 py-2 space-y-3">
+            <div className="text-xs font-semibold text-muted-foreground">Track Subset</div>
             <div className="flex items-center gap-4 text-xs">
               <label className="flex items-center gap-2 cursor-pointer">
                 <Checkbox
@@ -1622,13 +1629,13 @@ export function AudiosTab({
                 <Input
                   value={bulkFirstCount}
                   onChange={(event) => setBulkFirstCount(event.target.value)}
-                  className="h-7 w-12 text-center font-mono"
+                  className="h-[26px] w-12 text-center font-mono"
                 />
                 tracks
               </label>
             </div>
           </div>
-          <div className="flex items-center justify-between rounded-md border border-panel-border/50 bg-panel-header/30 px-3 py-2">
+          <div className="flex items-center justify-between rounded-md border border-panel-border bg-panel-header px-3 py-2">
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
               <Checkbox
                 checked={bulkReplaceExisting}
@@ -1662,7 +1669,7 @@ export function AudiosTab({
             >
               Cancel
             </Button>
-            <Button onClick={applyEditChanges}>Save Changes</Button>
+            <Button onClick={applyEditChanges}>Save changes</Button>
           </>
         }
       >
@@ -1670,7 +1677,7 @@ export function AudiosTab({
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">Source File</label>
             <div
-              className="h-9 px-3 flex items-center rounded-md border border-panel-border/50 bg-panel-header/60 text-sm text-foreground truncate"
+              className="h-[30px] px-3 flex items-center rounded-md border border-panel-border bg-panel-header text-sm text-foreground truncate"
               title={editingFile?.name || ""}
             >
               {editingFile?.name || "—"}
@@ -1682,16 +1689,16 @@ export function AudiosTab({
               <LanguageSelect
                 value={editForm.language}
                 onChange={(value) => setEditForm((prev) => ({ ...prev, language: value }))}
-                className="h-9"
+                className="h-[30px]"
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Track Name</label>
+              <label className="text-xs font-medium text-muted-foreground">Track name</label>
               <Input
                 value={editForm.trackName}
                 onChange={(event) => setEditForm((prev) => ({ ...prev, trackName: event.target.value }))}
                 placeholder="Track name"
-                className="h-9"
+                className="h-[30px]"
               />
             </div>
             <div className="space-y-1.5">
@@ -1699,7 +1706,7 @@ export function AudiosTab({
               <Input
                 value={editForm.delay}
                 onChange={(event) => setEditForm((prev) => ({ ...prev, delay: event.target.value }))}
-                className="h-9 font-mono"
+                className="h-[30px] font-mono"
               />
             </div>
             <div className="space-y-1.5">
@@ -1708,7 +1715,7 @@ export function AudiosTab({
                 value={editForm.muxAfter}
                 onValueChange={(value) => setEditForm((prev) => ({ ...prev, muxAfter: value }))}
               >
-                <SelectTrigger className="h-9">
+                <SelectTrigger className="h-[30px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1723,10 +1730,10 @@ export function AudiosTab({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 items-stretch gap-3">
-            <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Track Flags</div>
+            <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
+              <div className="text-xs font-semibold text-muted-foreground">Track Flags</div>
               <div className="space-y-3">
-                <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer">
+                <label className="flex items-start gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2 cursor-pointer">
                   <Checkbox
                     id="audio-edit-default"
                     checked={editForm.isDefault}
@@ -1736,12 +1743,12 @@ export function AudiosTab({
                   />
                   <div className="min-w-0">
                     <span className="block text-sm font-medium">Default audio</span>
-                    <span className="block text-[11px] leading-snug text-muted-foreground">
+                    <span className="block text-xs leading-snug text-muted-foreground">
                       Marks the first included audio track as default.
                     </span>
                   </div>
                 </label>
-                <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer">
+                <label className="flex items-start gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2 cursor-pointer">
                   <Checkbox
                     id="audio-edit-forced"
                     checked={editForm.isForced}
@@ -1751,15 +1758,15 @@ export function AudiosTab({
                   />
                   <div className="min-w-0">
                     <span className="block text-sm font-medium">Forced audio</span>
-                    <span className="block text-[11px] leading-snug text-muted-foreground">
+                    <span className="block text-xs leading-snug text-muted-foreground">
                       Rare for audio; some players may ignore.
                     </span>
                   </div>
                 </label>
               </div>
             </div>
-            <div className="rounded-md border border-panel-border/50 bg-panel-header/30 px-4 py-3 space-y-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Bulk Action</div>
+            <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-2">
+              <div className="text-xs font-semibold text-muted-foreground mb-2">Bulk Action</div>
               <label className="inline-flex items-center gap-3 cursor-pointer">
                 <Checkbox
                   id="audio-edit-delay-all"
@@ -1780,7 +1787,7 @@ export function AudiosTab({
                 />
                   <div className="min-w-0">
                     <span className="block text-sm">Apply to all files</span>
-                    <span className="block text-[11px] text-muted-foreground leading-tight">Track selection applied by position</span>
+                    <span className="block text-xs text-muted-foreground leading-tight">Track selection applied by position</span>
                   </div>
                 </label>
               </div>
@@ -1788,9 +1795,9 @@ export function AudiosTab({
 
           {editingFile?.tracks && editingFile.tracks.length > 0 && (
             <>
-              <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
+              <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <div className="text-xs font-semibold text-muted-foreground">
                     Included Audio Tracks
                   </div>
                   <div className="flex items-center gap-2">
@@ -1798,7 +1805,7 @@ export function AudiosTab({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 px-2 text-[11px]"
+                        className="h-[26px] px-2 text-xs"
                         onClick={() => openMultiDelayDialog(editingFile.id, "audio")}
                       >
                         Track Delays
@@ -1807,7 +1814,7 @@ export function AudiosTab({
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 px-2 text-[11px]"
+                      className="h-[26px] px-2 text-xs"
                       onClick={() =>
                         setEditForm((prev) => ({
                           ...prev,
@@ -1820,7 +1827,7 @@ export function AudiosTab({
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                      className="h-[26px] px-2 text-xs text-muted-foreground hover:text-foreground"
                       onClick={() => setEditForm((prev) => ({ ...prev, includedTrackIds: [] }))}
                     >
                       Uncopy All
@@ -1856,12 +1863,12 @@ export function AudiosTab({
                           </div>
                           <div className="flex items-center gap-2">
                             {track.isDefault && (
-                              <span className="text-[10px] uppercase tracking-wide text-primary/80">Default</span>
+                              <span className="text-xs text-primary/80">Default</span>
                             )}
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                              className="h-[26px] w-[26px] text-muted-foreground hover:text-foreground"
                               onClick={() => openTrackEdit(editingFile.id, trackId, "audio")}
                             >
                               <Pencil className="w-3.5 h-3.5" />
@@ -1871,15 +1878,15 @@ export function AudiosTab({
                       );
                     })}
                 </div>
-                <div className="text-[11px] text-muted-foreground/70">
+                <div className="text-xs text-muted-foreground/70">
                   When Default is enabled for this file, the first included track becomes default and the rest are set to no.
                 </div>
               </div>
 
               {editingFile.tracks.some((track) => track.type === "subtitle") && (
-                <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
+                <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
                   <div className="flex items-center justify-between">
-                    <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <div className="text-xs font-semibold text-muted-foreground">
                       Included Subtitle Tracks
                     </div>
                     <div className="flex items-center gap-2">
@@ -1887,7 +1894,7 @@ export function AudiosTab({
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-7 px-2 text-[11px]"
+                          className="h-[26px] px-2 text-xs"
                           onClick={() => openMultiDelayDialog(editingFile.id, "subtitle")}
                         >
                           Track Delays
@@ -1896,7 +1903,7 @@ export function AudiosTab({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 px-2 text-[11px]"
+                        className="h-[26px] px-2 text-xs"
                         onClick={() =>
                           setEditForm((prev) => ({
                             ...prev,
@@ -1910,7 +1917,7 @@ export function AudiosTab({
 	                      <Button
 	                        variant="ghost"
 	                        size="sm"
-	                        className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+	                        className="h-[26px] px-2 text-xs text-muted-foreground hover:text-foreground"
 	                        onClick={() =>
 	                          setEditForm((prev) => ({
 	                            ...prev,
@@ -1927,7 +1934,7 @@ export function AudiosTab({
                     </div>
                   </div>
                   <div className="grid gap-2 md:grid-cols-2">
-                    <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer">
+                    <label className="flex items-start gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2 cursor-pointer">
                       <Checkbox
                         checked={editForm.includeSubtitles}
                         onCheckedChange={(value) =>
@@ -1945,12 +1952,12 @@ export function AudiosTab({
                       />
                       <div className="min-w-0">
                         <span className="block text-sm font-medium">Include subtitles</span>
-                        <span className="block text-[11px] leading-snug text-muted-foreground">
+                        <span className="block text-xs leading-snug text-muted-foreground">
                           Copy subtitle tracks embedded in this audio file.
                         </span>
                       </div>
                     </label>
-                    <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer">
+                    <label className="flex items-start gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2 cursor-pointer">
                       <Checkbox
                         checked={editForm.includedSubtitlesFirst && editForm.includedSubtitlesDefault}
                         onCheckedChange={(value) =>
@@ -1967,12 +1974,12 @@ export function AudiosTab({
                       />
                       <div className="min-w-0">
                         <span className="block text-sm font-medium">First + default subtitle</span>
-                        <span className="block text-[11px] leading-snug text-muted-foreground">
+                        <span className="block text-xs leading-snug text-muted-foreground">
                           Put copied subtitles before existing subtitles and make the first one default.
                         </span>
                       </div>
                     </label>
-                    <label className="flex items-start gap-3 rounded-md border border-panel-border/35 bg-card/35 px-3 py-2 cursor-pointer md:col-span-2">
+                    <label className="flex items-start gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2 cursor-pointer md:col-span-2">
                       <Checkbox
                         checked={editForm.includedSubtitlesForced}
                         onCheckedChange={(value) =>
@@ -1988,7 +1995,7 @@ export function AudiosTab({
                       />
                       <div className="min-w-0">
                         <span className="block text-sm font-medium">Forced copied subtitles</span>
-                        <span className="block text-[11px] leading-snug text-muted-foreground">
+                        <span className="block text-xs leading-snug text-muted-foreground">
                           Mark copied subtitle tracks as forced display tracks.
                         </span>
                       </div>
@@ -2028,7 +2035,7 @@ export function AudiosTab({
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                              className="h-[26px] w-[26px] text-muted-foreground hover:text-foreground"
                               onClick={() => openTrackEdit(editingFile.id, trackId, "subtitle")}
                             >
                               <Pencil className="w-3.5 h-3.5" />
@@ -2076,15 +2083,15 @@ export function AudiosTab({
         }
       >
         <div className="space-y-4">
-          <div className="rounded-md border border-panel-border/50 bg-panel-header/30 px-4 py-3 space-y-3">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
+            <div className="text-xs font-semibold text-muted-foreground">
               Bulk Fill
             </div>
             <div className="flex items-center gap-2">
               <Input
                 value={multiDelayBulkValue}
                 onChange={(event) => setMultiDelayBulkValue(event.target.value)}
-                className="h-9 font-mono"
+                className="h-[30px] font-mono"
                 placeholder="0.000"
               />
               <Button
@@ -2107,13 +2114,13 @@ export function AudiosTab({
                 Apply To All {multiDelayTrackType === "audio" ? "Audio" : "Subtitle"} Tracks
               </Button>
             </div>
-            <div className="text-[11px] text-muted-foreground/70">
+            <div className="text-xs text-muted-foreground/70">
               Use positive values to delay {multiDelayTrackType} and negative values to make it earlier.
             </div>
           </div>
 
-          <div className="rounded-md border border-panel-border/50 bg-panel-header/40 px-4 py-3 space-y-3">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
+            <div className="text-xs font-semibold text-muted-foreground">
               Per-Track Delays
             </div>
             <div className="max-h-72 overflow-y-auto pr-1 space-y-2 scrollbar-thin">
@@ -2134,7 +2141,7 @@ export function AudiosTab({
                   return (
                     <div
                       key={`${track.id}-${index}`}
-                      className="grid grid-cols-[1fr_120px] items-center gap-3 rounded-md border border-panel-border/40 bg-card/40 px-3 py-2"
+                      className="grid grid-cols-[1fr_120px] items-center gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2"
                     >
                       <div className="min-w-0">
                         <div className="text-sm text-foreground truncate">
@@ -2142,7 +2149,7 @@ export function AudiosTab({
                           {track.language ? ` • ${track.language}` : ""}
                           {track.name ? ` • ${track.name}` : ""}
                         </div>
-                        <div className="text-[11px] text-muted-foreground/70">
+                        <div className="text-xs text-muted-foreground/70">
                           ID {track.id}
                           {isIncluded ? " • Included" : " • Not included"}
                         </div>
@@ -2154,7 +2161,7 @@ export function AudiosTab({
                           if (!Number.isFinite(trackId)) return;
                           setMultiDelayValues((prev) => ({ ...prev, [trackId]: value }));
                         }}
-                        className="h-8 font-mono text-right"
+                        className="h-[30px] font-mono text-right"
                       />
                     </div>
                   );
@@ -2189,11 +2196,11 @@ export function AudiosTab({
                 setTrackEditForm((prev) => ({ ...prev, language: value }));
                 updateTrackOverride({ language: value });
               }}
-              className="h-9"
+              className="h-[30px]"
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Track Name</label>
+            <label className="text-xs font-medium text-muted-foreground">Track name</label>
             <Input
               value={trackEditForm.trackName}
               onChange={(event) => {
@@ -2201,7 +2208,7 @@ export function AudiosTab({
                 setTrackEditForm((prev) => ({ ...prev, trackName: value }));
                 updateTrackOverride({ trackName: value });
               }}
-              className="h-9"
+              className="h-[30px]"
             />
           </div>
           <div className="space-y-1.5">
@@ -2213,7 +2220,7 @@ export function AudiosTab({
                 setTrackEditForm((prev) => ({ ...prev, delay: value }));
                 updateTrackOverride({ delay: value });
               }}
-              className="h-9 font-mono"
+              className="h-[30px] font-mono"
             />
           </div>
         </div>

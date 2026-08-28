@@ -13,7 +13,7 @@ export function IconButton({ className, iconSizeClassName, ...props }: IconButto
       variant={props.variant ?? "ghost"}
       size={props.size ?? "icon"}
       className={cn(
-        "fluent-icon-button h-8 w-8",
+        "fluent-icon-button h-[30px] w-[30px]",
         "[&_svg]:h-4.5 [&_svg]:w-4.5",
         iconSizeClassName,
         className,

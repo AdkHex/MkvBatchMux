@@ -106,7 +106,7 @@ export function ReferenceTrackPicker({
                 disabled={disabled}
                 onValueChange={(next) => onChange({ ...value, [video.id]: Number(next) })}
               >
-                <SelectTrigger className="h-7 w-56 text-xs">
+                <SelectTrigger className="h-[26px] w-56 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

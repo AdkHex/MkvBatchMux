@@ -142,13 +142,13 @@ export function AttachmentsTab({
           <label htmlFor="attachments-enabled" className="text-sm font-medium cursor-pointer">
             Global Attachments
           </label>
-          <span className="text-[11px] font-mono text-muted-foreground">{attachmentFiles.length}</span>
+          <span className="text-xs font-mono text-muted-foreground">{attachmentFiles.length}</span>
         </div>
         <div className="track-selector-actions">
           <Button
             variant="outline"
             size="sm"
-            className="h-8 gap-2"
+            className="h-[30px] gap-2"
             disabled={!attachmentsEnabled}
             onClick={handleAddFiles}
           >
@@ -158,7 +158,7 @@ export function AttachmentsTab({
           <Button
             variant="outline"
             size="sm"
-            className="h-8 gap-2"
+            className="h-[30px] gap-2"
             disabled={!attachmentsEnabled || selectedIndex === null}
             onClick={handleRemove}
           >
@@ -170,25 +170,25 @@ export function AttachmentsTab({
 
       {/* Configuration Card */}
       <div className="config-card space-y-4">
-        <h3 className="text-[12px] uppercase tracking-[0.5px] text-muted-foreground font-semibold">
+        <h3 className="text-xs text-muted-foreground font-semibold">
           Attachment Configuration
         </h3>
 
         {/* Source Folder */}
         <div className="flex items-center gap-3">
-          <label className="config-label">Source Folder</label>
+          <label className="config-label">Source folder</label>
           <div className="flex-1 flex items-center gap-2">
             <Input
               value={sourceFolder}
               onChange={(e) => updateAttachmentTabState({ sourceFolder: e.target.value })}
               placeholder="Select attachments folder path..."
-              className="h-8 flex-1 font-mono"
+              className="h-[30px] flex-1 font-mono"
               disabled={!attachmentsEnabled}
             />
             <Button
               variant="outline"
               size="icon"
-              className="h-8 w-8"
+              className="h-[30px] w-[30px]"
               disabled={!attachmentsEnabled}
               onClick={async () => {
                 const folder = await pickDirectory();
@@ -203,7 +203,7 @@ export function AttachmentsTab({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 bg-primary/10 text-primary hover:bg-primary/20"
+              className="h-[30px] w-[30px] border border-panel-border bg-[hsl(var(--control))] hover:bg-[hsl(var(--control-hover))] text-foreground"
               disabled={!attachmentsEnabled}
               onClick={() => scanAttachments(sourceFolder)}
             >
@@ -212,7 +212,7 @@ export function AttachmentsTab({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 bg-destructive/10 text-destructive hover:bg-destructive/20"
+              className="h-[30px] w-[30px] border border-panel-border bg-[hsl(var(--control))] hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
               disabled={!attachmentsEnabled}
               onClick={() => {
                 updateAttachmentTabState({ sourceFolder: "" });
@@ -233,7 +233,7 @@ export function AttachmentsTab({
               onValueChange={(v) => updateAttachmentTabState({ extension: v })}
               disabled={!attachmentsEnabled}
             >
-              <SelectTrigger className="h-8 w-36">
+              <SelectTrigger className="h-[30px] w-36">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -260,7 +260,7 @@ export function AttachmentsTab({
               }}
               disabled={!attachmentsEnabled}
             />
-            <label htmlFor="discard-attachments" className="text-[12px] cursor-pointer">
+            <label htmlFor="discard-attachments" className="text-xs cursor-pointer">
               Discard Old
             </label>
           </div>
@@ -276,7 +276,7 @@ export function AttachmentsTab({
               }}
               disabled={!attachmentsEnabled}
             />
-            <label htmlFor="allow-duplicate-attachments" className="text-[12px] cursor-pointer">
+            <label htmlFor="allow-duplicate-attachments" className="text-xs cursor-pointer">
               Allow Duplicates
             </label>
           </div>
@@ -292,12 +292,12 @@ export function AttachmentsTab({
               }}
               disabled={!attachmentsEnabled}
             />
-            <label htmlFor="attachment-expert" className="text-[12px] cursor-pointer">
+            <label htmlFor="attachment-expert" className="text-xs cursor-pointer">
               Expert Mode
             </label>
           </div>
         </div>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Attachment files are added to every queued video. Disable duplicates to keep one attachment per matching file name.
         </p>
       </div>
@@ -307,7 +307,7 @@ export function AttachmentsTab({
         <div className="panel-card-header">
           <div className="flex items-center gap-2">
             <h4 className="panel-card-title">Attachment Files</h4>
-            <span className="text-[11px] font-mono text-muted-foreground">{attachmentFiles.length}</span>
+            <span className="text-xs font-mono text-muted-foreground">{attachmentFiles.length}</span>
           </div>
           <div className="panel-card-actions">
             <Button
@@ -324,10 +324,10 @@ export function AttachmentsTab({
         </div>
 
         {/* Column headers */}
-        <div className="grid grid-cols-[1fr_80px_100px] border-b border-panel-border/20 px-4 py-1.5 bg-panel-header/30">
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60">Name</div>
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 text-center">Type</div>
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 text-right">Size</div>
+        <div className="grid grid-cols-[1fr_80px_100px] border-b border-panel-border px-4 py-1.5 bg-panel-header/30">
+          <div className="text-xs text-muted-foreground/60">Name</div>
+          <div className="text-xs text-muted-foreground/60 text-center">Type</div>
+          <div className="text-xs text-muted-foreground/60 text-right">Size</div>
         </div>
 
         <div className="flex-1 overflow-y-auto scrollbar-thin">
@@ -351,7 +351,7 @@ export function AttachmentsTab({
                 key={file.id}
                 onClick={() => setSelectedIndex(index)}
                 className={cn(
-                  "grid grid-cols-[1fr_80px_100px] h-10 border-b border-panel-border/15 cursor-pointer transition-smooth px-4",
+                  "grid grid-cols-[1fr_80px_100px] h-10 border-b border-panel-border cursor-pointer transition-smooth px-4",
                   selectedIndex === index
                     ? "bg-selection border-l-2 border-l-selection-border"
                     : "hover:bg-accent/30"

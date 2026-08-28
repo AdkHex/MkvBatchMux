@@ -154,8 +154,8 @@ export function MuxSettingTab({
       {/* Output Configuration */}
       <div className="px-5 pt-2 pb-2 space-y-2.5">
         {/* Output Destination Card */}
-        <div className="rounded-lg border border-panel-border/30 bg-panel-header/50 px-4 py-2 space-y-2 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.12)]">
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Output Folder</div>
+        <div className="rounded-lg border border-panel-border bg-panel-header/50 px-4 py-2 space-y-2 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.12)]">
+          <div className="text-xs font-semibold text-muted-foreground">Output folder</div>
           <div className="flex items-center gap-2">
             <Input
               value={settings.directory}
@@ -164,12 +164,12 @@ export function MuxSettingTab({
                 onMuxSettingsChange({ destinationDir: e.target.value });
               }}
               placeholder="Leave empty to overwrite source files"
-              className="app-input flex-1 h-9"
+              className="app-input flex-1 h-[30px]"
             />
             <Button
               variant="ghost"
               size="icon"
-              className="h-9 w-9 shrink-0 border border-panel-border/40 bg-card/50 text-muted-foreground hover:text-foreground hover:bg-panel-header/60"
+              className="h-[30px] w-[30px] shrink-0 border border-panel-border bg-card/50 text-muted-foreground hover:text-foreground hover:bg-panel-header/60"
               onClick={async () => {
                 const directory = await pickDirectory();
                 if (directory) {
@@ -182,7 +182,7 @@ export function MuxSettingTab({
             </Button>
           </div>
           <div className="grid grid-cols-[150px_minmax(0,1fr)] items-center gap-2">
-            <label className="text-xs text-muted-foreground">Naming Template</label>
+            <label className="text-xs text-muted-foreground">Naming template</label>
             <Input
               value={settings.namingPattern}
               onChange={(event) => {
@@ -190,7 +190,7 @@ export function MuxSettingTab({
                 onMuxSettingsChange({ outputNamingPattern: event.target.value });
               }}
               placeholder="{original_filename}"
-              className="app-input h-8 font-mono text-xs"
+              className="app-input h-[30px] font-mono text-xs"
             />
           </div>
           <div className="flex items-center gap-2 pt-0.5">
@@ -207,17 +207,17 @@ export function MuxSettingTab({
               If empty, source files are overwritten
             </label>
           </div>
-          <p className="text-[11px] text-muted-foreground/70">
+          <p className="text-xs text-muted-foreground/70">
             Preview: <span className="font-mono text-foreground/80">{namingPreview}</span>. Tokens: {"{original_filename}"}, {"{id}"}, {"{extension}"}.
           </p>
         </div>
 
         {/* Cleanup (Outside Advanced) */}
-        <div className="rounded-lg border border-panel-border/25 bg-card px-4 py-2 space-y-2.5">
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Cleanup</div>
+        <div className="rounded-lg border border-panel-border bg-card px-4 py-2 space-y-2.5">
+          <div className="text-xs font-semibold text-muted-foreground">Cleanup</div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Remove From Source</div>
+              <div className="text-xs font-semibold text-muted-foreground">Remove from source</div>
               <div className="flex items-center gap-2">
                 <Checkbox
                   id="discard-chapters"
@@ -225,7 +225,7 @@ export function MuxSettingTab({
                   onCheckedChange={(checked) => onMuxSettingsChange({ discardOldChapters: checked as boolean })}
                   className="h-3.5 w-7"
                 />
-                <label htmlFor="discard-chapters" className="text-xs cursor-pointer">Remove Chapters</label>
+                <label htmlFor="discard-chapters" className="text-xs cursor-pointer">Remove chapters</label>
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox
@@ -234,7 +234,7 @@ export function MuxSettingTab({
                   onCheckedChange={(checked) => onMuxSettingsChange({ discardOldAttachments: checked as boolean })}
                   className="h-3.5 w-7"
                 />
-                <label htmlFor="discard-attachments" className="text-xs cursor-pointer">Remove Attachments</label>
+                <label htmlFor="discard-attachments" className="text-xs cursor-pointer">Remove attachments</label>
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox
@@ -243,12 +243,12 @@ export function MuxSettingTab({
                   onCheckedChange={(checked) => onMuxSettingsChange({ removeGlobalTags: checked as boolean })}
                   className="h-3.5 w-7"
                 />
-                <label htmlFor="remove-global-tags" className="text-xs cursor-pointer">Remove Global Tags</label>
+                <label htmlFor="remove-global-tags" className="text-xs cursor-pointer">Remove global tags</label>
               </div>
             </div>
             <div className="space-y-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Notes</div>
-              <p className="text-[11px] text-muted-foreground/70">
+              <div className="text-xs font-semibold text-muted-foreground">Notes</div>
+              <p className="text-xs text-muted-foreground/70">
                 These options strip metadata from the source file when muxing.
               </p>
             </div>
@@ -259,10 +259,10 @@ export function MuxSettingTab({
         <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
           <div className="pb-1.5">
             <CollapsibleTrigger className="w-full">
-              <div className="flex items-center justify-between rounded-lg border border-panel-border/25 bg-card px-4 py-2 text-left">
+              <div className="flex items-center justify-between rounded-lg border border-panel-border bg-card px-4 py-2 text-left">
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Advanced</div>
-                  <div className="text-[11px] text-muted-foreground/70">Track rules, safety checks, and logging</div>
+                  <div className="text-xs font-semibold text-muted-foreground">Advanced</div>
+                  <div className="text-xs text-muted-foreground/70">Track rules, safety checks, and logging</div>
                 </div>
                 <div className="text-xs text-muted-foreground">{advancedOpen ? "Hide" : "Show"}</div>
               </div>
@@ -270,11 +270,11 @@ export function MuxSettingTab({
           </div>
           <CollapsibleContent>
             <div className="pb-2.5 space-y-2.5">
-            <div className="rounded-lg border border-panel-border/25 bg-card px-4 py-2 space-y-2.5">
-              <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Track Options</div>
+            <div className="rounded-lg border border-panel-border bg-card px-4 py-2 space-y-2.5">
+              <div className="text-xs font-semibold text-muted-foreground">Track options</div>
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2.5 rounded-lg bg-panel-header/60 border border-panel-border/30 px-3 py-2">
-                  <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide flex items-center gap-2">
+                <div className="space-y-2.5 rounded-lg bg-panel-header/60 border border-panel-border px-3 py-2">
+                  <h4 className="text-xs font-semibold text-foreground flex items-center gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                     Audio Rules
                   </h4>
@@ -293,7 +293,7 @@ export function MuxSettingTab({
                           }}
                           className="h-3.5 w-7"
                         />
-                        <label htmlFor="only-keep-audios" className="text-xs cursor-pointer">Keep Only</label>
+                        <label htmlFor="only-keep-audios" className="text-xs cursor-pointer">Keep only</label>
                       </div>
                       <Select
                         value={audioKeepLanguage}
@@ -304,7 +304,7 @@ export function MuxSettingTab({
                         }}
                         disabled={!onlyKeepAudios}
                       >
-                        <SelectTrigger className="w-24 h-7 text-xs bg-input border-0">
+                        <SelectTrigger className="w-24 h-[26px] text-xs bg-input border-0">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -328,7 +328,7 @@ export function MuxSettingTab({
                           }}
                           className="h-3.5 w-7"
                         />
-                        <label htmlFor="make-audio-default" className="text-xs cursor-pointer">Set Default</label>
+                        <label htmlFor="make-audio-default" className="text-xs cursor-pointer">Set default</label>
                       </div>
                       <Select
                         value={audioDefaultLanguage}
@@ -339,7 +339,7 @@ export function MuxSettingTab({
                         }}
                         disabled={!makeAudioDefault}
                       >
-                        <SelectTrigger className="w-24 h-7 text-xs bg-input border-0">
+                        <SelectTrigger className="w-24 h-[26px] text-xs bg-input border-0">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -353,8 +353,8 @@ export function MuxSettingTab({
                   </div>
                 </div>
 
-                <div className="space-y-2.5 rounded-lg bg-panel-header/60 border border-panel-border/30 px-3 py-2">
-                  <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide flex items-center gap-2">
+                <div className="space-y-2.5 rounded-lg bg-panel-header/60 border border-panel-border px-3 py-2">
+                  <h4 className="text-xs font-semibold text-foreground flex items-center gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-accent-teal" />
                     Subtitle Rules
                   </h4>
@@ -373,7 +373,7 @@ export function MuxSettingTab({
                           }}
                           className="h-3.5 w-7"
                         />
-                        <label htmlFor="only-keep-subtitles" className="text-xs cursor-pointer">Keep Only</label>
+                        <label htmlFor="only-keep-subtitles" className="text-xs cursor-pointer">Keep only</label>
                       </div>
                       <Select
                         value={subtitleKeepLanguage}
@@ -384,7 +384,7 @@ export function MuxSettingTab({
                         }}
                         disabled={!onlyKeepSubtitles}
                       >
-                        <SelectTrigger className="w-24 h-7 text-xs bg-input border-0">
+                        <SelectTrigger className="w-24 h-[26px] text-xs bg-input border-0">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -408,7 +408,7 @@ export function MuxSettingTab({
                           }}
                           className="h-3.5 w-7"
                         />
-                        <label htmlFor="make-subtitle-default" className="text-xs cursor-pointer">Set Default</label>
+                        <label htmlFor="make-subtitle-default" className="text-xs cursor-pointer">Set default</label>
                       </div>
                       <Select
                         value={subtitleDefaultLanguage}
@@ -419,7 +419,7 @@ export function MuxSettingTab({
                         }}
                         disabled={!makeSubtitleDefault}
                       >
-                        <SelectTrigger className="w-24 h-7 text-xs bg-input border-0">
+                        <SelectTrigger className="w-24 h-[26px] text-xs bg-input border-0">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -435,11 +435,11 @@ export function MuxSettingTab({
               </div>
             </div>
 
-            <div className="rounded-lg border border-panel-border/25 bg-card px-4 py-2 space-y-2.5">
-              <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Safety & Logging</div>
+            <div className="rounded-lg border border-panel-border bg-card px-4 py-2 space-y-2.5">
+              <div className="text-xs font-semibold text-muted-foreground">Safety and logging</div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Safety</div>
+                  <div className="text-xs font-semibold text-muted-foreground">Safety</div>
                   <div className="flex items-center gap-2">
                     <Checkbox 
                       id="add-crc"
@@ -447,7 +447,7 @@ export function MuxSettingTab({
                       onCheckedChange={(checked) => onMuxSettingsChange({ addCrc: checked as boolean })}
                       className="h-3.5 w-7"
                     />
-                    <label htmlFor="add-crc" className="text-xs cursor-pointer">Write CRC</label>
+                    <label htmlFor="add-crc" className="text-xs cursor-pointer">Write CRC checksum</label>
                   </div>
                   <div className="flex items-center gap-2">
                     <Checkbox 
@@ -456,7 +456,7 @@ export function MuxSettingTab({
                       onCheckedChange={(checked) => onMuxSettingsChange({ removeOldCrc: checked as boolean })}
                       className="h-3.5 w-7"
                     />
-                    <label htmlFor="remove-crc" className="text-xs cursor-pointer">Remove CRC Tags</label>
+                    <label htmlFor="remove-crc" className="text-xs cursor-pointer">Remove CRC tags</label>
                   </div>
                   <div className="flex items-center gap-2">
                     <Checkbox 
@@ -465,11 +465,11 @@ export function MuxSettingTab({
                       onCheckedChange={(checked) => onMuxSettingsChange({ abortOnErrors: checked as boolean })}
                       className="h-3.5 w-7"
                     />
-                    <label htmlFor="abort-errors" className="text-xs cursor-pointer">Stop on Errors</label>
+                    <label htmlFor="abort-errors" className="text-xs cursor-pointer">Stop on errors</label>
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Logging</div>
+                  <div className="text-xs font-semibold text-muted-foreground">Logging</div>
                   <div className="flex items-center gap-2">
                     <Checkbox 
                       id="keep-log"
@@ -477,7 +477,7 @@ export function MuxSettingTab({
                       onCheckedChange={(checked) => onMuxSettingsChange({ keepLogFile: checked as boolean })}
                       className="h-3.5 w-7"
                     />
-                    <label htmlFor="keep-log" className="text-xs cursor-pointer">Keep Log</label>
+                    <label htmlFor="keep-log" className="text-xs cursor-pointer">Keep log file</label>
                   </div>
                 </div>
               </div>
@@ -487,7 +487,7 @@ export function MuxSettingTab({
         </Collapsible>
 
         {/* Execution Card */}
-        <div className="sticky top-0 z-20 rounded-lg border border-panel-border/35 bg-panel-header/90 px-4 py-2 space-y-2.5 backdrop-blur">
+        <div className="sticky top-0 z-20 rounded-lg border border-panel-border bg-panel-header/90 px-4 py-2 space-y-2.5 backdrop-blur">
           {hasExternalLinkIssues && (
             <div className="rounded-md border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning flex items-start gap-2">
               <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
@@ -502,12 +502,12 @@ export function MuxSettingTab({
             </div>
           )}
           <div className="flex items-center justify-between">
-            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Mux Engine</div>
+            <div className="text-xs font-semibold text-muted-foreground">Mux engine</div>
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
-                className="h-8 px-3 text-xs gap-1.5 border-panel-border/40 bg-card/40 hover:bg-panel-header/60"
+                className="h-[30px] px-3 text-xs gap-1.5 border-panel-border bg-card/40 hover:bg-panel-header/60"
                 onClick={onPreviewQueue}
                 disabled={hasExternalLinkIssues || previewLoading || (jobs.length === 0 && videoFiles.length === 0)}
               >
@@ -517,7 +517,7 @@ export function MuxSettingTab({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 px-3 text-xs gap-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                className="h-[30px] px-3 text-xs gap-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                 onClick={onClearAll}
               >
                 <Trash2 className="w-3 h-3" />
@@ -526,7 +526,7 @@ export function MuxSettingTab({
               <Button
                 variant="default"
                 size="sm"
-                className="h-8 px-4 text-xs gap-1.5 font-medium"
+                className="h-[30px] px-4 text-xs gap-1.5 font-medium"
                 onClick={onAddToQueue}
               >
                 <ListPlus className="w-3 h-3" />
@@ -535,7 +535,7 @@ export function MuxSettingTab({
               <Button
                 variant="default"
                 size="sm"
-                className="h-8 px-4 text-xs gap-1.5 font-medium"
+                className="h-[30px] px-4 text-xs gap-1.5 font-medium"
                 onClick={onStartMuxing}
                 disabled={hasExternalLinkIssues || !hasJobs || isProcessing}
               >
@@ -546,7 +546,7 @@ export function MuxSettingTab({
           </div>
           <div className="grid grid-cols-2 gap-5">
             <div className="space-y-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Performance</div>
+              <div className="text-xs font-semibold text-muted-foreground">Performance</div>
               <div className="flex items-center gap-2">
                 <Checkbox
                   id="fast-mux"
@@ -575,7 +575,7 @@ export function MuxSettingTab({
               </div>
             </div>
             <div className="space-y-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Parallel Jobs</div>
+              <div className="text-xs font-semibold text-muted-foreground">Parallel jobs</div>
               <div className="inline-flex items-center gap-2">
                 <Input
                   type="number"
@@ -583,10 +583,10 @@ export function MuxSettingTab({
                   max={MAX_PARALLEL_JOBS}
                   value={autoParallelJobs}
                   readOnly
-                  className="h-7 w-16 text-xs"
+                  className="h-[26px] w-16 text-xs"
                   title="Automatically follows the queued file count, capped at 16."
                 />
-                <span className="text-[11px] text-muted-foreground/70">
+                <span className="text-xs text-muted-foreground/70">
                   Auto set from queue, max {MAX_PARALLEL_JOBS}
                 </span>
               </div>
@@ -597,20 +597,20 @@ export function MuxSettingTab({
 
       {/* Job Queue Section */}
       <div className="px-5 pt-1 pb-2 flex items-center justify-between">
-        <div className="section-label">Job Queue</div>
+        <div className="section-label">Job queue</div>
         <div className="text-xs text-muted-foreground">Queue: {jobs.length} items</div>
       </div>
       {hasJobs && (
         <div className="px-5 pb-2">
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-1">
-            <span>Overall Progress</span>
+          <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+            <span>Overall progress</span>
             <span>{overallProgress}%</span>
           </div>
           <Progress value={overallProgress} className="h-2" />
         </div>
       )}
 
-          <div className="flex-1 flex flex-col rounded-lg border border-panel-border/25 bg-card overflow-hidden mx-5 mb-2.5">
+          <div className="flex-1 flex flex-col rounded-lg border border-panel-border bg-card overflow-hidden mx-5 mb-2.5">
         <div className="flex-1 overflow-y-auto scrollbar-thin">
           <div className="table-header sticky top-0 z-10">
             <div className="grid grid-cols-[1fr_90px_90px_140px_90px] gap-0">
@@ -643,7 +643,7 @@ export function MuxSettingTab({
                     setReportOpen(true);
                   }}
                   className={cn(
-                    "grid grid-cols-[1fr_90px_90px_140px_90px] gap-0 h-11 border-b border-panel-border/25 cursor-pointer transition-smooth",
+                    "grid grid-cols-[1fr_90px_90px_140px_90px] gap-0 h-11 border-b border-panel-border cursor-pointer transition-smooth",
                     selectedJobIndex === index
                       ? "bg-selection border-l-2 border-l-selection-border"
                       : "hover:bg-accent/30"
@@ -660,7 +660,7 @@ export function MuxSettingTab({
                   </div>
                   <div className="px-3 text-center flex items-center justify-center">
                     <span className={cn(
-                      "text-[10px] font-medium px-2 py-0.5 rounded",
+                      "text-xs font-medium px-2 py-0.5 rounded",
                       job.status === 'completed' && "bg-success/20 text-success",
                       job.status === 'error' && "bg-destructive/20 text-destructive",
                       job.status === 'stopped' && "bg-warning/20 text-warning",
@@ -677,7 +677,7 @@ export function MuxSettingTab({
                     {job.status === 'processing' ? (
                       <div className="flex flex-col gap-1 w-full">
                         <Progress value={job.progress} className="h-1.5" />
-                        <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono">
+                        <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
                           <span>{job.progress}%</span>
                           <span>ETA {formatEta(job.etaSeconds)}</span>
                         </div>
@@ -685,13 +685,13 @@ export function MuxSettingTab({
                     ) : job.status === 'completed' ? (
                       <div className="flex flex-col gap-1 w-full">
                         <Progress value={100} className="h-1.5" />
-                        <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono">
+                        <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
                           <span>100%</span>
                           <span>ETA —</span>
                         </div>
                       </div>
                     ) : job.status === 'stopped' ? (
-                      <div className="w-full text-[10px] text-warning text-center font-medium">Stopped</div>
+                      <div className="w-full text-xs text-warning text-center font-medium">Stopped</div>
                     ) : null}
                   </div>
                   <div className="px-3 text-xs text-center text-muted-foreground font-mono flex items-center justify-center">
@@ -710,7 +710,7 @@ export function MuxSettingTab({
         <Button
           variant="ghost"
           size="sm"
-          className="h-8 px-3 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+          className="h-[30px] px-3 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
           onClick={onViewLog}
         >
           <FileText className="w-3.5 h-3.5" />
@@ -725,7 +725,7 @@ export function MuxSettingTab({
           <Button
             variant="outline"
             size="sm"
-            className="h-8 px-3 text-xs gap-1.5 border-panel-border/40 bg-card/40 hover:bg-panel-header/60"
+            className="h-[30px] px-3 text-xs gap-1.5 border-panel-border bg-card/40 hover:bg-panel-header/60"
             onClick={onPauseMuxing}
             disabled={!isProcessing}
           >
@@ -735,7 +735,7 @@ export function MuxSettingTab({
           <Button
             variant="outline"
             size="sm"
-            className="h-8 px-3 text-xs gap-1.5 border-panel-border/40 bg-card/40 hover:bg-panel-header/60"
+            className="h-[30px] px-3 text-xs gap-1.5 border-panel-border bg-card/40 hover:bg-panel-header/60"
             onClick={onResumeMuxing}
             disabled={!isProcessing}
           >
@@ -746,7 +746,7 @@ export function MuxSettingTab({
             <Button
               variant="destructive"
               size="sm"
-              className="h-8 px-3 text-xs gap-1.5"
+              className="h-[30px] px-3 text-xs gap-1.5"
               onClick={onStopMuxing}
             >
               <Square className="w-3.5 h-3.5" />
@@ -775,14 +775,14 @@ export function MuxSettingTab({
             ) : (
               reportData.sections.map((section) => (
                 <div key={section.title} className="space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <div className="text-xs font-semibold text-muted-foreground">
                     {section.title}
                   </div>
                   <div className="space-y-2">
                     {section.items.map((item, idx) => (
                       <div
                         key={`${section.title}-${idx}`}
-                        className="rounded-md border border-panel-border/40 bg-panel-header/40 px-3 py-2"
+                        className="rounded-md border border-panel-border bg-panel-header px-3 py-2"
                       >
                         <div className="text-sm font-medium text-foreground">{item.title}</div>
                         {item.details.length > 0 && (

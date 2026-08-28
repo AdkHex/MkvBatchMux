@@ -1,0 +1,1042 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>MKVBatchMux — Redesign v3</title>
+<style>
+/* ════════════════════════════════════════════════
+   Calm, neutral, well-made. No gradients, no glow.
+   Neutral greys · one blue accent · generous spacing.
+   ════════════════════════════════════════════════ */
+:root{
+  --bg:#1B1B1B;
+  --surface:#212121;
+  --surface-2:#272727;
+  --raised:#2D2D2D;
+  --hover:rgba(255,255,255,.05);
+
+  --line:rgba(255,255,255,.08);
+  --line-2:rgba(255,255,255,.13);
+
+  --fg:#EDEDED;
+  --fg-2:rgba(237,237,237,.68);
+  --fg-3:rgba(237,237,237,.45);
+
+  --acc:#4A9EFF;
+  --acc-hover:#63ADFF;
+  --acc-dim:rgba(74,158,255,.13);
+  --acc-line:rgba(74,158,255,.4);
+
+  --ok:#4ADE80;      --ok-dim:rgba(74,222,128,.12);
+  --warn:#FBBF24;    --warn-dim:rgba(251,191,36,.12);
+  --err:#F87171;     --err-dim:rgba(248,113,113,.12);
+
+  --r:4px;
+  --r-lg:8px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:#0E0E0E;
+  font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  font-size:13px;line-height:20px;color:var(--fg);
+  -webkit-font-smoothing:antialiased;
+  display:flex;align-items:center;justify-content:center;padding:20px;
+}
+.mono{font-family:"Cascadia Mono",Consolas,monospace;font-variant-numeric:tabular-nums}
+.dim{color:var(--fg-3)}
+.grow{flex:1;min-width:0}
+.row{display:flex;align-items:center;gap:8px}
+.trunc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cap{font-size:12px;line-height:16px}
+
+h1{font-size:20px;line-height:28px;font-weight:600;letter-spacing:-.01em}
+h2{font-size:15px;line-height:22px;font-weight:600}
+.lbl{font-size:12px;font-weight:600;color:var(--fg-2)}
+
+/* ─────── window ─────── */
+.app{
+  width:1240px;height:790px;background:var(--bg);border-radius:8px;overflow:hidden;
+  display:flex;flex-direction:column;position:relative;
+  box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.07);
+}
+.tb{height:32px;flex:none;display:flex;align-items:center;padding-left:12px;gap:8px}
+.tb .dotmark{width:14px;height:14px;border-radius:3px;background:var(--acc);flex:none}
+.tb .nm{font-size:12px;color:var(--fg-2);flex:1}
+.cap-btn{width:46px;height:32px;display:grid;place-items:center;border:0;background:transparent;
+  color:var(--fg-2);cursor:pointer}
+.cap-btn:hover{background:rgba(255,255,255,.07)}
+.cap-btn.x:hover{background:#C42B1C;color:#fff}
+.cap-btn svg{width:10px;height:10px}
+
+.main{flex:1;display:flex;min-height:0}
+
+/* ─────── sidebar ─────── */
+.side{width:196px;flex:none;padding:4px 8px 8px;display:flex;flex-direction:column;gap:1px}
+.nav{height:34px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:var(--r);
+  border:0;background:transparent;color:var(--fg-2);cursor:pointer;font:inherit;font-size:13px;
+  text-align:left;width:100%;position:relative}
+.nav:hover{background:var(--hover);color:var(--fg)}
+.nav.on{background:var(--raised);color:var(--fg);font-weight:500}
+.nav.on::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;
+  border-radius:1px;background:var(--acc)}
+.nav svg{width:15px;height:15px;flex:none;opacity:.85}
+.nav .n{flex:1}
+.nav .ct{font-size:11px;color:var(--fg-3);font-variant-numeric:tabular-nums}
+.nav.on .ct{color:var(--fg-2)}
+.nav .ct.w{color:var(--warn)}
+.side-sp{flex:1}
+.side-hr{height:1px;background:var(--line);margin:6px 10px}
+
+/* ─────── content ─────── */
+.stage{flex:1;min-width:0;background:var(--surface);border-radius:8px 0 0 0;
+  border-left:1px solid var(--line);border-top:1px solid var(--line);
+  display:flex;flex-direction:column;overflow:hidden}
+.view{display:none;flex-direction:column;height:100%;min-height:0}
+.view.on{display:flex}
+.vh{padding:20px 24px 14px;flex:none;display:flex;align-items:center;gap:10px}
+.vh .sub{font-size:12px;color:var(--fg-3);margin-top:2px}
+.vb{flex:1;min-height:0;overflow:auto;padding:0 24px 16px;display:flex;flex-direction:column;gap:12px}
+
+/* ─────── controls ─────── */
+.btn{height:30px;padding:0 12px;border-radius:var(--r);border:1px solid var(--line-2);
+  background:var(--raised);color:var(--fg);font:inherit;font-size:12.5px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:6px;white-space:nowrap;transition:background .12s}
+.btn:hover{background:#363636}
+.btn:active{background:#2A2A2A}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#04203F;font-weight:600}
+.btn.pri:hover{background:var(--acc-hover)}
+.btn.gho{background:transparent;border-color:transparent;color:var(--fg-2)}
+.btn.gho:hover{background:var(--hover);color:var(--fg)}
+.btn.dgr{color:var(--fg-2)}
+.btn.dgr:hover{background:var(--err-dim);color:var(--err);border-color:rgba(248,113,113,.3)}
+.btn.sm{height:26px;padding:0 9px;font-size:12px}
+.btn.ic{width:30px;padding:0;justify-content:center}
+.btn.ic.sm{width:26px}
+.btn:disabled{opacity:.4;cursor:default}
+
+.inp{height:30px;padding:0 10px;border-radius:var(--r);background:#181818;color:var(--fg);
+  font:inherit;font-size:12.5px;border:1px solid var(--line-2);width:100%}
+.inp:focus{outline:none;border-color:var(--acc)}
+.inp::placeholder{color:var(--fg-3)}
+select.inp{cursor:pointer;appearance:none;padding-right:24px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5l3.5 3.5 3.5-3.5' stroke='%23999' fill='none' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 8px center;background-size:11px}
+.fld{display:flex;flex-direction:column;gap:5px}
+.fld>label{font-size:12px;color:var(--fg-3)}
+
+.sw{width:34px;height:19px;border-radius:10px;background:#3A3A3A;border:1px solid var(--line-2);
+  position:relative;cursor:pointer;flex:none;transition:background .15s}
+.sw::after{content:"";position:absolute;left:3px;top:50%;transform:translateY(-50%);
+  width:12px;height:12px;border-radius:6px;background:var(--fg-2);transition:left .15s,background .15s}
+.sw.on{background:var(--acc);border-color:var(--acc)}
+.sw.on::after{left:18px;background:#fff}
+.swr{display:flex;align-items:center;gap:12px;min-height:32px}
+.swr .t{flex:1;min-width:0;font-size:13px}
+.swr .s{font-size:12px;color:var(--fg-3);margin-top:1px}
+
+.cb{width:16px;height:16px;border-radius:3px;border:1px solid var(--line-2);background:#181818;
+  flex:none;cursor:pointer;display:grid;place-items:center}
+.cb.on{background:var(--acc);border-color:var(--acc)}
+.cb.on::after{content:"";width:7px;height:4px;border-left:1.8px solid #fff;
+  border-bottom:1.8px solid #fff;transform:rotate(-45deg) translate(1px,-1px)}
+.cbr{display:flex;align-items:center;gap:9px;cursor:pointer;min-height:26px}
+
+.card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg)}
+.pad{padding:14px 16px}
+
+.chip{display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:3px;
+  font-size:11px;font-weight:500;background:#333;color:var(--fg-2);white-space:nowrap}
+.chip.a{background:var(--acc-dim);color:var(--acc)}
+.chip.o{background:var(--ok-dim);color:var(--ok)}
+.chip.w{background:var(--warn-dim);color:var(--warn)}
+.chip.e{background:var(--err-dim);color:var(--err)}
+
+/* ─────── table ─────── */
+.tbl{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.th{height:32px;flex:none;display:grid;align-items:center;border-bottom:1px solid var(--line);
+  font-size:11.5px;font-weight:600;color:var(--fg-3)}
+.th>div,.tr>div{padding:0 12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tscroll{flex:1;min-height:0;overflow:auto}
+.tr{display:grid;align-items:center;height:34px;cursor:pointer;border-left:2px solid transparent;
+  font-size:12.5px}
+.tr:hover{background:var(--hover)}
+.tr.on{background:var(--acc-dim);border-left-color:var(--acc)}
+.tf{height:36px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 14px;
+  border-top:1px solid var(--line);font-size:12px;color:var(--fg-3)}
+.num{text-align:right}
+
+/* two pane */
+.split{flex:1;min-height:0;display:flex;gap:10px}
+.pane{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.ph{height:36px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 14px;
+  border-bottom:1px solid var(--line)}
+.ph .t{font-size:12.5px;font-weight:600;flex:1}
+.pscroll{flex:1;overflow:auto}
+.fr{display:flex;align-items:center;gap:10px;height:34px;padding:0 12px;cursor:pointer;
+  border-left:2px solid transparent;font-size:12.5px}
+.fr:hover{background:var(--hover)}
+.fr.on{background:var(--acc-dim);border-left-color:var(--acc)}
+.fr .i{width:20px;text-align:right;color:var(--fg-3);font-size:11.5px;flex:none}
+.fr .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fr .a{display:none;gap:2px;flex:none}
+.fr:hover .a{display:flex}
+
+/* expander */
+.exp{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.exp+.exp{margin-top:8px}
+.eh{min-height:48px;padding:10px 16px;display:flex;align-items:center;gap:12px;cursor:pointer}
+.eh:hover{background:var(--hover)}
+.eh .t{flex:1;min-width:0}
+.eh .v{font-size:12px;color:var(--fg-3)}
+.ec{color:var(--fg-3);transition:transform .18s;flex:none}
+.exp.on .ec{transform:rotate(180deg)}
+.eb{display:none;border-top:1px solid var(--line);padding:12px 16px;flex-direction:column;gap:6px}
+.exp.on .eb{display:flex}
+
+/* info bar */
+.ib{display:flex;gap:10px;padding:11px 14px;border-radius:var(--r-lg);border:1px solid var(--line);
+  background:var(--surface-2);align-items:flex-start}
+.ib.w{background:var(--warn-dim);border-color:rgba(251,191,36,.28)}
+.ib .ii{flex:none}
+
+.pb{height:3px;border-radius:2px;background:#333;overflow:hidden}
+.pb>i{display:block;height:100%;background:var(--acc);border-radius:2px;transition:width .3s}
+.spin{width:14px;height:14px;border-radius:50%;border:2px solid #333;border-top-color:var(--acc);
+  animation:sp .8s linear infinite;flex:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* status bar */
+.sb{height:48px;flex:none;display:flex;align-items:center;gap:10px;padding:0 20px;
+  border-top:1px solid var(--line)}
+.sbs{flex:1;display:flex;align-items:center;gap:14px;font-size:12px;color:var(--fg-3)}
+.sbs b{color:var(--fg-2);font-weight:600;font-variant-numeric:tabular-nums}
+.sb-run{display:none;flex:1;flex-direction:column;gap:5px;min-width:0}
+body.run .sbs{display:none}
+body.run .sb-run{display:flex}
+body.run .b-start{display:none}
+body.run .b-run{display:inline-flex}
+.b-run{display:none}
+
+/* empty */
+.emp{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+  text-align:center;padding:36px;color:var(--fg-3)}
+.emp .ic{width:44px;height:44px;border-radius:var(--r-lg);background:var(--raised);
+  display:grid;place-items:center;margin-bottom:8px;color:var(--fg-3)}
+.emp .t{font-size:13px;font-weight:600;color:var(--fg-2)}
+
+/* dialog */
+.scrim{position:absolute;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;
+  justify-content:center;z-index:100}
+.scrim.on{display:flex}
+.dlg{background:var(--surface-2);border:1px solid var(--line-2);border-radius:var(--r-lg);
+  box-shadow:0 24px 60px rgba(0,0,0,.6);width:480px;max-width:94%;max-height:86%;
+  display:flex;flex-direction:column;overflow:hidden}
+.dlg.md{width:640px}.dlg.lg{width:820px}
+.dh{padding:18px 20px 10px;flex:none}
+.dh p{font-size:12.5px;color:var(--fg-3);margin-top:3px}
+.db{flex:1;min-height:0;overflow:auto;padding:10px 20px;display:flex;flex-direction:column;gap:12px}
+.df{flex:none;padding:14px 20px;display:flex;gap:8px;justify-content:flex-end;
+  border-top:1px solid var(--line)}
+
+/* menu */
+.menu{position:absolute;background:var(--raised);border:1px solid var(--line-2);
+  border-radius:var(--r-lg);box-shadow:0 12px 32px rgba(0,0,0,.5);padding:4px;min-width:190px;
+  z-index:110;display:none}
+.menu.on{display:block}
+.mi{height:30px;padding:0 11px;border-radius:var(--r);display:flex;align-items:center;gap:10px;
+  cursor:pointer;font-size:12.5px}
+.mi:hover{background:var(--hover)}
+.mi .k{margin-left:auto;font-size:11px;color:var(--fg-3)}
+.msep{height:1px;background:var(--line);margin:4px 8px}
+
+/* toast */
+.toasts{position:absolute;right:16px;bottom:64px;display:flex;flex-direction:column;gap:8px;z-index:95}
+.tst{width:310px;background:var(--raised);border:1px solid var(--line-2);border-radius:var(--r-lg);
+  box-shadow:0 12px 32px rgba(0,0,0,.5);padding:11px 13px;display:flex;gap:10px;align-items:flex-start}
+.tst .t{font-size:12.5px;font-weight:600}
+.tst .m{font-size:12px;line-height:16px;color:var(--fg-3);margin-top:2px}
+
+kbd{display:inline-block;min-width:19px;padding:1px 5px;border-radius:3px;background:#333;
+  border:1px solid var(--line-2);font:inherit;font-size:11px;text-align:center}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+svg{display:block}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#3A3A3A;border-radius:5px;border:3px solid transparent;
+  background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:#4A4A4A;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+
+.helper{position:fixed;left:14px;bottom:14px;z-index:500;display:flex;gap:5px;flex-wrap:wrap;
+  max-width:340px;background:rgba(15,15,15,.96);border:1px solid #2a2a2a;border-radius:8px;padding:8px}
+.helper b{width:100%;font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.08em;margin-top:3px}
+.helper b:first-child{margin-top:0}
+.helper button{font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid #333;
+  background:#1e1e1e;color:#bbb;cursor:pointer;font-family:inherit}
+.helper button:hover{background:#2c2c2c;color:#fff}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <div class="tb">
+    <div class="dotmark"></div>
+    <span class="nm">MKVBatchMux</span>
+    <button class="cap-btn" aria-label="Minimize"><svg viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor"/></svg></button>
+    <button class="cap-btn" aria-label="Maximize"><svg viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" fill="none" stroke="currentColor"/></svg></button>
+    <button class="cap-btn x" aria-label="Close"><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor"/></svg></button>
+  </div>
+
+  <div class="main">
+
+    <!-- sidebar -->
+    <nav class="side">
+      <button class="nav on" data-v="videos">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="3.5" width="9" height="9" rx="1.5"/><path d="M10.5 7l4-2v6l-4-2z" stroke-linejoin="round"/></svg>
+        <span class="n">Videos</span><span class="ct">24</span></button>
+      <button class="nav" data-v="audio">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"><path d="M2 6.5v3M5 4v8M8 2.5v11M11 5v6M14 6.5v3"/></svg>
+        <span class="n">Audio</span><span class="ct w">2</span></button>
+      <button class="nav" data-v="subs">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5"/><path d="M4.5 9.5h3.5M10 9.5h1.5" stroke-linecap="round"/></svg>
+        <span class="n">Subtitles</span><span class="ct">24</span></button>
+      <button class="nav" data-v="chapters">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2.5 4h11M2.5 8h11M2.5 12h7"/></svg>
+        <span class="n">Chapters</span><span class="ct">0</span></button>
+      <button class="nav" data-v="attach">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M9.5 4L5 8.5a2 2 0 102.8 2.8l4.7-4.7a3.5 3.5 0 10-5-5L3 6.2"/></svg>
+        <span class="n">Attachments</span><span class="ct">0</span></button>
+      <button class="nav" data-v="mux">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4h12M2 8h12M2 12h12"/><circle cx="5" cy="4" r="1.8" fill="var(--surface)"/><circle cx="10" cy="8" r="1.8" fill="var(--surface)"/><circle cx="6" cy="12" r="1.8" fill="var(--surface)"/></svg>
+        <span class="n">Mux</span><span class="ct">24</span></button>
+
+      <div class="side-sp"></div>
+      <div class="side-hr"></div>
+      <button class="nav" onclick="dlg('d-set')">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.3 3.3l1.4 1.4M11.3 11.3l1.4 1.4M12.7 3.3l-1.4 1.4M4.7 11.3l-1.4 1.4" stroke-linecap="round"/></svg>
+        <span class="n">Settings</span></button>
+    </nav>
+
+    <div class="stage">
+
+      <!-- ─── VIDEOS ─── -->
+      <section class="view on" id="v-videos">
+        <div class="vh">
+          <div class="grow"><h1>Videos</h1><div class="sub">24 files · 68.2 GB</div></div>
+          <input class="inp" style="width:210px" placeholder="Search"/>
+          <button class="btn ic" aria-label="Rescan" onclick="scan()"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M13.5 8a5.5 5.5 0 11-1.6-3.9M13.5 1.5v4h-4"/></svg></button>
+          <button class="btn pri">Add folder</button>
+        </div>
+        <div class="vb">
+          <div class="card pad row" style="gap:10px">
+            <span class="lbl" style="width:88px">Source</span>
+            <input class="inp mono grow" value="D:\Media\Series\Frieren S01"/>
+            <button class="btn">Browse</button>
+            <select class="inp" style="width:120px"><option>All formats</option><option>MKV</option></select>
+          </div>
+
+          <div class="card pad" id="scanCard" style="display:none">
+            <div class="row" style="gap:10px">
+              <div class="spin"></div>
+              <div class="grow"><div>Reading media info</div><div class="cap dim" id="scanTxt">18 of 24</div></div>
+              <button class="btn sm" onclick="stopScan()">Cancel</button>
+            </div>
+            <div class="pb" style="margin-top:9px"><i id="scanFill" style="width:75%"></i></div>
+          </div>
+
+          <div class="tbl">
+            <div class="th" style="grid-template-columns:1fr 84px 88px 88px 130px">
+              <div>Name</div><div class="num">FPS</div><div class="num">Length</div><div class="num">Size</div><div>Tracks</div>
+            </div>
+            <div class="tscroll" id="vidRows"></div>
+            <div class="tf"><span id="vSel">3 selected</span><div class="grow"></div>
+              <button class="btn sm gho" onclick="dlg('d-media')">Media info</button>
+              <button class="btn sm gho" onclick="dlg('d-modify')">Modify tracks</button>
+              <button class="btn sm gho dgr" onclick="dlg('d-rm')">Remove</button></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─── AUDIO ─── -->
+      <section class="view" id="v-audio">
+        <div class="vh">
+          <div class="grow"><h1>Audio</h1><div class="sub">Track 1 · Hindi · 24 files</div></div>
+          <select class="inp" style="width:auto"><option>Track 1 — Hindi</option><option>Track 2 — English</option></select>
+          <button class="btn" onclick="dlg('d-import')">Import</button>
+          <button class="btn pri">Add track</button>
+        </div>
+        <div class="vb">
+          <div class="ib w">
+            <span class="ii" style="color:var(--warn)">⚠</span>
+            <div class="grow"><div style="font-weight:600">2 files aren't linked to a video</div>
+              <div class="cap dim" style="margin-top:2px">Their names don't match any loaded video.</div></div>
+            <button class="btn sm">Auto-match</button>
+          </div>
+
+          <div class="card pad" style="display:flex;flex-direction:column;gap:12px">
+            <div class="row" style="gap:10px">
+              <span class="lbl" style="width:88px">Source</span>
+              <input class="inp mono grow" value="D:\Media\Dubs\Hindi"/>
+              <button class="btn">Browse</button>
+            </div>
+            <div class="g3">
+              <div class="fld"><label>Language</label><select class="inp"><option>Hindi (hin)</option><option>English (eng)</option></select></div>
+              <div class="fld"><label>Track name</label><input class="inp" value="Hindi 5.1"/></div>
+              <div class="fld"><label>Delay (seconds)</label><input class="inp mono" value="0.000"/></div>
+            </div>
+            <div class="row" style="gap:24px">
+              <div class="row"><div class="sw on" onclick="this.classList.toggle('on')"></div><span>Default</span></div>
+              <div class="row"><div class="sw" onclick="this.classList.toggle('on')"></div><span>Forced</span></div>
+              <div class="grow"></div>
+              <button class="btn sm" onclick="dlg('d-measure')">Measure delays</button>
+            </div>
+          </div>
+
+          <div class="split">
+            <div class="pane">
+              <div class="ph"><span class="t">Videos</span><span class="cap dim">24</span></div>
+              <div class="pscroll" id="aV"></div>
+            </div>
+            <div class="pane">
+              <div class="ph"><span class="t">Audio files</span><span class="cap dim">24</span>
+                <button class="btn sm gho" onclick="dlg('d-bulk')">Bulk apply</button></div>
+              <div class="pscroll" id="aF"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─── SUBTITLES ─── -->
+      <section class="view" id="v-subs">
+        <div class="vh">
+          <div class="grow"><h1>Subtitles</h1><div class="sub">Track 1 · English · 24 files</div></div>
+          <select class="inp" style="width:auto"><option>Track 1 — English</option></select>
+          <button class="btn" onclick="dlg('d-import')">Import</button>
+          <button class="btn pri">Add track</button>
+        </div>
+        <div class="vb">
+          <div class="card pad" style="display:flex;flex-direction:column;gap:12px">
+            <div class="row" style="gap:10px">
+              <span class="lbl" style="width:88px">Source</span>
+              <input class="inp mono grow" value="D:\Media\Subs\English"/>
+              <button class="btn">Browse</button>
+            </div>
+            <div class="g3">
+              <div class="fld"><label>Language</label><select class="inp"><option>English (eng)</option></select></div>
+              <div class="fld"><label>Track name</label><input class="inp" value="Full"/></div>
+              <div class="fld"><label>Delay (seconds)</label><input class="inp mono" value="0.000"/></div>
+            </div>
+            <div class="row" style="gap:24px">
+              <div class="row"><div class="sw" onclick="this.classList.toggle('on')"></div><span>Default</span></div>
+              <div class="row"><div class="sw on" onclick="this.classList.toggle('on')"></div><span>Forced</span></div>
+            </div>
+          </div>
+          <div class="split">
+            <div class="pane">
+              <div class="ph"><span class="t">Videos</span><span class="cap dim">24</span></div>
+              <div class="pscroll" id="sV"></div>
+            </div>
+            <div class="pane">
+              <div class="ph"><span class="t">Subtitle files</span><span class="cap dim">24</span>
+                <button class="btn sm gho" onclick="dlg('d-bulk')">Bulk apply</button></div>
+              <div class="pscroll" id="sF"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─── CHAPTERS ─── -->
+      <section class="view" id="v-chapters">
+        <div class="vh">
+          <div class="grow"><h1>Chapters</h1><div class="sub">Not enabled</div></div>
+          <div class="row"><div class="sw" onclick="this.classList.toggle('on')"></div><span class="cap">Enable</span></div>
+          <button class="btn">Browse</button>
+        </div>
+        <div class="vb">
+          <div class="split">
+            <div class="pane">
+              <div class="ph"><span class="t">Videos</span><span class="cap dim">24</span></div>
+              <div class="pscroll" id="cV"></div>
+            </div>
+            <div class="pane">
+              <div class="ph"><span class="t">Chapter files</span><span class="cap dim">0</span></div>
+              <div class="emp">
+                <div class="ic"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2.5 4h11M2.5 8h11M2.5 12h7"/></svg></div>
+                <div class="t">No chapter files</div>
+                <div class="cap">Enable chapters, then browse for a folder</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─── ATTACHMENTS ─── -->
+      <section class="view" id="v-attach">
+        <div class="vh">
+          <div class="grow"><h1>Attachments</h1><div class="sub">0 files to embed</div></div>
+          <button class="btn">Browse</button>
+          <button class="btn pri">Add files</button>
+        </div>
+        <div class="vb">
+          <div class="card pad">
+            <div class="swr"><div class="t">Discard existing attachments<div class="s">Removes fonts and images already in the source</div></div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+            <div class="swr"><div class="t">Allow duplicate names</div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+          </div>
+          <div class="tbl">
+            <div class="th" style="grid-template-columns:1fr 150px 90px"><div>Name</div><div>Type</div><div class="num">Size</div></div>
+            <div class="tscroll">
+              <div class="emp">
+                <div class="ic"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M9.5 4L5 8.5a2 2 0 102.8 2.8l4.7-4.7a3.5 3.5 0 10-5-5L3 6.2"/></svg></div>
+                <div class="t">No attachments</div>
+                <div class="cap">Add fonts or images to embed into every file</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─── MUX ─── -->
+      <section class="view" id="v-mux">
+        <div class="vh">
+          <div class="grow"><h1>Mux</h1><div class="sub">24 jobs · overwriting source files</div></div>
+          <button class="btn" onclick="dlg('d-log')">View log</button>
+        </div>
+        <div class="vb">
+          <div class="exp on">
+            <div class="eh" onclick="this.parentElement.classList.toggle('on')">
+              <div class="t"><h2>Output</h2><div class="v">Overwrite source files</div></div>
+              <span class="ec"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 6l5 5 5-5"/></svg></span>
+            </div>
+            <div class="eb">
+              <div class="row"><input class="inp mono grow" placeholder="Leave empty to overwrite source"/><button class="btn">Browse</button></div>
+              <div class="fld" style="margin-top:4px"><label>Naming pattern</label><input class="inp mono" value="{original_filename}"/></div>
+              <div class="swr"><div class="t">Overwrite existing files</div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+            </div>
+          </div>
+
+          <div class="exp">
+            <div class="eh" onclick="this.parentElement.classList.toggle('on')">
+              <div class="t"><h2>Cleanup</h2><div class="v">Attachments and tags removed</div></div>
+              <span class="ec"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 6l5 5 5-5"/></svg></span>
+            </div>
+            <div class="eb">
+              <div class="swr"><div class="t">Remove chapters</div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+              <div class="swr"><div class="t">Remove attachments</div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+              <div class="swr"><div class="t">Remove global tags</div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+            </div>
+          </div>
+
+          <div class="exp">
+            <div class="eh" onclick="this.parentElement.classList.toggle('on')">
+              <div class="t"><h2>Track rules</h2><div class="v">Keep all · Hindi default</div></div>
+              <span class="ec"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 6l5 5 5-5"/></svg></span>
+            </div>
+            <div class="eb">
+              <div class="swr"><div class="t">Only keep selected audio languages</div><select class="inp" style="width:140px"><option>All</option><option>Hindi</option></select><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+              <div class="swr"><div class="t">Only keep selected subtitle languages</div><select class="inp" style="width:140px"><option>All</option></select><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+              <div class="swr"><div class="t">Set default audio language</div><select class="inp" style="width:140px"><option>Hindi</option></select><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+            </div>
+          </div>
+
+          <div class="exp">
+            <div class="eh" onclick="this.parentElement.classList.toggle('on')">
+              <div class="t"><h2>Safety &amp; performance</h2><div class="v">Stop on errors · 12 parallel jobs</div></div>
+              <span class="ec"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 6l5 5 5-5"/></svg></span>
+            </div>
+            <div class="eb">
+              <div class="swr"><div class="t">Write CRC checksum</div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+              <div class="swr"><div class="t">Stop the batch on first error</div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+              <div class="swr"><div class="t">Keep log file</div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+              <div class="swr"><div class="t">Fast mux<div class="s">Metadata-only edits via mkvpropedit</div></div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+              <div class="swr"><div class="t">Parallel jobs<div class="s">Follows queue size</div></div><input class="inp mono" value="12" style="width:64px;text-align:center" readonly/></div>
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:4px">
+            <h2 class="grow">Queue</h2>
+            <span class="cap dim" id="qCount">24 jobs</span>
+          </div>
+          <div class="tbl" style="min-height:190px">
+            <div class="th" style="grid-template-columns:1fr 96px 88px 140px 88px">
+              <div>Name</div><div>Status</div><div class="num">Before</div><div>Progress</div><div class="num">After</div>
+            </div>
+            <div class="tscroll" id="jobRows"></div>
+            <div class="tf"><span>24 queued · 0 done</span><div class="grow"></div>
+              <button class="btn sm gho dgr" onclick="dlg('d-clear')">Clear queue</button></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- status bar -->
+      <div class="sb">
+        <div class="sbs">
+          <span><b>24</b> videos</span>
+          <span><b>24</b> audio</span>
+          <span><b>24</b> subtitles</span>
+          <span style="color:var(--warn)">⚠ <b style="color:var(--warn)">2</b> unlinked</span>
+        </div>
+        <div class="sb-run">
+          <div class="row cap">
+            <span style="font-weight:600" id="rTitle">Muxing 7 of 24</span>
+            <span class="dim mono trunc" id="rName">Frieren.S01E07.1080p.WEB-DL.mkv</span>
+            <div class="grow"></div>
+            <span class="dim mono" id="rPct">29%</span>
+            <span class="dim mono" id="rEta">4:12 left</span>
+          </div>
+          <div class="pb"><i id="rFill" style="width:29%"></i></div>
+        </div>
+        <button class="btn" onclick="dlg('d-validate')">Validate</button>
+        <button class="btn pri b-start" onclick="runStart()">Start muxing</button>
+        <button class="btn b-run" onclick="runPause()">Pause</button>
+        <button class="btn dgr b-run" onclick="runStop()">Stop</button>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <!-- ══════ DIALOGS ══════ -->
+
+  <div class="scrim" id="d-set"><div class="dlg lg">
+    <div class="dh"><h2>Settings</h2><p>Presets, folders, and prerequisites</p></div>
+    <div class="db">
+      <div class="lbl">Preset</div>
+      <div class="row"><select class="inp grow"><option>Anime — Hindi dub</option><option>Default</option></select>
+        <button class="btn">Save as</button><button class="btn dgr">Delete</button></div>
+      <div class="lbl" style="margin-top:4px">Default folders</div>
+      <div class="fld"><label>Videos</label><div class="row"><input class="inp mono" value="D:\Media\Series"/><button class="btn">Browse</button></div></div>
+      <div class="fld"><label>Destination</label><div class="row"><input class="inp mono" placeholder="Same as source"/><button class="btn">Browse</button></div></div>
+      <div class="lbl" style="margin-top:4px">Appearance</div>
+      <div class="swr"><div class="t">Follow Windows accent colour</div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+      <div class="swr"><div class="t">Reduce motion</div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+      <div class="lbl" style="margin-top:4px">Prerequisites</div>
+      <div class="card pad" style="display:flex;flex-direction:column;gap:9px">
+        <div class="row"><span class="chip o">OK</span><span class="grow">MKVToolNix</span><span class="dim mono cap">v84.0</span></div>
+        <div class="row"><span class="chip o">OK</span><span class="grow">MediaInfo CLI</span><span class="dim mono cap">v24.06</span></div>
+        <div class="row"><span class="chip w">Missing</span><span class="grow">FFmpeg <span class="dim cap">— for delay measurement</span></span><button class="btn sm">Locate</button></div>
+      </div>
+      <div class="cap dim">MKVBatchMux 1.28.0 · Check for updates</div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn pri" onclick="x()">Save</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-media"><div class="dlg md">
+    <div class="dh"><h2>Media info</h2><p class="mono">Frieren.S01E01.1080p.WEB-DL.mkv</p></div>
+    <div class="db">
+      <div class="g2" style="gap:6px 20px">
+        <div class="row"><span class="dim grow cap">Container</span><span class="cap">Matroska</span></div>
+        <div class="row"><span class="dim grow cap">Size</span><span class="cap mono">2.84 GB</span></div>
+        <div class="row"><span class="dim grow cap">Duration</span><span class="cap mono">24:12</span></div>
+        <div class="row"><span class="dim grow cap">Bitrate</span><span class="cap mono">15.6 Mb/s</span></div>
+        <div class="row"><span class="dim grow cap">Resolution</span><span class="cap mono">1920×1080</span></div>
+        <div class="row"><span class="dim grow cap">Frame rate</span><span class="cap mono">23.976</span></div>
+      </div>
+      <div class="lbl">Tracks</div>
+      <div class="card pad" style="display:flex;flex-direction:column;gap:9px">
+        <div class="row"><span class="chip a">V1</span><span class="grow cap">H.264 High@4.1 · 8-bit</span><span class="dim mono cap">jpn</span></div>
+        <div class="row"><span class="chip a">A1</span><span class="grow cap">AAC LC 2.0 · 128 kb/s</span><span class="chip o">default</span><span class="dim mono cap">jpn</span></div>
+        <div class="row"><span class="chip a">A2</span><span class="grow cap">E-AC-3 5.1 · 640 kb/s</span><span class="dim mono cap">hin</span></div>
+        <div class="row"><span class="chip a">S1</span><span class="grow cap">ASS · Full</span><span class="dim mono cap">eng</span></div>
+      </div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Copy</button><div class="grow"></div><button class="btn pri" onclick="x()">Close</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-modify"><div class="dlg lg">
+    <div class="dh"><h2>Modify existing tracks</h2><p>Edits metadata on tracks already in the source. Applies to 24 files.</p></div>
+    <div class="db">
+      <div class="tbl" style="min-height:250px">
+        <div class="th" style="grid-template-columns:38px 52px 1fr 110px 88px 72px 72px">
+          <div></div><div>#</div><div>Track</div><div>Language</div><div class="num">Delay</div><div>Default</div><div>Forced</div></div>
+        <div class="tscroll" id="modRows"></div>
+      </div>
+      <div class="cap dim">Double-click a cell to edit · drag to reorder</div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn pri" onclick="x()">Apply to 24 files</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-edit"><div class="dlg lg">
+    <div class="dh"><h2>Edit video</h2><p class="mono">Frieren.S01E01.1080p.WEB-DL.mkv</p></div>
+    <div class="db">
+      <div class="lbl">Existing tracks</div>
+      <div class="tbl" style="min-height:150px">
+        <div class="th" style="grid-template-columns:38px 52px 1fr 100px 72px 72px"><div></div><div>#</div><div>Track</div><div>Language</div><div>Default</div><div>Forced</div></div>
+        <div class="tscroll">
+          <div class="tr" style="grid-template-columns:38px 52px 1fr 100px 72px 72px"><div class="dim">⋮⋮</div><div class="dim mono">V1</div><div>H.264 1080p</div><div class="mono dim">jpn</div><div><div class="cb on"></div></div><div><div class="cb"></div></div></div>
+          <div class="tr" style="grid-template-columns:38px 52px 1fr 100px 72px 72px"><div class="dim">⋮⋮</div><div class="dim mono">A1</div><div>AAC 2.0 Japanese</div><div class="mono dim">jpn</div><div><div class="cb on"></div></div><div><div class="cb"></div></div></div>
+          <div class="tr" style="grid-template-columns:38px 52px 1fr 100px 72px 72px"><div class="dim">⋮⋮</div><div class="dim mono">S1</div><div>ASS Full</div><div class="mono dim">eng</div><div><div class="cb"></div></div><div><div class="cb on"></div></div></div>
+        </div>
+      </div>
+      <div class="lbl">Attached files</div>
+      <div class="card pad" style="display:flex;flex-direction:column;gap:8px">
+        <div class="row"><span class="chip a">Audio</span><span class="grow mono cap">Frieren.S01E01.Hindi.eac3</span><span class="dim mono cap">0.000 s</span><button class="btn ic sm gho dgr">✕</button></div>
+        <div class="row"><span class="chip a">Sub</span><span class="grow mono cap">Frieren.S01E01.eng.ass</span><span class="dim mono cap">0.000 s</span><button class="btn ic sm gho dgr">✕</button></div>
+      </div>
+      <div><button class="btn sm" onclick="dlg('d-import')">Import streams</button></div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn pri" onclick="x()">Save</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-import"><div class="dlg md">
+    <div class="dh"><h2>Import streams</h2><p>Reuse tracks already inside a loaded video.</p></div>
+    <div class="db">
+      <div class="fld"><label>Source video</label><select class="inp mono"><option>Frieren.S01E01.1080p.WEB-DL.mkv</option></select></div>
+      <div class="lbl">Streams</div>
+      <div class="card pad" style="display:flex;flex-direction:column;gap:6px">
+        <label class="cbr"><div class="cb on"></div><span class="dim mono cap" style="width:24px">#1</span><span class="grow cap">AAC 2.0 · Japanese</span><span class="chip">128k</span></label>
+        <label class="cbr"><div class="cb on"></div><span class="dim mono cap" style="width:24px">#2</span><span class="grow cap">E-AC-3 5.1 · Hindi</span><span class="chip">640k</span></label>
+        <label class="cbr"><div class="cb"></div><span class="dim mono cap" style="width:24px">#3</span><span class="grow cap">Commentary · English</span><span class="chip">96k</span></label>
+      </div>
+      <div class="swr"><div class="t">Apply to all loaded videos<div class="s">Matches streams by position</div></div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn pri" onclick="x()">Import 2 streams</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-bulk"><div class="dlg lg">
+    <div class="dh"><h2>Bulk apply</h2><p>Apply selected files to selected videos.</p></div>
+    <div class="db">
+      <div class="g2" style="min-height:200px">
+        <div class="pane"><div class="ph"><span class="t">Videos</span><button class="btn sm gho">All</button></div><div class="pscroll" id="bV"></div></div>
+        <div class="pane"><div class="ph"><span class="t">Files</span><button class="btn sm gho">All</button></div><div class="pscroll" id="bF"></div></div>
+      </div>
+      <div class="lbl">Track subset</div>
+      <div class="row" style="gap:20px">
+        <label class="cbr"><div class="cb on"></div><span class="cap">All tracks</span></label>
+        <label class="cbr"><div class="cb"></div><span class="cap">First</span><input class="inp mono" value="1" style="width:50px;text-align:center"/><span class="cap">tracks</span></label>
+      </div>
+      <div class="swr"><div class="t">Replace existing mappings</div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn pri" onclick="x()">Apply to 24 videos</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-track"><div class="dlg md">
+    <div class="dh"><h2>Edit track</h2><p class="mono">Frieren.S01E01.Hindi.eac3</p></div>
+    <div class="db">
+      <div class="g2">
+        <div class="fld"><label>Language</label><select class="inp"><option>Hindi (hin)</option></select></div>
+        <div class="fld"><label>Track name</label><input class="inp" value="Hindi 5.1"/></div>
+        <div class="fld"><label>Delay (seconds)</label><input class="inp mono" value="0.000"/></div>
+        <div class="fld"><label>Order</label><select class="inp"><option>After video</option></select></div>
+      </div>
+      <div class="card pad">
+        <div class="swr"><div class="t">Default track</div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+        <div class="swr"><div class="t">Forced track</div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+      </div>
+      <div class="lbl">Included tracks</div>
+      <div class="card pad" style="display:flex;flex-direction:column;gap:6px">
+        <label class="cbr"><div class="cb on"></div><span class="dim mono cap" style="width:24px">#1</span><span class="grow cap">E-AC-3 5.1 · Hindi</span><span class="chip o">default</span></label>
+        <label class="cbr"><div class="cb on"></div><span class="dim mono cap" style="width:24px">#2</span><span class="grow cap">AAC 2.0 · Hindi</span></label>
+        <label class="cbr"><div class="cb"></div><span class="dim mono cap" style="width:24px">#3</span><span class="grow cap">Commentary</span></label>
+      </div>
+      <div class="swr"><div class="t">Apply to all files<div class="s">Track selection applied by position</div></div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn pri" onclick="x()">Save</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-delays"><div class="dlg md">
+    <div class="dh"><h2>Per-track delays</h2><p>Separate offset for each included track.</p></div>
+    <div class="db">
+      <div class="card pad" style="display:flex;flex-direction:column;gap:10px">
+        <div class="row"><span class="dim mono cap" style="width:28px">#1</span><span class="grow cap">E-AC-3 5.1 · Hindi</span><input class="inp mono" value="0.000" style="width:92px;text-align:right"/><span class="dim cap">s</span></div>
+        <div class="row"><span class="dim mono cap" style="width:28px">#2</span><span class="grow cap">AAC 2.0 · Hindi</span><input class="inp mono" value="-0.042" style="width:92px;text-align:right"/><span class="dim cap">s</span></div>
+      </div>
+      <div class="cap dim">Positive delays the track; negative plays it earlier.</div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn pri" onclick="x()">Apply</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-chdelay"><div class="dlg">
+    <div class="dh"><h2>Chapter delay</h2><p class="mono">Frieren.S01E01.chapters.xml</p></div>
+    <div class="db">
+      <div class="fld"><label>Delay (seconds)</label><input class="inp mono" value="0.000"/></div>
+      <div class="swr"><div class="t">Apply to all chapter files</div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn pri" onclick="x()">Save</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-measure"><div class="dlg md">
+    <div class="dh"><h2>Measure delays</h2><p>Comparing each external track against its video.</p></div>
+    <div class="db">
+      <div class="row" style="gap:10px"><div class="spin"></div><div class="grow"><div>Analysing 9 of 24</div><div class="cap dim mono">Frieren.S01E09.Hindi.eac3</div></div></div>
+      <div class="pb"><i style="width:37%"></i></div>
+      <div class="tbl" style="min-height:170px">
+        <div class="th" style="grid-template-columns:1fr 92px 92px"><div>File</div><div class="num">Offset</div><div class="num">Confidence</div></div>
+        <div class="tscroll" id="measRows"></div>
+      </div>
+      <div class="cap dim">Low-confidence results aren't applied automatically.</div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn pri" onclick="x()">Apply 8 results</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-validate"><div class="dlg md">
+    <div class="dh"><h2>Validation</h2><p>24 jobs · 2 warnings · 0 errors</p></div>
+    <div class="db">
+      <div class="ib w"><span class="ii" style="color:var(--warn)">⚠</span><div class="grow"><div style="font-weight:600">2 files aren't linked</div><div class="cap dim mono" style="margin-top:3px">Frieren.S01E25.Hindi.eac3<br/>Frieren.S01E26.Hindi.eac3</div></div><button class="btn sm" onclick="x();go('audio')">Fix</button></div>
+      <div class="ib"><span class="ii" style="color:var(--ok)">✓</span><div><div style="font-weight:600">Output paths writable</div><div class="cap dim">All 24 files overwrite their source</div></div></div>
+      <div class="ib"><span class="ii" style="color:var(--ok)">✓</span><div><div style="font-weight:600">Disk space sufficient</div><div class="cap dim">68.2 GB needed · 412 GB free</div></div></div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Close</button><button class="btn pri" onclick="x();runStart()">Start anyway</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-report"><div class="dlg md">
+    <div class="dh"><h2>Change report</h2><p class="mono">Frieren.S01E01.1080p.WEB-DL.mkv</p></div>
+    <div class="db">
+      <div class="lbl">Added</div>
+      <div class="card pad" style="display:flex;flex-direction:column;gap:8px">
+        <div class="row"><span class="chip a">Audio</span><span class="grow cap">Hindi 5.1 · E-AC-3</span><span class="chip o">default</span></div>
+        <div class="row"><span class="chip a">Sub</span><span class="grow cap">English Full · ASS</span><span class="chip o">forced</span></div>
+      </div>
+      <div class="lbl">Modified</div>
+      <div class="card pad"><div class="row"><span class="chip">A1</span><span class="grow cap">Japanese — default flag cleared</span></div></div>
+      <div class="lbl">Removed</div>
+      <div class="card pad"><div class="row"><span class="chip">Tags</span><span class="grow cap">Global tags stripped</span></div></div>
+    </div>
+    <div class="df"><button class="btn pri" onclick="x()">Close</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-log"><div class="dlg lg">
+    <div class="dh"><h2>Log</h2><p>mkvmerge output for this batch</p></div>
+    <div class="db">
+      <div class="row"><select class="inp" style="width:150px"><option>All jobs</option><option>Errors only</option></select><input class="inp grow" placeholder="Filter"/><button class="btn">Open file</button></div>
+      <div class="card mono" style="padding:12px;font-size:11.5px;line-height:18px;color:var(--fg-2);overflow:auto;max-height:320px">
+        <div><span class="dim">10:42:01</span>  Starting job 1 of 24</div>
+        <div><span class="dim">10:42:01</span>  mkvmerge -o "Frieren.S01E01.mkv" --language 0:jpn …</div>
+        <div><span class="dim">10:42:03</span>  Progress: 100%</div>
+        <div style="color:var(--ok)"><span class="dim">10:42:03</span>  Job 1 completed in 2.1s</div>
+        <div><span class="dim">10:42:03</span>  Starting job 2 of 24</div>
+        <div style="color:var(--warn)"><span class="dim">10:42:05</span>  Warning: track 3 has no language, using 'und'</div>
+        <div style="color:var(--err)"><span class="dim">10:42:09</span>  Error: 'S01E13.Hindi.eac3' could not be opened</div>
+      </div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Copy</button><button class="btn" onclick="x()">Save as</button><div class="grow"></div><button class="btn pri" onclick="x()">Close</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-rm"><div class="dlg" style="width:410px">
+    <div class="dh"><h2>Remove 3 files?</h2><p>They leave the list only. Nothing on disk is touched.</p></div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn pri" onclick="x()">Remove</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-clear"><div class="dlg" style="width:410px">
+    <div class="dh"><h2>Clear the queue?</h2><p>All 24 jobs are discarded. Files and settings stay.</p></div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn dgr" onclick="x()">Clear queue</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-deltrack"><div class="dlg" style="width:410px">
+    <div class="dh"><h2>Delete this track?</h2><p>Track 2 and its 24 mapped files leave the batch.</p></div>
+    <div class="df"><button class="btn" onclick="x()">Cancel</button><button class="btn dgr" onclick="x()">Delete track</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-quit"><div class="dlg" style="width:430px">
+    <div class="dh"><h2>A batch is still running</h2><p>6 of 24 files are done. Closing stops the batch.</p></div>
+    <div class="df"><button class="btn" onclick="x()">Keep running</button><button class="btn dgr" onclick="x();runStop()">Stop and close</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-first"><div class="dlg md">
+    <div class="dh"><h2>Welcome</h2><p>Two tools are needed before the first batch.</p></div>
+    <div class="db">
+      <div class="card pad" style="display:flex;flex-direction:column;gap:12px">
+        <div class="row"><span class="chip o">OK</span><div class="grow"><div>MKVToolNix</div><div class="cap dim">C:\Program Files\MKVToolNix</div></div><span class="dim mono cap">v84.0</span></div>
+        <div class="row"><span class="chip o">OK</span><div class="grow"><div>MediaInfo CLI</div><div class="cap dim">Found on PATH</div></div><span class="dim mono cap">v24.06</span></div>
+        <div class="row"><span class="chip e">Missing</span><div class="grow"><div>FFmpeg <span class="dim">— optional</span></div><div class="cap dim">Only for delay measurement</div></div><button class="btn sm">Locate</button></div>
+      </div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Re-check</button><button class="btn pri" onclick="x()">Get started</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-update"><div class="dlg" style="width:440px">
+    <div class="dh"><h2>Update available</h2><p>Version 1.29.0 is ready. You're on 1.28.0.</p></div>
+    <div class="db">
+      <div class="card pad cap dim" style="line-height:19px">• Faster scanning on network drives<br/>• Fixes delay measurement on silent tracks<br/>• New per-track delay editor</div>
+    </div>
+    <div class="df"><button class="btn" onclick="x()">Later</button><button class="btn pri" onclick="x()">Install and restart</button></div>
+  </div></div>
+
+  <div class="scrim" id="d-keys"><div class="dlg">
+    <div class="dh"><h2>Keyboard shortcuts</h2></div>
+    <div class="db">
+      <div class="row"><span class="grow cap">Go to page 1–6</span><kbd>Ctrl</kbd><kbd>1</kbd>–<kbd>6</kbd></div>
+      <div class="row"><span class="grow cap">Move through list</span><kbd>↑</kbd><kbd>↓</kbd></div>
+      <div class="row"><span class="grow cap">Extend selection</span><kbd>Shift</kbd><kbd>↑</kbd></div>
+      <div class="row"><span class="grow cap">Select all</span><kbd>Ctrl</kbd><kbd>A</kbd></div>
+      <div class="row"><span class="grow cap">Edit selected</span><kbd>Enter</kbd></div>
+      <div class="row"><span class="grow cap">Remove selected</span><kbd>Del</kbd></div>
+      <div class="row"><span class="grow cap">Rescan</span><kbd>F5</kbd></div>
+      <div class="row"><span class="grow cap">Start muxing</span><kbd>Ctrl</kbd><kbd>Enter</kbd></div>
+      <div class="row"><span class="grow cap">Settings</span><kbd>Ctrl</kbd><kbd>,</kbd></div>
+      <div class="row"><span class="grow cap">This dialog</span><kbd>?</kbd></div>
+    </div>
+    <div class="df"><button class="btn pri" onclick="x()">Close</button></div>
+  </div></div>
+
+  <div class="menu" id="ctx">
+    <div class="mi" onclick="cx();dlg('d-edit')">Edit tracks<span class="k">Enter</span></div>
+    <div class="mi" onclick="cx();dlg('d-media')">Media info</div>
+    <div class="msep"></div>
+    <div class="mi" onclick="cx()">Reveal in Explorer</div>
+    <div class="mi" onclick="cx()">Copy path</div>
+    <div class="msep"></div>
+    <div class="mi" onclick="cx();dlg('d-rm')">Remove<span class="k">Del</span></div>
+  </div>
+
+</div>
+
+<div class="helper">
+  <b>Pages</b>
+  <button onclick="go('videos')">Videos</button>
+  <button onclick="go('audio')">Audio</button>
+  <button onclick="go('subs')">Subtitles</button>
+  <button onclick="go('chapters')">Chapters</button>
+  <button onclick="go('attach')">Attach</button>
+  <button onclick="go('mux')">Mux</button>
+  <b>States</b>
+  <button onclick="scan()">Scanning</button>
+  <button onclick="runStart()">Running</button>
+  <button onclick="runStop()">Idle</button>
+  <button onclick="toastDemo()">Toasts</button>
+  <b>Dialogs</b>
+  <button onclick="dlg('d-set')">Settings</button>
+  <button onclick="dlg('d-keys')">Shortcuts</button>
+  <button onclick="dlg('d-media')">Media info</button>
+  <button onclick="dlg('d-modify')">Modify tracks</button>
+  <button onclick="dlg('d-edit')">Edit video</button>
+  <button onclick="dlg('d-import')">Import</button>
+  <button onclick="dlg('d-bulk')">Bulk apply</button>
+  <button onclick="dlg('d-track')">Edit track</button>
+  <button onclick="dlg('d-delays')">Per-track delay</button>
+  <button onclick="dlg('d-chdelay')">Chapter delay</button>
+  <button onclick="dlg('d-measure')">Measure</button>
+  <button onclick="dlg('d-validate')">Validate</button>
+  <button onclick="dlg('d-report')">Report</button>
+  <button onclick="dlg('d-log')">Log</button>
+  <button onclick="dlg('d-rm')">Remove</button>
+  <button onclick="dlg('d-clear')">Clear</button>
+  <button onclick="dlg('d-deltrack')">Del track</button>
+  <button onclick="dlg('d-quit')">Quit</button>
+  <button onclick="dlg('d-first')">First run</button>
+  <button onclick="dlg('d-update')">Update</button>
+</div>
+
+<script>
+const N=n=>`Frieren.S01E${String(n).padStart(2,'0')}.1080p.WEB-DL.mkv`;
+const A=n=>`Frieren.S01E${String(n).padStart(2,'0')}.Hindi.eac3`;
+const S=n=>`Frieren.S01E${String(n).padStart(2,'0')}.eng.ass`;
+const D=['24:12','23:58','24:04','24:11','23:47'],Z=['2.84','2.91','2.76','3.02','2.88'];
+function el(h){const d=document.createElement('div');d.innerHTML=h.trim();return d.firstElementChild}
+
+/* videos */
+const VR=document.getElementById('vidRows');
+for(let i=1;i<=24;i++)VR.appendChild(el(`<div class="tr${i<=3?' on':''}" tabindex="0" ondblclick="dlg('d-edit')"
+  style="grid-template-columns:1fr 84px 88px 88px 130px">
+  <div class="mono">${N(i)}</div><div class="num dim mono">23.976</div>
+  <div class="num dim mono">${D[i%5]}</div><div class="num dim mono">${Z[i%5]} GB</div>
+  <div><span class="chip">V1</span> <span class="chip">A2</span> <span class="chip">S1</span></div></div>`));
+
+/* panes */
+function pane(id,fmt,warn){const b=document.getElementById(id);if(!b)return;
+  for(let i=1;i<=24;i++){const bad=warn&&i>22;
+    b.appendChild(el(`<div class="fr${i===1?' on':''}" tabindex="0" ondblclick="dlg('d-track')">
+      <span class="i">${i}</span><span class="n mono">${fmt(i)}</span>
+      ${bad?'<span class="chip w">unlinked</span>':''}
+      <span class="a"><button class="btn ic sm gho">✎</button><button class="btn ic sm gho dgr">✕</button></span></div>`))}}
+pane('aV',N);pane('aF',A,true);pane('sV',N);pane('sF',S);pane('cV',N);pane('bV',N);pane('bF',A);
+
+/* jobs */
+const JR=document.getElementById('jobRows');
+for(let i=1;i<=24;i++){
+  let st='<span class="chip">Queued</span>',pr='<span class="dim">—</span>',af='<span class="dim">—</span>';
+  if(i<7){st='<span class="chip o">Done</span>';pr='<div class="pb"><i style="width:100%"></i></div>';af=`<span class="dim mono">${Z[i%5]} GB</span>`}
+  if(i===7){st='<span class="chip a">Muxing</span>';pr='<div class="pb"><i style="width:29%"></i></div>'}
+  if(i===13){st='<span class="chip e">Failed</span>';pr='<span class="cap" style="color:var(--err)">unreadable</span>'}
+  JR.appendChild(el(`<div class="tr" tabindex="0" ondblclick="dlg('d-report')"
+    style="grid-template-columns:1fr 96px 88px 140px 88px">
+    <div class="mono">${N(i)}</div><div>${st}</div><div class="num dim mono">${Z[i%5]} GB</div>
+    <div>${pr}</div><div class="num">${af}</div></div>`))}
+
+/* modify */
+const MR=document.getElementById('modRows');
+[['V1','H.264 1080p','jpn',1,0],['A1','AAC 2.0 Japanese','jpn',1,0],['A2','E-AC-3 5.1 Hindi','hin',0,0],['S1','ASS Full','eng',0,1]]
+.forEach(([a,b,c,d,f])=>MR.appendChild(el(`<div class="tr" style="grid-template-columns:38px 52px 1fr 110px 88px 72px 72px;height:36px">
+  <div class="dim">⋮⋮</div><div class="dim mono">${a}</div><div>${b}</div><div class="mono dim">${c}</div>
+  <div class="num mono dim">0.000</div><div><div class="cb${d?' on':''}"></div></div><div><div class="cb${f?' on':''}"></div></div></div>`)));
+
+/* measure */
+const ME=document.getElementById('measRows');
+for(let i=1;i<=9;i++){const low=i===4;
+  ME.appendChild(el(`<div class="tr" style="grid-template-columns:1fr 92px 92px;height:34px">
+    <div class="mono">${A(i)}</div><div class="num mono">${low?'—':((i%3-1)*0.042).toFixed(3)+'s'}</div>
+    <div class="num">${low?'<span class="chip w">low</span>':'<span class="chip o">high</span>'}</div></div>`))}
+
+/* nav */
+function go(v){document.querySelectorAll('.view').forEach(n=>n.classList.remove('on'));
+  document.getElementById('v-'+v).classList.add('on');
+  document.querySelectorAll('.nav[data-v]').forEach(b=>b.classList.toggle('on',b.dataset.v===v))}
+document.querySelectorAll('.nav[data-v]').forEach(b=>b.onclick=()=>go(b.dataset.v));
+
+/* dialogs */
+function dlg(id){x();document.getElementById(id).classList.add('on')}
+function x(){document.querySelectorAll('.scrim.on').forEach(s=>s.classList.remove('on'))}
+document.querySelectorAll('.scrim').forEach(s=>s.onclick=e=>{if(e.target===s)x()});
+function cx(){document.getElementById('ctx').classList.remove('on')}
+document.addEventListener('contextmenu',e=>{const r=e.target.closest('.tr,.fr');if(!r)return;
+  e.preventDefault();const m=document.getElementById('ctx');m.classList.add('on');
+  m.style.left=Math.min(e.clientX,innerWidth-210)+'px';m.style.top=e.clientY+'px'});
+document.addEventListener('click',cx);
+document.addEventListener('click',e=>{const c=e.target.closest('.cb');if(c)c.classList.toggle('on')});
+document.addEventListener('click',e=>{const r=e.target.closest('.tr,.fr');
+  if(!r||e.target.closest('button,.cb'))return;
+  const b=r.closest('.tscroll,.pscroll');if(!b)return;
+  if(!e.ctrlKey&&!e.shiftKey)b.querySelectorAll('.on').forEach(n=>n.classList.remove('on'));
+  r.classList.toggle('on')});
+
+/* scan */
+let sT;
+function scan(){go('videos');const c=document.getElementById('scanCard');c.style.display='block';
+  let n=0;clearInterval(sT);
+  sT=setInterval(()=>{n++;if(n>24){stopScan();toast('ok','Scan complete','24 videos loaded');return}
+    document.getElementById('scanTxt').textContent=n+' of 24';
+    document.getElementById('scanFill').style.width=n/24*100+'%'},120)}
+function stopScan(){clearInterval(sT);document.getElementById('scanCard').style.display='none'}
+
+/* run */
+let rT,rN=7,rP=29;
+function runStart(){document.body.classList.add('run');go('mux');clearInterval(rT);
+  rT=setInterval(()=>{rP+=2;
+    if(rP>=100){rP=0;rN++;if(rN>24){runStop();toast('ok','Batch complete','24 files muxed in 11m 32s');return}}
+    document.getElementById('rTitle').textContent=`Muxing ${rN} of 24`;
+    document.getElementById('rName').textContent=N(rN);
+    document.getElementById('rPct').textContent=rP+'%';
+    document.getElementById('rFill').style.width=rP+'%';
+    const s=Math.max(0,(24-rN)*28);
+    document.getElementById('rEta').textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0')+' left'},110)}
+function runPause(){clearInterval(rT);toast('info','Paused','Resume when ready')}
+function runStop(){clearInterval(rT);document.body.classList.remove('run')}
+
+/* toast */
+function toast(k,t,m){
+  const c=k==='ok'?'var(--ok)':k==='err'?'var(--err)':k==='warn'?'var(--warn)':'var(--acc)';
+  const g=k==='ok'?'✓':k==='err'?'✕':k==='warn'?'⚠':'ℹ';
+  const n=el(`<div class="tst"><span style="color:${c}">${g}</span>
+    <div class="grow"><div class="t">${t}</div><div class="m">${m}</div></div>
+    <button class="btn ic sm gho">✕</button></div>`);
+  n.querySelector('button').onclick=()=>n.remove();
+  document.getElementById('toasts').appendChild(n);setTimeout(()=>n.remove(),5000)}
+function toastDemo(){toast('ok','Scan complete','24 videos loaded');
+  setTimeout(()=>toast('warn','2 files unlinked','No matching video found'),350);
+  setTimeout(()=>toast('err','Job 13 failed','Source could not be opened'),700)}
+
+/* keys */
+const V=['videos','audio','subs','chapters','attach','mux'];
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){x();cx();return}
+  if(e.key==='?'){dlg('d-keys');return}
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();runStart();return}
+  if((e.ctrlKey||e.metaKey)&&e.key>='1'&&e.key<='6'){e.preventDefault();go(V[+e.key-1])}
+  if((e.ctrlKey||e.metaKey)&&e.key===','){e.preventDefault();dlg('d-set')}});
+</script>
+</body>
+</html>

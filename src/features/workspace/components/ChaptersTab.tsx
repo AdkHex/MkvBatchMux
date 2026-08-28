@@ -203,31 +203,31 @@ export function ChaptersTab({
           <label htmlFor="chapters-enabled" className="text-sm font-medium cursor-pointer">
             Chapters
           </label>
-          <span className="text-[11px] font-mono text-muted-foreground">{chapterFiles.length}</span>
+          <span className="text-xs font-mono text-muted-foreground">{chapterFiles.length}</span>
         </div>
       </div>
 
       {/* Configuration Card */}
       <div className="config-card space-y-4">
-        <h3 className="text-[12px] uppercase tracking-[0.5px] text-muted-foreground font-semibold">
+        <h3 className="text-xs text-muted-foreground font-semibold">
           Chapter Configuration
         </h3>
 
         {/* Source Folder */}
         <div className="flex items-center gap-3">
-          <label className="config-label">Source Folder</label>
+          <label className="config-label">Source folder</label>
           <div className="flex-1 flex items-center gap-2">
             <Input
               value={sourceFolder}
               onChange={(e) => updateChapterTabState({ sourceFolder: e.target.value })}
               placeholder="Select chapter folder path..."
-              className="h-8 flex-1 font-mono"
+              className="h-[30px] flex-1 font-mono"
               disabled={!chaptersEnabled}
             />
             <Button
               variant="outline"
               size="icon"
-              className="h-8 w-8"
+              className="h-[30px] w-[30px]"
               disabled={!chaptersEnabled}
               onClick={async () => {
                 const folder = await pickDirectory();
@@ -242,7 +242,7 @@ export function ChaptersTab({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 bg-primary/10 text-primary hover:bg-primary/20"
+              className="h-[30px] w-[30px] border border-panel-border bg-[hsl(var(--control))] hover:bg-[hsl(var(--control-hover))] text-foreground"
               disabled={!chaptersEnabled}
               onClick={() => scanChapters(sourceFolder)}
             >
@@ -251,7 +251,7 @@ export function ChaptersTab({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 bg-destructive/10 text-destructive hover:bg-destructive/20"
+              className="h-[30px] w-[30px] border border-panel-border bg-[hsl(var(--control))] hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
               disabled={!chaptersEnabled}
               onClick={() => {
                 updateChapterTabState({ sourceFolder: "" });
@@ -272,7 +272,7 @@ export function ChaptersTab({
               onValueChange={(v) => updateChapterTabState({ extension: v })}
               disabled={!chaptersEnabled}
             >
-              <SelectTrigger className="h-8 w-32">
+              <SelectTrigger className="h-[30px] w-32">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -291,14 +291,14 @@ export function ChaptersTab({
             <Input
               value={chapterDelay}
               onChange={(e) => updateChapterTabState({ delay: e.target.value })}
-              className="h-8 w-20 text-center font-mono"
+              className="h-[30px] w-20 text-center font-mono"
               disabled={!chaptersEnabled}
             />
-            <span className="text-[12px] text-muted-foreground">sec</span>
+            <span className="text-xs text-muted-foreground">sec</span>
             <Button
               variant="default"
               size="sm"
-              className="h-8 px-4 text-xs"
+              className="h-[30px] px-4 text-xs"
               disabled={!chaptersEnabled || chapterFiles.length === 0}
               onClick={applyDelayToAll}
             >
@@ -319,7 +319,7 @@ export function ChaptersTab({
               }}
               disabled={!chaptersEnabled}
             />
-            <label htmlFor="discard-chapters" className="text-[12px] cursor-pointer">
+            <label htmlFor="discard-chapters" className="text-xs cursor-pointer">
               Discard Old Chapters
             </label>
           </div>
@@ -327,7 +327,7 @@ export function ChaptersTab({
       </div>
 
       {/* Chapter Matching Label */}
-      <div className="section-label rounded-md border border-panel-border/20">
+      <div className="section-label rounded-md border border-panel-border">
         Chapter Matching
       </div>
 
@@ -337,8 +337,8 @@ export function ChaptersTab({
         <div className="panel-card flex-1 flex flex-col overflow-hidden">
           <div className="panel-card-header">
             <div className="flex items-center gap-2">
-              <h4 className="panel-card-title">Video Files</h4>
-              <span className="text-[11px] font-mono text-muted-foreground">{videoFiles.length}</span>
+              <h4 className="panel-card-title">Video files</h4>
+              <span className="text-xs font-mono text-muted-foreground">{videoFiles.length}</span>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
@@ -365,7 +365,7 @@ export function ChaptersTab({
           <Button
             variant="secondary"
             size="sm"
-            className="btn-toolbar h-8 w-8 p-0"
+            className="btn-toolbar h-[30px] w-[30px] p-0"
             disabled={!chaptersEnabled || selectedChapterIndex === null || selectedChapterIndex === 0}
             onClick={() => selectedChapterIndex !== null && reorderChapterFile(selectedChapterIndex, 0)}
           >
@@ -374,7 +374,7 @@ export function ChaptersTab({
           <Button
             variant="secondary"
             size="sm"
-            className="btn-toolbar h-8 w-8 p-0"
+            className="btn-toolbar h-[30px] w-[30px] p-0"
             disabled={!chaptersEnabled || selectedChapterIndex === null || selectedChapterIndex === 0}
             onClick={() =>
               selectedChapterIndex !== null &&
@@ -386,7 +386,7 @@ export function ChaptersTab({
           <Button
             variant="default"
             size="sm"
-            className="btn-toolbar h-8 px-3 text-xs"
+            className="btn-toolbar h-[30px] px-3 text-xs"
             disabled={!chaptersEnabled || selectedVideoIndex === null || selectedChapterIndex === null}
             onClick={linkChapterToVideo}
           >
@@ -395,7 +395,7 @@ export function ChaptersTab({
           <Button
             variant="secondary"
             size="sm"
-            className="btn-toolbar h-8 w-8 p-0"
+            className="btn-toolbar h-[30px] w-[30px] p-0"
             disabled={
               !chaptersEnabled ||
               selectedChapterIndex === null ||
@@ -411,7 +411,7 @@ export function ChaptersTab({
           <Button
             variant="secondary"
             size="sm"
-            className="btn-toolbar h-8 w-8 p-0"
+            className="btn-toolbar h-[30px] w-[30px] p-0"
             disabled={
               !chaptersEnabled ||
               selectedChapterIndex === null ||
@@ -430,8 +430,8 @@ export function ChaptersTab({
         <div className="panel-card flex-1 flex flex-col overflow-hidden">
           <div className="panel-card-header">
             <div className="flex items-center gap-2">
-              <h4 className="panel-card-title">Chapter Files</h4>
-              <span className="text-[11px] font-mono text-muted-foreground">{chapterFiles.length}</span>
+              <h4 className="panel-card-title">Chapter files</h4>
+              <span className="text-xs font-mono text-muted-foreground">{chapterFiles.length}</span>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin">
@@ -508,7 +508,7 @@ export function ChaptersTab({
             >
               Cancel
             </Button>
-            <Button onClick={applyEditChanges}>Save Changes</Button>
+            <Button onClick={applyEditChanges}>Save changes</Button>
           </>
         }
       >
@@ -518,7 +518,7 @@ export function ChaptersTab({
             <Input
               value={editForm.delay}
               onChange={(event) => setEditForm((prev) => ({ ...prev, delay: event.target.value }))}
-              className="h-9 font-mono"
+              className="h-[30px] font-mono"
               placeholder="0.000"
             />
             <p className="text-xs text-muted-foreground">

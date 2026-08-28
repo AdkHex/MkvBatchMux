@@ -7,7 +7,6 @@ import {
   List,
   Paperclip,
   SlidersHorizontal,
-  Film,
   LayoutGrid,
 } from "lucide-react";
 import { TooltipProvider } from "@/shared/ui/tooltip";
@@ -69,7 +68,9 @@ const navItems: { id: TabId; label: string; icon: React.ElementType }[] = [
 ];
 
 const WorkspacePage = () => {
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  // Dark is the default. Options load asynchronously from the backend, so
+  // starting light would flash a white window before Dark_Mode arrives.
+  const [isDarkMode, setIsDarkMode] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return localStorage.getItem("sidebar-collapsed") === "true";
@@ -1089,23 +1090,60 @@ const WorkspacePage = () => {
 
   const activeNavItem = navItems.find((item) => item.id === activeTab);
 
+  // Counts shown next to each nav item, derived from state that already exists.
+  // Purely presentational: nothing here changes what the app does.
+  const navItemsWithCounts = useMemo(
+    () =>
+      navItems.map((item) => {
+        switch (item.id) {
+          case "videos":
+            return { ...item, count: videoFiles.length };
+          case "audios":
+            return {
+              ...item,
+              count: audioFilesCount,
+              warn: unlinkedAudioFiles.length > 0,
+            };
+          case "subtitles":
+            return {
+              ...item,
+              count: subtitleFilesCount,
+              warn: unlinkedSubtitleFiles.length > 0,
+            };
+          case "chapters":
+            return { ...item, count: chapterFiles.length };
+          case "attachments":
+            return { ...item, count: attachmentFiles.length };
+          case "mux-setting":
+            return { ...item, count: jobs.length };
+          default:
+            return item;
+        }
+      }),
+    [
+      attachmentFiles.length,
+      audioFilesCount,
+      chapterFiles.length,
+      jobs.length,
+      subtitleFilesCount,
+      unlinkedAudioFiles.length,
+      unlinkedSubtitleFiles.length,
+      videoFiles.length,
+    ],
+  );
+
   return (
     <TooltipProvider delayDuration={0}>
       <AppShell
         sidebar={
           <SidebarNav
-            items={navItems}
+            items={navItemsWithCounts}
             activeId={activeTab}
             collapsed={sidebarCollapsed}
             onSelect={(id) => setActiveTab(id as TabId)}
             onToggleCollapse={toggleSidebar}
-                brand={
-                  <div className="w-9 h-9 rounded-lg bg-accent/20 border border-accent/40 flex items-center justify-center shrink-0">
-                    <Film className="w-4 h-4 text-primary" />
-                  </div>
-                }
-              />
-            }
+          />
+        }
         topbar={
           <CommandBar
             title={activeNavItem?.label || "Videos"}

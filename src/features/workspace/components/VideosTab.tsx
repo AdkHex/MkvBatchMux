@@ -535,7 +535,7 @@ export function VideosTab({
           <div className="video-source-copy">
             <div className="video-source-kicker">Video Import</div>
             <div className="video-source-title-row">
-              <label className="text-sm font-semibold text-foreground whitespace-nowrap">Source Folder</label>
+              <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">Source folder</label>
             </div>
           </div>
           <div className="video-source-controls">
@@ -547,7 +547,7 @@ export function VideosTab({
             />
             <div className="flex items-center gap-2">
               <IconButton
-                className="bg-muted/50 text-foreground hover:bg-muted/70"
+                className="border border-panel-border bg-[hsl(var(--control))] hover:bg-[hsl(var(--control-hover))] text-foreground"
                 onClick={async () => {
                   const folder = await pickDirectory();
                   if (folder) {
@@ -555,25 +555,25 @@ export function VideosTab({
                     scanVideos(folder);
                   }
                 }}
-                aria-label="Browse folder"
+                aria-label="Browse for source folder"
               >
                 <FolderOpen className="w-4 h-4" />
               </IconButton>
               <IconButton
-                className="bg-primary/10 text-primary hover:bg-primary/20"
+                className="border border-panel-border bg-[hsl(var(--control))] hover:bg-[hsl(var(--control-hover))] text-foreground"
                 onClick={() => scanVideos(sourceFolder)}
-                aria-label="Rescan"
+                aria-label="Rescan folder"
               >
                 <RefreshCw className="w-4 h-4" />
               </IconButton>
               <IconButton
-                className="bg-destructive/10 text-destructive hover:bg-destructive/20"
+                className="border border-panel-border bg-[hsl(var(--control))] hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
                 onClick={() => {
                   cancelScan();
                   onSourceFolderChange("");
                   onFilesChange([]);
                 }}
-                aria-label="Clear folder"
+                aria-label="Clear folder and loaded files"
               >
                 <X className="w-4 h-4" />
               </IconButton>
@@ -621,7 +621,7 @@ export function VideosTab({
 
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => setIsModifyTracksOpen(true)}>
-              Modify Tracks
+              Modify tracks
             </Button>
             <Button
               variant="default"
@@ -629,7 +629,7 @@ export function VideosTab({
               onClick={handleMediaInfo}
               disabled={selectedFileIds.length === 0}
             >
-              Media Info
+              Media info
             </Button>
           </div>
         </div>
@@ -702,20 +702,22 @@ export function VideosTab({
               </>
             )}
           </DataTableBody>
-          <div className="flex items-center justify-between px-3 py-2 border-t border-panel-border/40 bg-panel-header/40">
-            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs text-muted-foreground" disabled>
-              Actions
-            </Button>
+          <div className="flex items-center justify-between px-3 py-1.5 border-t border-panel-border bg-panel-header">
+            <span className="text-xs text-muted-foreground px-1">
+              {selectedFileIds.length > 0
+                ? `${selectedFileIds.length} of ${files.length} selected`
+                : `${files.length} ${files.length === 1 ? "file" : "files"}`}
+            </span>
             <IconButton
               size="icon"
               variant="ghost"
-              className="h-8 w-8 text-muted-foreground hover:text-destructive"
+              className="text-muted-foreground hover:text-destructive"
               onClick={() => {
                 if (selectedFileIds.length === 0) return;
                 const selectedSet = new Set(selectedFileIds);
                 onFilesChange(files.filter((f) => !selectedSet.has(f.id)));
               }}
-              aria-label="Remove selected file"
+              aria-label="Remove selected files"
               disabled={selectedFileIds.length === 0}
             >
               <Trash2 className="w-4 h-4" />

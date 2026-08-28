@@ -36,9 +36,9 @@ function Badge({ children, variant = "default" }: { children: React.ReactNode; v
       ? "bg-primary/15 text-primary border-primary/20"
       : variant === "teal"
       ? "bg-accent-teal/15 text-accent-teal border-accent-teal/20"
-      : "bg-muted/60 text-muted-foreground border-panel-border/40";
+      : "bg-muted/60 text-muted-foreground border-panel-border";
   return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${cls}`}>
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>
       {children}
     </span>
   );
@@ -47,10 +47,10 @@ function Badge({ children, variant = "default" }: { children: React.ReactNode; v
 function SectionHeader({ title, count }: { title: string; count: number }) {
   return (
     <div className="flex items-center gap-2 mb-2">
-      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+      <span className="text-xs font-semibold text-muted-foreground">
         {title}
       </span>
-      <span className="text-[10px] font-mono text-muted-foreground/60">({count})</span>
+      <span className="text-xs font-mono text-muted-foreground/60">({count})</span>
     </div>
   );
 }
@@ -60,8 +60,8 @@ function TrackRow({ track, index }: { track: Track; index: number }) {
   const bitrate = formatBitrate(track.bitrate);
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 rounded-md border border-panel-border/20 bg-panel-header/30">
-      <span className="text-[11px] font-mono text-muted-foreground/50 w-5 shrink-0">{index + 1}</span>
+    <div className="flex items-center gap-3 px-3 py-2 rounded-md border border-panel-border bg-panel-header/30">
+      <span className="text-xs font-mono text-muted-foreground/50 w-5 shrink-0">{index + 1}</span>
 
       <span className="text-xs font-mono font-medium text-foreground w-16 shrink-0">{codecLabel}</span>
 
@@ -77,7 +77,7 @@ function TrackRow({ track, index }: { track: Track; index: number }) {
       </div>
 
       {bitrate && (
-        <span className="text-[11px] font-mono text-muted-foreground/70 shrink-0">{bitrate}</span>
+        <span className="text-xs font-mono text-muted-foreground/70 shrink-0">{bitrate}</span>
       )}
     </div>
   );
@@ -92,8 +92,8 @@ function FileMediaInfo({ file }: { file: VideoFile }) {
   return (
     <div className="space-y-4 py-1">
       {/* General */}
-      <div className="rounded-lg border border-panel-border/25 bg-card px-4 py-3 space-y-2">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+      <div className="rounded-lg border border-panel-border bg-card px-4 py-3 space-y-2">
+        <div className="text-xs font-semibold text-muted-foreground mb-2">
           General
         </div>
         <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-xs">
@@ -115,7 +115,7 @@ function FileMediaInfo({ file }: { file: VideoFile }) {
           </div>
           <div className="col-span-2 flex gap-2">
             <span className="text-muted-foreground/60 w-20 shrink-0">Path</span>
-            <span className="font-mono text-muted-foreground/70 text-[11px] truncate" title={file.path}>
+            <span className="font-mono text-muted-foreground/70 text-xs truncate" title={file.path}>
               {file.path}
             </span>
           </div>
@@ -201,12 +201,12 @@ export function MediaInfoDialog({ open, onOpenChange, files }: MediaInfoDialogPr
         <FileMediaInfo file={files[0]} />
       ) : (
         <Tabs defaultValue={files[0].id}>
-          <TabsList className="mb-3 h-8 gap-1 bg-panel-header/60 border border-panel-border/30 p-0.5">
+          <TabsList className="mb-3 h-[30px] gap-1 bg-panel-header/60 border border-panel-border p-0.5">
             {files.map((file) => (
               <TabsTrigger
                 key={file.id}
                 value={file.id}
-                className="h-7 px-3 text-xs"
+                className="h-[26px] px-3 text-xs"
                 title={file.name}
               >
                 {truncateTabLabel(file.name)}

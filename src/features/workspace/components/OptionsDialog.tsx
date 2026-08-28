@@ -195,11 +195,11 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
       bodyClassName="p-0"
       footerRight={
         <>
-          <Button variant="outline" className="h-9 px-4 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" className="h-[30px] px-4 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button
-            className="h-9 px-6 text-sm"
+            className="h-[30px] px-6 text-sm"
             onClick={() => {
               if (!options) {
                 onOpenChange(false);
@@ -229,7 +229,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
             <div>
               <div className="flex items-center gap-2">
                 <SlidersHorizontal className="w-4 h-4 text-muted-foreground" />
-                <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">Presets</h3>
+                <h3 className="text-xs font-semibold text-muted-foreground">Presets</h3>
               </div>
               <p className="text-xs text-muted-foreground mt-1">Manage presets and startup behavior.</p>
             </div>
@@ -332,10 +332,10 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
         <section className="space-y-3">
           <div className="flex items-center gap-2">
             <Folder className="w-4 h-4 text-muted-foreground" />
-            <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">Default Directories</h3>
+            <h3 className="text-xs font-semibold text-muted-foreground">Default Directories</h3>
           </div>
-          <div className="rounded-lg border border-panel-border/25 bg-card p-3 space-y-3">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Input Directories</div>
+          <div className="rounded-lg border border-panel-border bg-card p-3 space-y-3">
+            <div className="text-xs font-semibold text-muted-foreground">Input Directories</div>
             <div className="space-y-2">
               {directoryFields.slice(0, 5).map((item) => (
                 <div key={item.label} className="flex items-center gap-3 group">
@@ -350,7 +350,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-9 w-9 shrink-0 opacity-70 hover:opacity-100 hover:text-warning"
+                      className="h-[30px] w-[30px] shrink-0 opacity-70 hover:opacity-100 hover:text-warning"
                       title="Browse"
                       onClick={async () => {
                         const folder = await pickDirectory();
@@ -364,7 +364,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-9 w-9 shrink-0 opacity-50 hover:opacity-100 hover:text-destructive"
+                      className="h-[30px] w-[30px] shrink-0 opacity-50 hover:opacity-100 hover:text-destructive"
                       title="Clear"
                       onClick={() => item.onChange("")}
                     >
@@ -374,8 +374,8 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                 </div>
               ))}
             </div>
-            <div className="pt-1 border-t border-panel-border/30">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Output Directory</div>
+            <div className="pt-1 border-t border-panel-border">
+              <div className="text-xs font-semibold text-muted-foreground">Output Directory</div>
             </div>
             <div className="space-y-2">
               {directoryFields.slice(5).map((item) => (
@@ -391,7 +391,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-9 w-9 shrink-0 opacity-70 hover:opacity-100 hover:text-warning"
+                      className="h-[30px] w-[30px] shrink-0 opacity-70 hover:opacity-100 hover:text-warning"
                       title="Browse"
                       onClick={async () => {
                         const folder = await pickDirectory();
@@ -405,7 +405,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-9 w-9 shrink-0 opacity-50 hover:opacity-100 hover:text-destructive"
+                      className="h-[30px] w-[30px] shrink-0 opacity-50 hover:opacity-100 hover:text-destructive"
                       title="Clear"
                       onClick={() => item.onChange("")}
                     >
@@ -421,12 +421,12 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
         <section className="space-y-2">
           <div className="flex items-center gap-2">
             <FileType2 className="w-4 h-4 text-muted-foreground" />
-            <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">File Extensions</h3>
-            <span className="text-[11px] text-muted-foreground/70">(Advanced)</span>
+            <h3 className="text-xs font-semibold text-muted-foreground">File Extensions</h3>
+            <span className="text-xs text-muted-foreground/70">(Advanced)</span>
           </div>
-          <p className="text-[11px] text-muted-foreground/70">Used when scanning folders.</p>
-          <div className="rounded-lg border border-panel-border/20 bg-panel/40 p-3">
-            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-[12px]">
+          <p className="text-xs text-muted-foreground/70">Used when scanning folders.</p>
+          <div className="rounded-lg border border-panel-border bg-panel/40 p-3">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
             {[
               { label: "Video", value: videoExtensions, onChange: setVideoExtensions, options: ["mkv,avi,mp4,m4v,mov", "mkv,mp4", "mkv"] },
               { label: "Subtitle", value: subtitleExtensions, onChange: setSubtitleExtensions, options: ["ass,srt,ssa,sup,pgs", "ass,srt", "srt"] },
@@ -456,18 +456,18 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
         <section className="space-y-2">
           <div className="flex items-center gap-2">
             <Languages className="w-4 h-4 text-muted-foreground" />
-            <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">Favorite Languages</h3>
+            <h3 className="text-xs font-semibold text-muted-foreground">Favorite Languages</h3>
           </div>
-          <p className="text-[11px] text-muted-foreground/70">Used as default when adding new tracks.</p>
+          <p className="text-xs text-muted-foreground/70">Used as default when adding new tracks.</p>
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted-foreground">Subtitle:</span>
-              <LanguageSelect value={subtitleLanguage} onChange={setSubtitleLanguage} className="w-40 h-9" />
+              <LanguageSelect value={subtitleLanguage} onChange={setSubtitleLanguage} className="w-40 h-[30px]" />
             </div>
 
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted-foreground">Audio:</span>
-              <LanguageSelect value={audioLanguage} onChange={setAudioLanguage} className="w-40 h-9" />
+              <LanguageSelect value={audioLanguage} onChange={setAudioLanguage} className="w-40 h-[30px]" />
             </div>
           </div>
         </section>
@@ -477,7 +477,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
             <div>
               <div className="flex items-center gap-2">
                 <Plug className="w-4 h-4 text-muted-foreground" />
-                <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">Windows Prerequisites</h3>
+                <h3 className="text-xs font-semibold text-muted-foreground">Windows Prerequisites</h3>
               </div>
               <p className="text-xs text-muted-foreground/70 mt-1">
                 Install these once so the app runs without extra setup.
@@ -499,10 +499,10 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                   <div className="text-xs text-muted-foreground/80 truncate">{item.note}</div>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openExternal(item.url)}>
+                  <Button variant="ghost" size="icon" className="h-[30px] w-[30px]" onClick={() => openExternal(item.url)}>
                     <Download className="w-4 h-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => copyToClipboard(item.url)}>
+                  <Button variant="ghost" size="icon" className="h-[30px] w-[30px]" onClick={() => copyToClipboard(item.url)}>
                     <Copy className="w-4 h-4" />
                   </Button>
                 </div>
@@ -520,7 +520,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
             <Button
               variant="ghost"
               size="sm"
-              className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+              className="h-[30px] text-xs gap-1.5 text-muted-foreground hover:text-foreground"
               onClick={() => openExternal("https://github.com/AdkHex/MkvBatchMux")}
             >
               <Info className="w-3.5 h-3.5 text-primary" />

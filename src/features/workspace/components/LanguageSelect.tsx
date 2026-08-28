@@ -87,7 +87,7 @@ export function LanguageSelect({
       </PopoverTrigger>
       <PopoverContent
         className={cn(
-          "p-0 w-[320px] rounded-lg border border-panel-border/60 bg-popover/95 shadow-xl overflow-hidden",
+          "p-0 w-[320px] rounded-lg border border-panel-border bg-popover/95 shadow-xl overflow-hidden",
           popoverClassName,
         )}
         align="start"
@@ -107,7 +107,7 @@ export function LanguageSelect({
             placeholder="Search language or code..."
             value={query}
             onValueChange={setQuery}
-            className="h-9 px-2 rounded-md bg-input/60 border border-panel-border/50 focus-visible:ring-1 focus-visible:ring-primary/60"
+            className="h-[30px] px-2 rounded-md bg-input/60 border border-panel-border focus-visible:ring-1 focus-visible:ring-primary/60"
           />
           <CommandList className="max-h-[280px] px-1 pb-2">
             <CommandEmpty>No language found.</CommandEmpty>
