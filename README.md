@@ -1,4 +1,4 @@
-# MKV Batch Muxing Tool
+# MKVBatchMux
 
 A desktop app for scanning MKV collections and batch muxing with a premium, focused workflow.
 
@@ -8,13 +8,13 @@ A desktop app for scanning MKV collections and batch muxing with a premium, focu
 - Video, Audio, Subtitle, Chapter, and Attachment tabs with dedicated workflows
 - External audio/subtitle injection with per-track overrides
 - Multi-track extraction and inclusion from a single external file
-- Track language, name, default/forced flags, and per-track delay control
+- Track language, name, default flag, and per-track delay control
 - Track reordering with drag handles in edit dialogs
-- Bulk apply external files with selectable track subsets
+- Per-stream language, name and delay when importing from another video
 - Detailed change reports for queued jobs
 - Queue management, validation, and progress tracking
 - Advanced mux settings (chapters, attachments, tags, safety checks)
-- Polished dark cinematic UI (Cinematic Graphite + Soft Gold)
+- Calm dark UI with a live dependency and update panel in Settings
 - Tauri desktop app (Windows/macOS/Linux)
 
 ## Requirements
@@ -59,8 +59,9 @@ vendored here so it does not diverge from the fixes made there.
 A bundled FFmpeg takes precedence over one on your PATH: it is the version the
 app was tested against.
 
-### Windows extras (MSI installer)
-- WiX Toolset (required to build `.msi`)
+### Windows installer
+The Windows build produces an NSIS `.exe` installer. No extra toolchain is
+needed; the bundler ships its own NSIS.
 
 ## Automatic updates
 
@@ -74,8 +75,8 @@ several minutes, so updates never restart the app unprompted.
 ### Repository secrets (required)
 
 Updates are cryptographically signed and the app rejects unsigned ones, so CI
-needs two secrets. Without them the build still succeeds and publishes an MSI
-for manual download, but no `latest.json` is generated and auto-update stays off
+needs two secrets. Without them the build still succeeds and publishes an
+installer for manual download, but no `latest.json` is generated and auto-update stays off
 (the workflow logs a warning saying so).
 
 | Secret | Value |
@@ -110,14 +111,14 @@ npm run dev
 npm run tauri:build
 ```
 
-### 4) Build a Windows MSI installer
+### 4) Build the Windows installer
 ```bash
-npm run tauri:build -- --bundles msi
+npm run tauri:build -- --bundles nsis
 ```
 
-The MSI will be located under:
+The installer will be located under:
 ```
-src-tauri/target/release/bundle/msi/
+src-tauri/target/release/bundle/nsis/
 ```
 
 ## GitHub Actions (manual build)

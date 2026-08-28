@@ -7,7 +7,7 @@ edition = "2021"
 tauri-build = { version = "1.5", features = [] }
 
 [dependencies]
-tauri = { version = "1.5", features = [ "fs-all", "dialog-open", "dialog-save", "path-all", "shell-open", "window-all", "updater"] }
+tauri = { version = "1.5", features = [ "fs-all", "dialog-open", "dialog-save", "path-all", "process-relaunch", "shell-open", "window-all", "updater"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
@@ -17,6 +17,10 @@ crc32fast = "1"
 fs2 = "0.4"
 rayon = "1.10"
 tempfile = "3.10"
+# Used to fetch and unpack MKVToolNix / MediaInfo from Settings. Both already
+# resolve through tauri's dependency tree, so this pins no new transitive graph.
+reqwest = { version = "0.11", features = ["blocking"] }
+zip = "0.6"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

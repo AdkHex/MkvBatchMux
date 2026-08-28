@@ -79,9 +79,6 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Install Windows bundler (WiX)
-        if: startsWith(matrix.os, 'windows')
-        run: choco install wixtoolset -y
 
       # Delay measurement needs the AudioSync engine and ffmpeg/ffprobe. Both
       # are build artifacts rather than source, so they are produced here and
@@ -129,11 +126,13 @@ jobs:
           fi
           echo "Bundled dependencies present."
 
-      - name: Build Tauri (Windows MSI + updater)
+      - name: Build Tauri (Windows .exe installer + updater)
         if: startsWith(matrix.os, 'windows')
-        # The updater bundle is the MSI plus a detached signature. Signing needs
-        # the private key: without these secrets the build still succeeds but
-        # produces no .sig, and installed apps reject the update.
+        # NSIS rather than WiX: the installer runs hooks that fetch MKVToolNix
+        # and MediaInfo during setup, so a fresh machine needs no manual steps.
+        # The updater bundle is that installer plus a detached signature.
+        # Signing needs the private key: without these secrets the build still
+        # succeeds but produces no .sig, and installed apps reject the update.
         env:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
@@ -141,7 +140,7 @@ jobs:
         # otherwise swallow any argument that followed it. The comma form
         # silently skipped the bundler entirely on 1.6.3, producing a release
         # with a bare .exe and no installer.
-        run: npm run tauri:build -- --bundles msi updater
+        run: npm run tauri:build -- --bundles nsis updater
 
       - name: Inspect bundle output
         shell: powershell
@@ -155,25 +154,25 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          $msi = Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Filter "*.msi" -ErrorAction SilentlyContinue
-          $exe = Get-ChildItem -Path "src-tauri/target/release" -Filter "*.exe" -ErrorAction SilentlyContinue
-          if ($msi) { $msi | Copy-Item -Destination artifacts -Force }
-          if ($exe) { $exe | Copy-Item -Destination artifacts -Force }
+          # The NSIS installer, named *-setup.exe by the bundler. Matched on
+          # that suffix so the app's own bare .exe cannot be mistaken for it.
+          $setup = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -ErrorAction SilentlyContinue
+          if ($setup) { $setup | Copy-Item -Destination artifacts -Force }
           # The updater bundle: the archive the app downloads, plus its
           # signature. Searched across the whole bundle tree rather than a
           # fixed subdirectory, since the bundler's layout differs per target.
-          $upd = Get-ChildItem -Path "src-tauri/target/release/bundle" -Include "*.msi.zip","*.msi.zip.sig" -Recurse -ErrorAction SilentlyContinue
+          $upd = Get-ChildItem -Path "src-tauri/target/release/bundle" -Include "*-setup.exe.zip","*-setup.exe.zip.sig" -Recurse -ErrorAction SilentlyContinue
           if ($upd) { $upd | Copy-Item -Destination artifacts -Force }
           # A bare .exe is not a release. The bundler silently doing nothing
           # previously produced a green build whose release had no installer at
-          # all, so the MSI is checked for explicitly rather than accepting
-          # whatever happened to land in the directory.
-          if (-not $msi) {
-            Write-Error "No .msi produced. The bundler did not run -- check the --bundles arguments."
+          # all, so the installer is checked for explicitly rather than
+          # accepting whatever happened to land in the directory.
+          if (-not $setup) {
+            Write-Error "No -setup.exe produced. The bundler did not run -- check the --bundles arguments."
             exit 1
           }
           if (-not $upd) {
-            Write-Error "No updater bundle (.msi.zip + .sig) produced, so auto-update would silently break. Check that TAURI_PRIVATE_KEY is set and 'updater' is in --bundles."
+            Write-Error "No updater bundle (-setup.exe.zip + .sig) produced, so auto-update would silently break. Check that TAURI_PRIVATE_KEY is set and 'updater' is in --bundles."
             exit 1
           }
           Get-ChildItem -Path artifacts | Select-Object Name, Length | Format-Table
@@ -194,8 +193,8 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-          $zip = Get-ChildItem -Path artifacts -Filter "*.msi.zip" | Select-Object -First 1
-          $sigFile = Get-ChildItem -Path artifacts -Filter "*.msi.zip.sig" | Select-Object -First 1
+          $zip = Get-ChildItem -Path artifacts -Filter "*-setup.exe.zip" | Select-Object -First 1
+          $sigFile = Get-ChildItem -Path artifacts -Filter "*-setup.exe.zip.sig" | Select-Object -First 1
 
           # Collect bundles already fails the build if these are missing, so
           # reaching here without them means that check regressed.
@@ -250,7 +249,7 @@ jobs:
         with:
           # Same tag the updater manifest points at; see "Build updater manifest".
           tag_name: ${{ steps.manifest.outputs.tag }}
-          name: MKV Batch Muxing Tool v${{ steps.manifest.outputs.version }} (build ${{ github.run_number }})
+          name: MKVBatchMux v${{ steps.manifest.outputs.version }} (build ${{ github.run_number }})
           # Installed apps resolve the manifest through /releases/latest/, which
           # skips prereleases and drafts -- so this must publish as the latest
           # release or no update is ever offered.
@@ -259,7 +258,7 @@ jobs:
           make_latest: "true"
           body: |
             Automated build from commit ${{ github.sha }}.
-            Artifacts: Windows installer (MSI) and/or portable EXE.
+            Artifacts: Windows .exe installer.
 
             Installed apps update to this build automatically.
           files: artifacts/**

@@ -202,6 +202,29 @@ export async function audiosyncEngineStatus() {
   return invoke<EngineStatus>("audiosync_engine_status");
 }
 
+/** One external tool the app depends on, as reported by the backend. */
+export interface DependencyStatus {
+  id: string;
+  name: string;
+  purpose: string;
+  available: boolean;
+  version: string | null;
+  /** Shipped with the app, so there is nothing for the user to install. */
+  bundled: boolean;
+  /** False for tools whose absence only disables one feature. */
+  required: boolean;
+  downloadUrl: string;
+}
+
+export async function dependencyStatus() {
+  return invoke<DependencyStatus[]>("dependency_status");
+}
+
+/** Download and install one dependency by id. Resolves with a status message. */
+export async function installDependency(id: string) {
+  return invoke<string>("install_dependency", { id });
+}
+
 export async function listReferenceTracks(paths: string[]) {
   return invoke<{ files: TrackListing[] }>("list_reference_tracks", { paths });
 }

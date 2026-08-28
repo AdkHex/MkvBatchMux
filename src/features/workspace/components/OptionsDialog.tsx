@@ -1,13 +1,21 @@
-import { useEffect, useState } from "react";
-import { FolderOpen, Settings, Info, RotateCcw, Download, Copy, Moon, X, SlidersHorizontal, Folder, FileType2, Languages, Plug } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { FolderOpen, Settings, Info, RotateCcw, Download, Moon, X, SlidersHorizontal, Folder, FileType2, Languages, Plug, RefreshCw } from "lucide-react";
 import { Button } from "@/shared/ui/button";
 import { Select, SelectItem, SelectValue } from "@/shared/ui/select";
 import type { OptionsData, Preset } from "@/shared/types";
-import { pickDirectory } from "@/shared/lib/backend";
+import {
+  pickDirectory,
+  dependencyStatus,
+  installDependency,
+  type DependencyStatus,
+} from "@/shared/lib/backend";
 import { open as openExternal } from "@tauri-apps/api/shell";
 import { BaseModal } from "@/shared/components/BaseModal";
 import { TextField, CheckboxField, DropdownTrigger, DropdownContent, Toggle } from "@/shared/components/Fields";
 import { LanguageSelect } from "@/features/workspace/components/LanguageSelect";
+import { cn } from "@/shared/lib/utils";
+import { toast } from "@/shared/hooks/use-toast";
+import { UpdateChecker } from "./UpdateChecker";
 
 interface OptionsDialogProps {
   open: boolean;
@@ -32,6 +40,46 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
   const [chapterExtensions, setChapterExtensions] = useState("xml");
   const [subtitleLanguage, setSubtitleLanguage] = useState("eng");
   const [audioLanguage, setAudioLanguage] = useState("hin");
+  const [dependencies, setDependencies] = useState<DependencyStatus[]>([]);
+  const [dependenciesLoading, setDependenciesLoading] = useState(false);
+  const [installingId, setInstallingId] = useState<string | null>(null);
+
+  const refreshDependencies = useCallback(() => {
+    setDependenciesLoading(true);
+    dependencyStatus()
+      .then(setDependencies)
+      .catch(() => setDependencies([]))
+      .finally(() => setDependenciesLoading(false));
+  }, []);
+
+  // Re-check on every open: the user may have installed something since last
+  // time, and a stale "Required" badge is worse than no badge.
+  useEffect(() => {
+    if (open) refreshDependencies();
+  }, [open, refreshDependencies]);
+
+  const handleInstall = useCallback(
+    async (item: DependencyStatus) => {
+      setInstallingId(item.id);
+      try {
+        const message = await installDependency(item.id);
+        toast({ title: item.name, description: message });
+        refreshDependencies();
+      } catch (error) {
+        // Offer the download page as a fallback rather than leaving the user
+        // stuck: the failure is usually a blocked network or declined UAC.
+        toast({
+          title: `Could not install ${item.name}`,
+          description: String(error),
+          variant: "destructive",
+        });
+        void openExternal(item.downloadUrl);
+      } finally {
+        setInstallingId(null);
+      }
+    },
+    [refreshDependencies],
+  );
 
   useEffect(() => {
     if (!options) return;
@@ -124,66 +172,6 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
     { label: "Attachments Directory", value: attachmentsDir, onChange: setAttachmentsDir },
     { label: "Destination Directory", value: destinationDir, onChange: setDestinationDir },
   ];
-  const prereqLinks = [
-    {
-      name: "Node.js 18 LTS (x64)",
-      url: "https://nodejs.org/dist/v18.20.3/node-v18.20.3-x64.msi",
-      note: "Required for frontend builds",
-    },
-    {
-      name: "Rustup (x64)",
-      url: "https://win.rustup.rs/x86_64",
-      note: "Required for Tauri backend builds",
-    },
-    {
-      name: "MSVC Build Tools",
-      url: "https://aka.ms/vs/17/release/vs_BuildTools.exe",
-      note: "C++ build tools + Windows SDK",
-    },
-    {
-      name: "WebView2 Runtime",
-      url: "https://go.microsoft.com/fwlink/p/?LinkId=2124703",
-      note: "Required to run the app UI",
-    },
-    {
-      name: "MKVToolNix (x64)",
-      url: "https://mkvtoolnix.download/windows/releases/83.0/mkvtoolnix-64-bit-83.0-setup.exe",
-      note: "Provides mkvmerge/mkvpropedit",
-    },
-    {
-      name: "MediaInfo CLI (x64)",
-      url: "https://mediaarea.net/download/binary/mediainfo/24.06/MediaInfo_CLI_24.06_Windows_x64.zip",
-      note: "Provides mediainfo command",
-    },
-  ];
-
-  const copyToClipboard = async (text: string) => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        return;
-      }
-    } catch {
-      // Fallback below.
-    }
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.setAttribute("readonly", "true");
-    textarea.style.position = "absolute";
-    textarea.style.left = "-9999px";
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    textarea.remove();
-  };
-
-  const openAllPrereqs = async () => {
-    for (const item of prereqLinks) {
-      await openExternal(item.url);
-    }
-    await copyToClipboard(prereqLinks.map((item) => `${item.name}: ${item.url}`).join("\n"));
-  };
-
   return (
     <BaseModal
       open={open}
@@ -473,41 +461,92 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
         </section>
 
         <section className="space-y-2">
-          <div className="flex items-center justify-between mb-1">
-            <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Download className="w-4 h-4 text-muted-foreground" />
+            <h3 className="text-xs font-semibold text-muted-foreground">Version</h3>
+          </div>
+          <UpdateChecker />
+        </section>
+
+        <section className="space-y-2">
+          <div className="flex items-center justify-between mb-1 gap-3">
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <Plug className="w-4 h-4 text-muted-foreground" />
-                <h3 className="text-xs font-semibold text-muted-foreground">Windows Prerequisites</h3>
+                <h3 className="text-xs font-semibold text-muted-foreground">Dependencies</h3>
               </div>
               <p className="text-xs text-muted-foreground/70 mt-1">
-                Install these once so the app runs without extra setup.
+                Detected automatically. Anything bundled with the app needs no action.
               </p>
             </div>
-            <Button variant="secondary" size="sm" className="gap-1.5" onClick={openAllPrereqs}>
-              <Download className="w-3.5 h-3.5" />
-              Download All
+            <Button
+              variant="secondary"
+              size="sm"
+              className="gap-1.5 shrink-0"
+              onClick={refreshDependencies}
+              disabled={dependenciesLoading}
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", dependenciesLoading && "animate-spin")} />
+              Re-check
             </Button>
           </div>
-          <div className="space-y-2">
-            {prereqLinks.map((item) => (
-              <div
-                key={item.name}
-                className="flex items-center justify-between gap-3 rounded-md border border-panel-border bg-panel px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-foreground truncate">{item.name}</div>
-                  <div className="text-xs text-muted-foreground/80 truncate">{item.note}</div>
-                </div>
-                <div className="flex items-center gap-1">
-                  <Button variant="ghost" size="icon" className="h-[30px] w-[30px]" onClick={() => openExternal(item.url)}>
-                    <Download className="w-4 h-4" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-[30px] w-[30px]" onClick={() => copyToClipboard(item.url)}>
-                    <Copy className="w-4 h-4" />
-                  </Button>
-                </div>
+          <div className="space-y-1.5">
+            {dependencies.length === 0 ? (
+              <div className="text-xs text-muted-foreground px-1 py-2">
+                {dependenciesLoading ? "Checking…" : "Could not read dependency status."}
               </div>
-            ))}
+            ) : (
+              dependencies.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between gap-3 rounded border border-panel-border px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] text-foreground truncate">{item.name}</span>
+                      {item.bundled ? (
+                        <span className="text-xs text-primary shrink-0">Included</span>
+                      ) : item.available ? (
+                        <span className="text-xs text-success shrink-0">Installed</span>
+                      ) : (
+                        <span
+                          className={cn(
+                            "text-xs shrink-0",
+                            item.required ? "text-destructive" : "text-warning",
+                          )}
+                        >
+                          {item.required ? "Required" : "Optional"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground truncate">
+                      {item.available && item.version ? item.version : item.purpose}
+                    </div>
+                  </div>
+                  {!item.available && !item.bundled ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="gap-1.5 shrink-0"
+                      onClick={() => handleInstall(item)}
+                      disabled={installingId !== null}
+                    >
+                      {installingId === item.id ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Installing…
+                        </>
+                      ) : (
+                        <>
+                          <Download className="w-3.5 h-3.5" />
+                          Install
+                        </>
+                      )}
+                    </Button>
+                  ) : null}
+                </div>
+              ))
+            )}
           </div>
         </section>
 

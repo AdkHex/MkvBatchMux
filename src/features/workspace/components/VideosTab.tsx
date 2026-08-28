@@ -31,7 +31,7 @@ import {
   DataTableCell,
 } from "@/shared/components/DataTable";
 import { EmptyState } from "@/shared/components/EmptyState";
-import { mergeVideoFiles, normalizeVideoIdentity } from "../lib/videoMerge";
+import { mergeVideoFiles } from "../lib/videoMerge";
 
 interface VideosTabProps {
   files: VideoFile[];
@@ -91,8 +91,6 @@ export function VideosTab({
   const [editingFile, setEditingFile] = useState<VideoFile | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isMediaInfoOpen, setIsMediaInfoOpen] = useState(false);
-  const [isDragOver, setIsDragOver] = useState(false);
-  const dropTokenRef = useRef(0);
   const scanTokenRef = useRef(0);
   const scanAbortRef = useRef(false);
   const activeScanIdRef = useRef<string | null>(null);
@@ -100,7 +98,7 @@ export function VideosTab({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
 
-  const ROW_HEIGHT = 44;
+  const ROW_HEIGHT = 34;
   const OVERSCAN_ROWS = 8;
   const normalizedSearch = searchValue.trim().toLowerCase();
   const displayFiles = useMemo(() => {
@@ -250,72 +248,6 @@ export function VideosTab({
     setIsMediaInfoOpen(true);
   };
 
-  const handleDroppedFiles = useCallback(async (paths: string[]) => {
-    const allowed = new Set(videoExtensions);
-    const videoPaths = paths.filter((p) => {
-      const ext = p.split(".").pop()?.toLowerCase();
-      return ext && allowed.has(ext);
-    });
-    if (videoPaths.length === 0) return;
-
-    // Deduplicate against existing files
-    const existingPaths = new Set(files.map((file) => normalizeVideoIdentity(file.path)));
-    const newPaths = videoPaths.filter((path) => !existingPaths.has(normalizeVideoIdentity(path)));
-    if (newPaths.length === 0) return;
-
-    dropTokenRef.current += 1;
-    const dropToken = dropTokenRef.current;
-
-    // Create stub entries immediately so the list updates at once
-    const stubs: VideoFile[] = newPaths.map((path) => ({
-      id: `video-drop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name: path.split(/[\\/]/).pop() || path,
-      path,
-      size: 0,
-      status: "pending" as const,
-      tracks: [],
-    }));
-
-    const combined = [...files, ...stubs];
-    updateFiles(combined);
-
-    // Now inspect them to fill in tracks/duration/fps/size
-    let scannedFiles = combined;
-    const streamId = `drop-${dropToken}`;
-
-    let resolveDone: () => void = () => undefined;
-    const donePromise = new Promise<void>((res) => { resolveDone = res; });
-
-    const unlistenChunk = await listenInspectPathsStreamChunk((payload) => {
-      if (payload.scanId !== streamId) return;
-      scannedFiles = mergeVideoFiles([...scannedFiles, ...(payload.items as VideoFile[])]);
-      updateFiles(scannedFiles);
-    });
-    const unlistenDone = await listenInspectPathsStreamDone((payload) => {
-      if (payload.scanId !== streamId) return;
-      resolveDone();
-    });
-    const unlistenError = await listenInspectPathsStreamError((payload) => {
-      if (payload.scanId !== streamId) return;
-      resolveDone();
-    });
-
-    try {
-      await inspectPathsStream({
-        scan_id: streamId,
-        paths: newPaths,
-        type: "video",
-        include_tracks: true,
-        batch_size: 8,
-      });
-      await donePromise;
-    } finally {
-      unlistenChunk();
-      unlistenDone();
-      unlistenError();
-      updateFiles(scannedFiles);
-    }
-  }, [files, updateFiles, videoExtensions]);
 
   useEffect(() => {
     if (!preset) return;
@@ -324,40 +256,6 @@ export function VideosTab({
       setVideoExtension(defaultExt.toLowerCase());
     }
   }, [preset]);
-
-  // Native file drag-and-drop via Tauri window event
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-
-    import("@tauri-apps/api/window")
-      .then(({ appWindow }) =>
-        appWindow.onFileDropEvent((event) => {
-          if (event.payload.type === "hover") {
-            setIsDragOver(true);
-          } else if (event.payload.type === "cancel") {
-            setIsDragOver(false);
-          } else if (event.payload.type === "drop") {
-            setIsDragOver(false);
-            handleDroppedFiles(event.payload.paths);
-          }
-        }),
-      )
-      .then((fn) => {
-        if (cancelled) {
-          fn();
-          return;
-        }
-        unlisten = fn;
-      })
-      .catch(() => undefined);
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [handleDroppedFiles]);
-
   useEffect(() => {
     const element = bodyRef.current;
     if (!element) return;
@@ -646,7 +544,7 @@ export function VideosTab({
 
           <DataTableBody
             ref={bodyRef}
-            className={`flex-1 transition-colors ${isDragOver ? "ring-2 ring-inset ring-primary/50 bg-primary/5" : ""}`}
+            className="flex-1"
             onScroll={(event) => {
               if (!shouldVirtualize) return;
               setScrollTop(event.currentTarget.scrollTop);
@@ -665,7 +563,7 @@ export function VideosTab({
                 description={
                   isScanning && !showScanOverlay
                     ? "Loading video metadata"
-                    : "Click the folder icon above or drag & drop MKV files here"
+                    : "Use the folder button above to choose a source folder"
                 }
               />
             ) : displayFiles.length === 0 ? (
@@ -687,7 +585,7 @@ export function VideosTab({
                   selected={selectedFileIds.includes(file.id)}
                   onClick={(event) => handleRowClick(event, index, file.id)}
                   onDoubleClick={() => handleDoubleClick(file)}
-                  className="group grid grid-cols-[1fr_90px_120px_140px] items-center cursor-pointer h-[44px]"
+                  className="group grid grid-cols-[1fr_90px_120px_140px] items-center cursor-pointer h-[34px]"
                 >
                   <DataTableCell className="font-mono text-foreground/85">{file.name}</DataTableCell>
                   <DataTableCell className="right muted tabular-nums">{formatFps(file.fps)}</DataTableCell>

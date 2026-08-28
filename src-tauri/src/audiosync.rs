@@ -50,6 +50,11 @@ fn bundled_ffmpeg_dir(app: &AppHandle) -> Option<PathBuf> {
         .clone()
 }
 
+/// Whether this build ships its own ffmpeg pair.
+pub fn ffmpeg_is_bundled(app: &AppHandle) -> bool {
+    bundled_ffmpeg_dir(app).is_some()
+}
+
 /// Absolute path to a bundled tool, else the bare name for PATH lookup.
 pub fn ffmpeg_tool(app: &AppHandle, tool: &str) -> String {
     let name = if cfg!(windows) {

@@ -62,6 +62,7 @@ export function AppShell({ sidebar, topbar, children, className }: AppShellProps
       <div className="fluent-windowbar">
         <div className="fluent-windowbar__drag" data-tauri-drag-region>
           <span className="fluent-windowbar__title">MKVBatchMux</span>
+          <span className="fluent-windowbar__byline">by Ionicboy</span>
         </div>
         <div className="fluent-windowbar__controls">
           <IconButton

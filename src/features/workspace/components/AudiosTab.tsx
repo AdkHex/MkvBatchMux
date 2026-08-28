@@ -4,6 +4,7 @@ import { toast } from "@/shared/hooks/use-toast";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Checkbox } from "@/shared/ui/checkbox";
+import { Switch } from "@/shared/ui/switch";
 import {
   Select,
   SelectContent,
@@ -15,6 +16,11 @@ import { AlertDialogAction, AlertDialogCancel } from "@/shared/ui/alert-dialog";
 import { BaseModal } from "@/shared/components/BaseModal";
 import { EmptyState } from "@/shared/components/EmptyState";
 import { LanguageSelect } from "@/features/workspace/components/LanguageSelect";
+import {
+  ImportTrackEditDialog,
+  ImportTrackEditButton,
+  type ImportTrackOverride,
+} from "./ImportTrackEditDialog";
 import { cn } from "@/shared/lib/utils";
 import type { VideoFile, ExternalFile, Preset, StretchSetting } from "@/shared/types";
 import { pickDirectory, scanMedia } from "@/shared/lib/backend";
@@ -226,12 +232,6 @@ export function AudiosTab({
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
   const audioFilesCache = useRef<Record<string, ExternalFile[]>>({});
-  const [bulkOpen, setBulkOpen] = useState(false);
-  const [bulkSelectedVideoIds, setBulkSelectedVideoIds] = useState<string[]>([]);
-  const [bulkSelectedAudioIds, setBulkSelectedAudioIds] = useState<string[]>([]);
-  const [bulkIncludeMode, setBulkIncludeMode] = useState<"all" | "first">("all");
-  const [bulkFirstCount, setBulkFirstCount] = useState("2");
-  const [bulkReplaceExisting, setBulkReplaceExisting] = useState(false);
   const [trackEditOpen, setTrackEditOpen] = useState(false);
   const [trackEditTarget, setTrackEditTarget] = useState<{
     fileId: string;
@@ -251,6 +251,10 @@ export function AudiosTab({
   const [importStreamsOpen, setImportStreamsOpen] = useState(false);
   const [importSourceVideoId, setImportSourceVideoId] = useState("");
   const [importSelectedTrackKeys, setImportSelectedTrackKeys] = useState<string[]>([]);
+  // Per-stream overrides for an import, keyed by the same track key as the
+  // selection above. Cleared whenever the source video changes.
+  const [importOverrides, setImportOverrides] = useState<Record<string, ImportTrackOverride>>({});
+  const [importEditingKey, setImportEditingKey] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({
     trackName: "",
     language: "und",
@@ -741,80 +745,6 @@ export function AudiosTab({
     });
   };
 
-  const applyBulkMapping = () => {
-    if (bulkSelectedVideoIds.length === 0 || bulkSelectedAudioIds.length === 0) {
-      toast({
-        title: "Bulk Apply",
-        description: "Select at least one video and one audio file.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const firstCount = Math.max(1, Math.floor(Number(bulkFirstCount) || 1));
-    const selectedAudio = audioFiles.filter((file) => bulkSelectedAudioIds.includes(file.id));
-    if (selectedAudio.length === 0) {
-      toast({
-        title: "Bulk Apply",
-        description: "Selected audio files are not available.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const remaining = bulkReplaceExisting
-      ? audioFiles.filter((file) => !bulkSelectedVideoIds.includes(file.matchedVideoId || ""))
-      : [...audioFiles];
-
-    const nextFiles = bulkSelectedVideoIds.reduce<ExternalFile[]>((acc, videoId) => {
-      selectedAudio.forEach((file) => {
-        const available =
-          file.tracks && file.tracks.length > 0
-            ? file.tracks.map((track) => Number(track.id)).filter((id) => Number.isFinite(id))
-            : file.includedTrackIds || [];
-        let includedTrackIds: number[] | undefined;
-        if (bulkIncludeMode === "first" && available.length > 0) {
-          includedTrackIds = available.slice(0, Math.min(firstCount, available.length));
-        } else if (bulkIncludeMode === "all" && available.length > 0) {
-          includedTrackIds = available;
-        }
-
-        const existingIndex = remaining.findIndex(
-          (entry) => entry.matchedVideoId === videoId && entry.path === file.path,
-        );
-        if (existingIndex !== -1) {
-          const existing = remaining[existingIndex];
-          remaining[existingIndex] = {
-            ...existing,
-            includedTrackIds,
-            trackName: file.trackName ?? existing.trackName,
-            language: file.language ?? existing.language,
-            delay: file.delay ?? existing.delay,
-            isDefault: file.isDefault ?? existing.isDefault,
-            isForced: file.isForced ?? existing.isForced,
-            muxAfter: file.muxAfter ?? existing.muxAfter,
-            tracks: file.tracks ?? existing.tracks,
-          };
-        } else {
-          acc.push({
-            ...file,
-            id: createExternalId(),
-            matchedVideoId: videoId,
-            includedTrackIds,
-          });
-        }
-      });
-      return acc;
-    }, []);
-
-    onAudioFilesChange([...remaining, ...nextFiles]);
-    setBulkOpen(false);
-    toast({
-      title: "Bulk Apply Complete",
-      description: `Applied ${selectedAudio.length} audio file(s) to ${bulkSelectedVideoIds.length} video(s).`,
-    });
-  };
-
   useEffect(() => {
     if (onAddTrack) {
       window.__audiosAddTrack = addNewTrack;
@@ -969,6 +899,24 @@ export function AudiosTab({
       includedTrackIds: mergedIncludedTrackIds,
       includeSubtitles: false,
       includedSubtitleTrackIds: [],
+      // Carry any per-stream edits through as track overrides, keyed by track
+      // id so the mux job picks them up the same way manual edits do. Without
+      // this every imported stream would silently take the tab's shared delay.
+      trackOverrides: (() => {
+        const overrides: NonNullable<ExternalFile["trackOverrides"]> = {
+          ...(existingAtTarget?.trackOverrides ?? {}),
+        };
+        importableTracks.forEach((track, trackIndex) => {
+          const key = getImportTrackKey(trackIndex, String(track.id));
+          if (!selectedTrackKeySet.has(key)) return;
+          const override = importOverrides[key];
+          if (!override) return;
+          const id = Number(track.id);
+          if (!Number.isFinite(id)) return;
+          overrides[id] = { ...(overrides[id] ?? {}), ...override };
+        });
+        return Object.keys(overrides).length > 0 ? overrides : undefined;
+      })(),
     };
 
     const updated = [...audioFiles];
@@ -981,6 +929,7 @@ export function AudiosTab({
     setSelectedAudioIndex(targetIndex);
     setSelectedVideoIndex(targetIndex);
     setImportStreamsOpen(false);
+    setImportOverrides({});
     toast({
       title: "Audio Streams Imported",
       description: `Imported ${selectedTracks.length} stream${selectedTracks.length > 1 ? "s" : ""} to Video #${targetIndex + 1}.`,
@@ -1216,23 +1165,16 @@ export function AudiosTab({
             <span className="text-xs text-muted-foreground">sec</span>
           </div>
 
-          <div className="grid grid-cols-2 gap-14 pl-3 items-center">
-            <div className="flex items-center gap-2 min-w-[120px]">
-              <Checkbox
-                id="audio-default"
-                checked={currentConfig.isDefault}
-                onCheckedChange={(checked) => updateCurrentConfig({ isDefault: checked as boolean })}
-              />
-              <label htmlFor="audio-default" className="text-xs cursor-pointer">Default</label>
-            </div>
-            <div className="flex items-center gap-2 min-w-[120px]">
-              <Checkbox
-                id="audio-forced"
-                checked={currentConfig.isForced}
-                onCheckedChange={(checked) => updateCurrentConfig({ isForced: checked as boolean })}
-              />
-              <label htmlFor="audio-forced" className="text-xs cursor-pointer">Forced</label>
-            </div>
+          {/* No "Forced": audio is never forced in practice. */}
+          <div className="flex items-center gap-2.5 pl-3">
+            <Switch
+              id="audio-default"
+              checked={currentConfig.isDefault}
+              onCheckedChange={(checked) => updateCurrentConfig({ isDefault: checked })}
+            />
+            <label htmlFor="audio-default" className="text-[13px] cursor-pointer">
+              Default
+            </label>
           </div>
         </div>
       </div>
@@ -1313,19 +1255,6 @@ export function AudiosTab({
                 <Copy className="w-3 h-3 mr-1" />
                 Duplicate
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="panel-text-btn"
-                onClick={() => {
-                  setBulkSelectedVideoIds(videoFiles.map((file) => file.id));
-                  setBulkSelectedAudioIds(audioFiles.map((file) => file.id));
-                  setBulkOpen(true);
-                }}
-                disabled={videoFiles.length === 0 || audioFiles.length === 0}
-              >
-                Bulk Apply
-              </Button>
             </div>
           </div>
           <div className="flex-1 overflow-auto scrollbar-thin">
@@ -1338,7 +1267,7 @@ export function AudiosTab({
               <EmptyState
                 icon={<AudioLines className="w-5 h-5 text-muted-foreground/65" />}
                 title="No audio files found"
-                description="Click the folder icon above or drag and drop files here"
+                description="Use the folder button above to choose a source folder"
                 className="h-full"
               />
             ) : visibleAudioFiles.length === 0 ? (
@@ -1466,7 +1395,7 @@ export function AudiosTab({
         className="max-w-2xl"
         footerRight={
           <>
-            <Button variant="ghost" onClick={() => setImportStreamsOpen(false)}>
+            <Button variant="ghost" onClick={() => { setImportStreamsOpen(false); setImportOverrides({}); }}>
               Cancel
             </Button>
             <Button onClick={handleConfirmImportAudios} disabled={!importSourceVideoId || importSelectedTrackKeys.length === 0}>
@@ -1481,6 +1410,7 @@ export function AudiosTab({
             <Select value={importSourceVideoId} onValueChange={(value) => {
               setImportSourceVideoId(value);
               setImportSelectedTrackKeys([]);
+              setImportOverrides({});
             }}>
               <SelectTrigger className="h-[30px]">
                 <SelectValue placeholder="Choose source video" />
@@ -1503,6 +1433,10 @@ export function AudiosTab({
                 importableTracks.map((track, idx) => {
                   const trackKey = getImportTrackKey(idx, String(track.id));
                   const checked = importSelectedTrackKeys.includes(trackKey);
+                  const override = importOverrides[trackKey];
+                  const hasOverride = Boolean(
+                    override && (override.delay || override.language || override.trackName),
+                  );
                   return (
                     <label key={`${track.id}-${idx}`} className="flex items-center gap-2 px-1 py-1 cursor-pointer text-sm">
                       <Checkbox
@@ -1518,10 +1452,23 @@ export function AudiosTab({
                       <span className="font-mono text-xs text-muted-foreground">
                         #{idx + 1}
                       </span>
-                      <span className="truncate">
-                        {track.name || track.codec || `Audio ${idx + 1}`}
-                        {track.language ? ` • ${track.language}` : ""}
+                      <span className="truncate flex-1 min-w-0">
+                        {override?.trackName || track.name || track.codec || `Audio ${idx + 1}`}
+                        {override?.language || track.language
+                          ? ` • ${override?.language || track.language}`
+                          : ""}
                       </span>
+                      {hasOverride && override?.delay ? (
+                        <span className="font-mono text-xs text-primary shrink-0">
+                          {override.delay > 0 ? "+" : ""}
+                          {override.delay}s
+                        </span>
+                      ) : null}
+                      <ImportTrackEditButton
+                        edited={hasOverride}
+                        label={`Edit stream ${idx + 1}`}
+                        onClick={() => setImportEditingKey(trackKey)}
+                      />
                     </label>
                   );
                 })
@@ -1531,121 +1478,30 @@ export function AudiosTab({
         </div>
       </BaseModal>
 
-      <BaseModal
-        open={bulkOpen}
-        onOpenChange={setBulkOpen}
-        title="Bulk Apply Audio Files"
-        subtitle="Apply selected audio files to selected videos with a track subset."
-        icon={<AudioLines className="w-5 h-5 text-primary" />}
-        className="max-w-2xl"
-        bodyClassName="px-5 py-4"
-        footerRight={
-          <>
-            <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setBulkOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={applyBulkMapping}>Apply</Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="rounded-md border border-panel-border bg-panel-header px-3 py-2 space-y-2">
-              <div className="text-xs font-semibold text-muted-foreground">Videos</div>
-              <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
-                {videoFiles.map((file) => {
-                  const checked = bulkSelectedVideoIds.includes(file.id);
-                  return (
-                    <label key={file.id} className="flex items-center gap-2 text-xs text-foreground/80 cursor-pointer">
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={(value) => {
-                          setBulkSelectedVideoIds((prev) =>
-                            value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
-                          );
-                        }}
-                      />
-                      <span className="truncate">{file.name}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="rounded-md border border-panel-border bg-panel-header px-3 py-2 space-y-2">
-              <div className="text-xs font-semibold text-muted-foreground">Audio files</div>
-              <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
-                {audioFiles.map((file) => {
-                  const checked = bulkSelectedAudioIds.includes(file.id);
-                  const trackCount = file.tracks?.length || file.includedTrackIds?.length || 0;
-                  const audioTrackCount = (file.tracks || []).filter((track) => track.type === "audio").length;
-                  return (
-                    <div key={file.id} className="flex items-center gap-2 text-xs text-foreground/80">
-                      <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(value) => {
-                            setBulkSelectedAudioIds((prev) =>
-                              value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
-                            );
-                          }}
-                        />
-                        <span className="truncate">{file.name}</span>
-                      </label>
-                      {audioTrackCount > 1 && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-xs"
-                          onClick={() => openEditDialog(file.id)}
-                        >
-                          Tracks
-                        </Button>
-                      )}
-                      {trackCount > 1 && (
-                        <span className="text-xs text-muted-foreground/70 shrink-0">{trackCount} tracks</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-          <div className="rounded-md border border-panel-border bg-panel-header px-3 py-2 space-y-3">
-            <div className="text-xs font-semibold text-muted-foreground">Track Subset</div>
-            <div className="flex items-center gap-4 text-xs">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <Checkbox
-                  checked={bulkIncludeMode === "all"}
-                  onCheckedChange={(value) => value && setBulkIncludeMode("all")}
-                />
-                All tracks
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <Checkbox
-                  checked={bulkIncludeMode === "first"}
-                  onCheckedChange={(value) => value && setBulkIncludeMode("first")}
-                />
-                First
-                <Input
-                  value={bulkFirstCount}
-                  onChange={(event) => setBulkFirstCount(event.target.value)}
-                  className="h-[26px] w-12 text-center font-mono"
-                />
-                tracks
-              </label>
-            </div>
-          </div>
-          <div className="flex items-center justify-between rounded-md border border-panel-border bg-panel-header px-3 py-2">
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-              <Checkbox
-                checked={bulkReplaceExisting}
-                onCheckedChange={(value) => setBulkReplaceExisting(value as boolean)}
-              />
-              Replace existing bulk audio mappings for selected videos
-            </label>
-          </div>
-        </div>
-      </BaseModal>
+      <ImportTrackEditDialog
+        open={importEditingKey !== null}
+        onOpenChange={(open) => {
+          if (!open) setImportEditingKey(null);
+        }}
+        kind="audio"
+        trackLabel={(() => {
+          if (!importEditingKey) return "";
+          const idx = Number(importEditingKey.split(":")[0]);
+          const track = importableTracks[idx];
+          return track
+            ? `#${idx + 1} · ${track.name || track.codec || "Audio"}${track.language ? ` · ${track.language}` : ""}`
+            : "";
+        })()}
+        value={importEditingKey ? (importOverrides[importEditingKey] ?? {}) : {}}
+        onSave={(next) => {
+          if (!importEditingKey) return;
+          setImportOverrides((prev) => ({ ...prev, [importEditingKey]: next }));
+          // Editing a stream implies wanting it, so select it too.
+          setImportSelectedTrackKeys((prev) =>
+            prev.includes(importEditingKey) ? prev : [...prev, importEditingKey],
+          );
+        }}
+      />
 
       <BaseModal
         open={editDialogOpen}
@@ -1729,73 +1585,57 @@ export function AudiosTab({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 items-stretch gap-3">
-            <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
-              <div className="text-xs font-semibold text-muted-foreground">Track Flags</div>
-              <div className="space-y-3">
-                <label className="flex items-start gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2 cursor-pointer">
-                  <Checkbox
-                    id="audio-edit-default"
-                    checked={editForm.isDefault}
-                    onCheckedChange={(checked) =>
-                      setEditForm((prev) => ({ ...prev, isDefault: checked as boolean }))
-                    }
-                  />
-                  <div className="min-w-0">
-                    <span className="block text-sm font-medium">Default audio</span>
-                    <span className="block text-xs leading-snug text-muted-foreground">
-                      Marks the first included audio track as default.
-                    </span>
-                  </div>
-                </label>
-                <label className="flex items-start gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2 cursor-pointer">
-                  <Checkbox
-                    id="audio-edit-forced"
-                    checked={editForm.isForced}
-                    onCheckedChange={(checked) =>
-                      setEditForm((prev) => ({ ...prev, isForced: checked as boolean }))
-                    }
-                  />
-                  <div className="min-w-0">
-                    <span className="block text-sm font-medium">Forced audio</span>
-                    <span className="block text-xs leading-snug text-muted-foreground">
-                      Rare for audio; some players may ignore.
-                    </span>
-                  </div>
-                </label>
+          {/* One flat list of switches. "Forced" is gone: audio is never
+              forced in practice, and the flag still defaults to false in the
+              mux job. */}
+          <div className="rounded border border-panel-border divide-y divide-panel-border">
+            <label className="flex items-center gap-3 px-3 py-2.5 cursor-pointer">
+              <div className="min-w-0 flex-1">
+                <span className="block text-[13px]">Default audio</span>
+                <span className="block text-xs text-muted-foreground">
+                  Marks the first included track as default.
+                </span>
               </div>
-            </div>
-            <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-2">
-              <div className="text-xs font-semibold text-muted-foreground mb-2">Bulk Action</div>
-              <label className="inline-flex items-center gap-3 cursor-pointer">
-                <Checkbox
-                  id="audio-edit-delay-all"
-                  checked={editForm.applyDelayToAll}
-                  onCheckedChange={(checked) =>
-                    setEditForm((prev) => ({ ...prev, applyDelayToAll: checked as boolean }))
-                  }
-                />
-                <span className="text-sm">Apply delay to all</span>
-              </label>
-              <label className="inline-flex items-center gap-3 cursor-pointer">
-                <Checkbox
-                  id="audio-edit-apply-all"
-                  checked={editForm.applyToAllFiles}
-                  onCheckedChange={(checked) =>
-                    setEditForm((prev) => ({ ...prev, applyToAllFiles: checked as boolean }))
-                  }
-                />
-                  <div className="min-w-0">
-                    <span className="block text-sm">Apply to all files</span>
-                    <span className="block text-xs text-muted-foreground leading-tight">Track selection applied by position</span>
-                  </div>
-                </label>
+              <Switch
+                id="audio-edit-default"
+                checked={editForm.isDefault}
+                onCheckedChange={(checked) =>
+                  setEditForm((prev) => ({ ...prev, isDefault: checked }))
+                }
+              />
+            </label>
+            <label className="flex items-center gap-3 px-3 py-2.5 cursor-pointer">
+              <div className="min-w-0 flex-1">
+                <span className="block text-[13px]">Apply delay to all files</span>
               </div>
+              <Switch
+                id="audio-edit-delay-all"
+                checked={editForm.applyDelayToAll}
+                onCheckedChange={(checked) =>
+                  setEditForm((prev) => ({ ...prev, applyDelayToAll: checked }))
+                }
+              />
+            </label>
+            <label className="flex items-center gap-3 px-3 py-2.5 cursor-pointer">
+              <div className="min-w-0 flex-1">
+                <span className="block text-[13px]">Apply all settings to every file</span>
+                <span className="block text-xs text-muted-foreground">
+                  Track selection is applied by position.
+                </span>
+              </div>
+              <Switch
+                id="audio-edit-apply-all"
+                checked={editForm.applyToAllFiles}
+                onCheckedChange={(checked) =>
+                  setEditForm((prev) => ({ ...prev, applyToAllFiles: checked }))
+                }
+              />
+            </label>
           </div>
 
           {editingFile?.tracks && editingFile.tracks.length > 0 && (
             <>
-              <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
+              <div className="rounded border border-panel-border px-3 py-2.5 space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="text-xs font-semibold text-muted-foreground">
                     Included Audio Tracks
@@ -1884,7 +1724,7 @@ export function AudiosTab({
               </div>
 
               {editingFile.tracks.some((track) => track.type === "subtitle") && (
-                <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
+                <div className="rounded border border-panel-border px-3 py-2.5 space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="text-xs font-semibold text-muted-foreground">
                       Included Subtitle Tracks
@@ -2083,7 +1923,7 @@ export function AudiosTab({
         }
       >
         <div className="space-y-4">
-          <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
+          <div className="rounded border border-panel-border px-3 py-2.5 space-y-2">
             <div className="text-xs font-semibold text-muted-foreground">
               Bulk Fill
             </div>
@@ -2119,7 +1959,7 @@ export function AudiosTab({
             </div>
           </div>
 
-          <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
+          <div className="rounded border border-panel-border px-3 py-2.5 space-y-2">
             <div className="text-xs font-semibold text-muted-foreground">
               Per-Track Delays
             </div>
@@ -2141,7 +1981,7 @@ export function AudiosTab({
                   return (
                     <div
                       key={`${track.id}-${index}`}
-                      className="grid grid-cols-[1fr_120px] items-center gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2"
+                      className="grid grid-cols-[1fr_120px] items-center gap-3 py-1"
                     >
                       <div className="min-w-0">
                         <div className="text-sm text-foreground truncate">

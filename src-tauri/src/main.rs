@@ -575,6 +575,220 @@ fn mkvmerge_available() -> bool {
     *MKVMERGE_AVAILABLE.get_or_init(|| tool_available("mkvmerge", "-V"))
 }
 
+/// First line of a tool's version output, for display in Settings.
+fn tool_version(tool: &str, version_arg: &str) -> Option<String> {
+    let output = hidden_command(tool).arg(version_arg).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyStatus {
+    /// Stable key the UI matches on, e.g. "mkvtoolnix".
+    pub id: String,
+    pub name: String,
+    /// Why the app needs it, shown under the name.
+    pub purpose: String,
+    pub available: bool,
+    /// Version string when detected, else None.
+    pub version: Option<String>,
+    /// True when the app ships it, so the user has nothing to install.
+    pub bundled: bool,
+    /// Whether the app still works without it.
+    pub required: bool,
+    /// Official download page, opened by the Install button.
+    pub download_url: String,
+}
+
+/// Where a downloaded tool is unpacked, so it survives app updates.
+fn tools_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path_resolver()
+        .app_local_data_dir()
+        .ok_or_else(|| "Could not resolve the app data directory.".to_string())?
+        .join("tools");
+    fs::create_dir_all(&dir).map_err(|err| format!("Could not create {dir:?}: {err}"))?;
+    Ok(dir)
+}
+
+/// Prepend our tools directory to this process's PATH.
+///
+/// Called after an install so the new binary is usable immediately, and at
+/// startup so a previously installed tool is found without a reinstall.
+fn register_tools_on_path(app: &AppHandle) {
+    let Ok(dir) = tools_dir(app) else { return };
+    let mut entries: Vec<PathBuf> = vec![dir.clone()];
+    // Each tool unpacks into its own subdirectory.
+    if let Ok(children) = fs::read_dir(&dir) {
+        for child in children.flatten() {
+            if child.path().is_dir() {
+                entries.push(child.path());
+            }
+        }
+    }
+    if let Some(existing) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&existing));
+    }
+    if let Ok(joined) = std::env::join_paths(entries) {
+        std::env::set_var("PATH", joined);
+    }
+}
+
+/// Download a dependency and make it runnable.
+///
+/// Windows-only in practice: it is the platform where these tools are not
+/// already a package-manager install away. Zips are unpacked into the app's
+/// data directory and added to this process's PATH; .exe installers are run
+/// with their silent flag.
+#[tauri::command]
+fn install_dependency(app: AppHandle, id: String) -> Result<String, String> {
+    #[derive(Clone, Copy)]
+    enum Kind {
+        Zip,
+        Installer,
+    }
+
+    let (url, kind, probe) = match id.as_str() {
+        "mediainfo" => (
+            "https://mediaarea.net/download/binary/mediainfo/24.06/MediaInfo_CLI_24.06_Windows_x64.zip",
+            Kind::Zip,
+            "mediainfo",
+        ),
+        "mkvtoolnix" => (
+            "https://mkvtoolnix.download/windows/releases/84.0/mkvtoolnix-64-bit-84.0-setup.exe",
+            Kind::Installer,
+            "mkvmerge",
+        ),
+        other => return Err(format!("No installer is configured for '{other}'.")),
+    };
+
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|err| format!("Could not start the download: {err}"))?
+        .get(url)
+        .send()
+        .map_err(|err| format!("Download failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Download failed with status {}.", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|err| format!("Download failed: {err}"))?;
+
+    match kind {
+        Kind::Zip => {
+            let target = tools_dir(&app)?.join(&id);
+            // Replace rather than merge, so a failed previous attempt cannot
+            // leave a half-populated directory behind.
+            let _ = fs::remove_dir_all(&target);
+            fs::create_dir_all(&target)
+                .map_err(|err| format!("Could not create {target:?}: {err}"))?;
+
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+                .map_err(|err| format!("The download was not a readable archive: {err}"))?;
+            archive
+                .extract(&target)
+                .map_err(|err| format!("Could not unpack the archive: {err}"))?;
+
+            register_tools_on_path(&app);
+            // The cached probe result predates this install.
+            if !tool_available(probe, "--Version") && !tool_available(probe, "-V") {
+                return Err(
+                    "The files were unpacked but the tool still does not run. \
+                     Try installing it manually."
+                        .to_string(),
+                );
+            }
+            Ok(format!("{id} installed."))
+        }
+        Kind::Installer => {
+            let dir = tempfile::tempdir()
+                .map_err(|err| format!("Could not create a temporary directory: {err}"))?;
+            let path = dir.path().join("setup.exe");
+            fs::write(&path, &bytes)
+                .map_err(|err| format!("Could not write the installer: {err}"))?;
+
+            // /S is the silent switch for both NSIS and Inno installers, which
+            // covers every tool listed above.
+            let status = hidden_command(&path.to_string_lossy())
+                .arg("/S")
+                .status()
+                .map_err(|err| format!("Could not run the installer: {err}"))?;
+            if !status.success() {
+                return Err(
+                    "The installer did not finish. It may need administrator rights."
+                        .to_string(),
+                );
+            }
+            Ok(format!(
+                "{id} installed. Restart the app if it is not detected."
+            ))
+        }
+    }
+}
+
+/// Live status of everything the app shells out to.
+///
+/// The Settings panel renders this directly rather than a static link list, so
+/// a user can see what is actually missing instead of guessing from an error.
+#[tauri::command]
+fn dependency_status(app: AppHandle) -> Vec<DependencyStatus> {
+    let ffmpeg_bundled = audiosync::ffmpeg_is_bundled(&app);
+    let engine = audiosync::audiosync_engine_status(app.clone(), app.state());
+
+    vec![
+        DependencyStatus {
+            id: "mkvtoolnix".into(),
+            name: "MKVToolNix".into(),
+            purpose: "Performs the actual muxing (mkvmerge, mkvpropedit).".into(),
+            // Probed live rather than through the cached mkvmerge_available():
+            // that value is a OnceLock set at first use, so after installing
+            // from Settings it would keep reporting the tool as missing.
+            available: tool_available("mkvmerge", "-V"),
+            version: tool_version("mkvmerge", "-V"),
+            bundled: false,
+            required: true,
+            download_url: "https://mkvtoolnix.download/downloads.html".into(),
+        },
+        DependencyStatus {
+            id: "mediainfo".into(),
+            name: "MediaInfo CLI".into(),
+            purpose: "Reads track details from your files.".into(),
+            available: tool_available("mediainfo", "--Version"),
+            version: tool_version("mediainfo", "--Version"),
+            bundled: false,
+            required: true,
+            download_url: "https://mediaarea.net/en/MediaInfo/Download/Windows".into(),
+        },
+        DependencyStatus {
+            id: "ffmpeg".into(),
+            name: "FFmpeg".into(),
+            purpose: "Decodes audio for delay measurement.".into(),
+            available: audiosync::ffmpeg_available_for(&app),
+            version: tool_version(&audiosync::ffmpeg_tool(&app, "ffmpeg"), "-version"),
+            bundled: ffmpeg_bundled,
+            required: false,
+            download_url: "https://www.gyan.dev/ffmpeg/builds/".into(),
+        },
+        DependencyStatus {
+            id: "audiosync".into(),
+            name: "Audio analysis engine".into(),
+            purpose: "Measures how far a dub drifts from the video.".into(),
+            available: engine.engine_available,
+            version: None,
+            bundled: engine.engine_available,
+            required: false,
+            download_url: "https://github.com/AdkHex/AudioSyncMaster".into(),
+        },
+    ]
+}
+
 fn file_info_cache() -> &'static Mutex<HashMap<String, serde_json::Value>> {
     FILE_INFO_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -3347,6 +3561,10 @@ fn main() {
             };
             app.manage(state);
             app.manage(audiosync::EngineHandle::default());
+            // Anything installed from Settings on a previous run lives in the
+            // app's data directory, which is not on the system PATH. Register
+            // it before the first availability probe caches a "missing".
+            register_tools_on_path(&app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3363,6 +3581,8 @@ fn main() {
             resume_muxing,
             stop_muxing,
             open_log_file,
+            dependency_status,
+            install_dependency,
             audiosync::audiosync_engine_status,
             audiosync::list_reference_tracks,
             audiosync::measure_delays_start,

@@ -51,6 +51,7 @@
     --radius: 4px;
     --radius-overlay: 8px;
 
+    --titlebar: 0 0% 92%;
     --panel: 0 0% 100%;
     --panel-header: 0 0% 97%;
     --panel-border: 0 0% 87%;
@@ -99,13 +100,17 @@
   }
 
   .dark {
-    --background: 0 0% 11%;
+    /* Three distinct greys, dark to light: window chrome, page, raised card.
+       Keeping them separated is what makes the title bar read as chrome
+       rather than as part of the content. */
+    --titlebar: 0 0% 7%;
+    --background: 0 0% 10%;
     --foreground: 0 0% 93%;
 
-    --card: 0 0% 15%;
+    --card: 0 0% 14%;
     --card-foreground: 0 0% 93%;
 
-    --popover: 0 0% 18%;
+    --popover: 0 0% 16%;
     --popover-foreground: 0 0% 93%;
 
     --primary: 213 100% 64%;
@@ -367,18 +372,24 @@
     @apply bg-panel border border-panel-border rounded;
   }
 
+  /* Its own fill plus a hairline, so the chrome is visibly separate from the
+     page rather than bleeding into it. */
   .fluent-windowbar {
-    @apply h-8 bg-background flex items-center justify-between shrink-0;
+    @apply h-9 flex items-center justify-between shrink-0 border-b border-panel-border;
+    background: hsl(var(--titlebar));
     padding: 0 0 0 12px;
   }
 
   .fluent-windowbar__drag {
-    @apply h-full flex items-center gap-3 min-w-0 flex-1;
+    @apply h-full flex items-center gap-2 min-w-0 flex-1;
   }
 
   .fluent-windowbar__title {
-    @apply text-[14px] font-semibold text-foreground truncate;
-    letter-spacing: 0.01em;
+    @apply text-xs font-semibold text-foreground truncate;
+  }
+
+  .fluent-windowbar__byline {
+    @apply text-[11px] text-muted-foreground truncate shrink-0;
   }
 
   .fluent-windowbar__title-wrap {
@@ -396,7 +407,7 @@
 
   /* Windows 11 caption buttons are 46x32 and square-cornered. */
   .fluent-window-control {
-    @apply h-8 w-[46px] rounded-none text-muted-foreground hover:text-foreground;
+    @apply h-9 w-[46px] rounded-none text-muted-foreground hover:text-foreground;
     transition: background 0.12s ease-out, color 0.12s ease-out;
   }
 
@@ -643,12 +654,33 @@
     @apply flex items-center justify-between px-5 py-3 border-t border-panel-border bg-panel;
   }
 
-  /* Overlays use the 8px radius; in-page controls stay at 4px. */
+  /* Overlays use the 8px radius; in-page controls stay at 4px.
+     `resize` lets the user drag the bottom-right corner: dialogs listing
+     tracks or files have no natural height, so a fixed one is always wrong
+     for someone. */
   .base-modal {
-    @apply bg-card border border-panel-border overflow-hidden flex flex-col gap-0;
+    @apply bg-card border border-panel-border flex flex-col gap-0;
     border-radius: var(--radius-overlay);
     box-shadow: var(--shadow-2);
     max-height: 86vh;
+    max-width: 94vw;
+    /* `resize` needs a non-visible overflow to expose the grip. */
+    overflow: auto;
+    resize: both;
+    min-width: 380px;
+    min-height: 220px;
+  }
+
+  /* Make the native grip legible against the card fill. */
+  .base-modal::-webkit-resizer {
+    background: transparent;
+  }
+
+  .base-modal__grip {
+    @apply absolute bottom-0 right-0 pointer-events-none text-muted-foreground;
+    width: 14px;
+    height: 14px;
+    opacity: 0.5;
   }
 
   .base-modal__header {
@@ -709,9 +741,11 @@
     @apply rounded-lg border border-panel-border bg-card;
   }
 
+  /* gap-4 keeps the trailing actions off the title; without it the first
+     button sits hard against the heading text. */
   .panel-card-header {
-    @apply table-header flex items-center justify-between px-4 shrink-0;
-    height: 44px;
+    @apply table-header flex items-center justify-between gap-4 pl-4 pr-2 shrink-0;
+    height: 38px;
   }
 
   .panel-card-title {
@@ -719,8 +753,7 @@
   }
 
   .panel-card-actions {
-    @apply flex items-center gap-1.5 justify-end flex-wrap;
-    row-gap: 6px;
+    @apply flex items-center gap-1 justify-end shrink-0;
   }
 
   /* Row-level icon actions are borderless until hovered. */
@@ -733,7 +766,11 @@
   }
 
   .panel-text-btn {
-    @apply h-8 px-2.5 text-[12px] font-medium rounded-md whitespace-nowrap border border-transparent text-muted-foreground hover:text-foreground hover:bg-panel-header/70;
+    @apply h-[26px] px-2.5 text-xs font-medium rounded whitespace-nowrap border border-transparent text-muted-foreground hover:text-foreground;
+  }
+
+  .panel-text-btn:hover {
+    background: hsl(var(--hover));
   }
 
   .media-row-main {
@@ -826,17 +863,20 @@
     height: calc(100vh - 280px);
   }
 
+  /* Video and audio rows sit side by side in the split panes, so they share
+     height, gutters and type -- otherwise the two lists visibly disagree. */
   .file-item-video {
-    @apply table-row h-11 px-3 text-sm cursor-pointer transition-colors font-mono w-max min-w-full;
+    @apply table-row px-3 cursor-pointer transition-colors font-mono w-max min-w-full;
     display: grid;
     grid-template-columns: 22px max-content;
     align-items: center;
     column-gap: 12px;
+    min-height: 34px;
     white-space: nowrap;
   }
 
   .file-item-audio {
-    @apply px-3 text-sm cursor-pointer transition-colors font-mono w-full min-w-0;
+    @apply px-3 cursor-pointer transition-colors font-mono w-full min-w-0;
     display: grid;
     grid-template-columns: 16px 22px minmax(0, 1fr) 88px;
     align-items: center;

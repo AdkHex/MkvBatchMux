@@ -25,6 +25,11 @@ import {
   linkExternalFilesByOrder,
 } from "@/shared/lib/matchUtils";
 import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/shared/data/languages-iso6393";
+import {
+  ImportTrackEditDialog,
+  ImportTrackEditButton,
+  type ImportTrackOverride,
+} from "./ImportTrackEditDialog";
 
 interface SubtitlesTabProps {
   subtitleFiles: ExternalFile[];
@@ -116,12 +121,6 @@ export function SubtitlesTab({
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
   const subtitleFilesCache = useRef<Record<string, ExternalFile[]>>({});
-  const [bulkOpen, setBulkOpen] = useState(false);
-  const [bulkSelectedVideoIds, setBulkSelectedVideoIds] = useState<string[]>([]);
-  const [bulkSelectedSubtitleIds, setBulkSelectedSubtitleIds] = useState<string[]>([]);
-  const [bulkIncludeMode, setBulkIncludeMode] = useState<"all" | "first">("all");
-  const [bulkFirstCount, setBulkFirstCount] = useState("2");
-  const [bulkReplaceExisting, setBulkReplaceExisting] = useState(false);
   const [trackEditOpen, setTrackEditOpen] = useState(false);
   const [trackEditTarget, setTrackEditTarget] = useState<{
     fileId: string;
@@ -139,6 +138,10 @@ export function SubtitlesTab({
   const [importStreamsOpen, setImportStreamsOpen] = useState(false);
   const [importSourceVideoId, setImportSourceVideoId] = useState("");
   const [importSelectedTrackKeys, setImportSelectedTrackKeys] = useState<string[]>([]);
+  // Per-stream overrides for an import, keyed by the same track key as the
+  // selection above. Cleared whenever the source video changes.
+  const [importOverrides, setImportOverrides] = useState<Record<string, ImportTrackOverride>>({});
+  const [importEditingKey, setImportEditingKey] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({
     trackName: "",
     language: "und",
@@ -623,80 +626,6 @@ export function SubtitlesTab({
     setSelectedSubtitleIndex(null);
   };
 
-  const applyBulkMapping = () => {
-    if (bulkSelectedVideoIds.length === 0 || bulkSelectedSubtitleIds.length === 0) {
-      toast({
-        title: "Bulk Apply",
-        description: "Select at least one video and one subtitle file.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const firstCount = Math.max(1, Math.floor(Number(bulkFirstCount) || 1));
-    const selectedSubtitles = subtitleFiles.filter((file) => bulkSelectedSubtitleIds.includes(file.id));
-    if (selectedSubtitles.length === 0) {
-      toast({
-        title: "Bulk Apply",
-        description: "Selected subtitle files are not available.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const remaining = bulkReplaceExisting
-      ? subtitleFiles.filter((file) => !bulkSelectedVideoIds.includes(file.matchedVideoId || ""))
-      : [...subtitleFiles];
-
-    const nextFiles = bulkSelectedVideoIds.reduce<ExternalFile[]>((acc, videoId) => {
-      selectedSubtitles.forEach((file) => {
-        const available =
-          file.tracks && file.tracks.length > 0
-            ? file.tracks.map((track) => Number(track.id)).filter((id) => Number.isFinite(id))
-            : file.includedTrackIds || [];
-        let includedTrackIds: number[] | undefined;
-        if (bulkIncludeMode === "first" && available.length > 0) {
-          includedTrackIds = available.slice(0, Math.min(firstCount, available.length));
-        } else if (bulkIncludeMode === "all" && available.length > 0) {
-          includedTrackIds = available;
-        }
-
-        const existingIndex = remaining.findIndex(
-          (entry) => entry.matchedVideoId === videoId && entry.path === file.path,
-        );
-        if (existingIndex !== -1) {
-          const existing = remaining[existingIndex];
-          remaining[existingIndex] = {
-            ...existing,
-            includedTrackIds,
-            trackName: file.trackName ?? existing.trackName,
-            language: file.language ?? existing.language,
-            delay: file.delay ?? existing.delay,
-            isDefault: file.isDefault ?? existing.isDefault,
-            isForced: file.isForced ?? existing.isForced,
-            muxAfter: file.muxAfter ?? existing.muxAfter,
-            tracks: file.tracks ?? existing.tracks,
-          };
-        } else {
-          acc.push({
-            ...file,
-            id: createExternalId(),
-            matchedVideoId: videoId,
-            includedTrackIds,
-          });
-        }
-      });
-      return acc;
-    }, []);
-
-    onSubtitleFilesChange([...remaining, ...nextFiles]);
-    setBulkOpen(false);
-    toast({
-      title: "Bulk Apply Complete",
-      description: `Applied ${selectedSubtitles.length} subtitle file(s) to ${bulkSelectedVideoIds.length} video(s).`,
-    });
-  };
-
   const confirmDeleteTrack = (trackId: string) => {
     if (subtitleTracks.length <= 1) return;
     setTrackToDelete(trackId);
@@ -788,6 +717,24 @@ export function SubtitlesTab({
       matchedVideoId: targetVideo.id,
       tracks: mergedTracks,
       includedTrackIds: mergedIncludedTrackIds,
+      // Carry any per-stream edits through as track overrides, keyed by track
+      // id so the mux job picks them up the same way manual edits do. Without
+      // this every imported stream would silently take the tab's shared delay.
+      trackOverrides: (() => {
+        const overrides: NonNullable<ExternalFile["trackOverrides"]> = {
+          ...(existingAtTarget?.trackOverrides ?? {}),
+        };
+        importableTracks.forEach((track, trackIndex) => {
+          const key = getImportTrackKey(trackIndex, String(track.id));
+          if (!selectedTrackKeySet.has(key)) return;
+          const override = importOverrides[key];
+          if (!override) return;
+          const id = Number(track.id);
+          if (!Number.isFinite(id)) return;
+          overrides[id] = { ...(overrides[id] ?? {}), ...override };
+        });
+        return Object.keys(overrides).length > 0 ? overrides : undefined;
+      })(),
     };
 
     const updated = [...subtitleFiles];
@@ -803,6 +750,7 @@ export function SubtitlesTab({
     setSelectedSubtitleIndex(targetIndex);
     setSelectedVideoIndex(targetIndex);
     setImportStreamsOpen(false);
+    setImportOverrides({});
     toast({
       title: "Subtitle Streams Imported",
       description: `Imported ${selectedTracks.length} stream${selectedTracks.length > 1 ? "s" : ""} to Video #${targetIndex + 1}.`,
@@ -1072,19 +1020,6 @@ export function SubtitlesTab({
                 <Copy className="w-3 h-3 mr-1" />
                 Duplicate
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="panel-text-btn"
-                onClick={() => {
-                  setBulkSelectedVideoIds(videoFiles.map((file) => file.id));
-                  setBulkSelectedSubtitleIds(subtitleFiles.map((file) => file.id));
-                  setBulkOpen(true);
-                }}
-                disabled={videoFiles.length === 0 || subtitleFiles.length === 0}
-              >
-                Bulk Apply
-              </Button>
             </div>
           </div>
           <div className="flex-1 overflow-auto scrollbar-thin">
@@ -1097,7 +1032,7 @@ export function SubtitlesTab({
               <EmptyState
                 icon={<FileText className="w-5 h-5 text-muted-foreground/65" />}
                 title="No subtitle files found"
-                description="Click the folder icon above or drag and drop files here"
+                description="Use the folder button above to choose a source folder"
                 className="h-full"
               />
             ) : visibleSubtitleFiles.length === 0 ? (
@@ -1181,7 +1116,7 @@ export function SubtitlesTab({
         className="max-w-2xl"
         footerRight={
           <>
-            <Button variant="ghost" onClick={() => setImportStreamsOpen(false)}>
+            <Button variant="ghost" onClick={() => { setImportStreamsOpen(false); setImportOverrides({}); }}>
               Cancel
             </Button>
             <Button onClick={handleConfirmImportSubtitles} disabled={!importSourceVideoId || importSelectedTrackKeys.length === 0}>
@@ -1196,6 +1131,7 @@ export function SubtitlesTab({
             <Select value={importSourceVideoId} onValueChange={(value) => {
               setImportSourceVideoId(value);
               setImportSelectedTrackKeys([]);
+              setImportOverrides({});
             }}>
               <SelectTrigger className="h-[30px]">
                 <SelectValue placeholder="Choose source video" />
@@ -1218,7 +1154,11 @@ export function SubtitlesTab({
                 importableTracks.map((track, idx) => {
                   const trackKey = getImportTrackKey(idx, String(track.id));
                   const checked = importSelectedTrackKeys.includes(trackKey);
-                  return (
+                  const override = importOverrides[trackKey];
+                    const hasOverride = Boolean(
+                      override && (override.delay || override.language || override.trackName),
+                    );
+                    return (
                     <label key={`${track.id}-${idx}`} className="flex items-center gap-2 px-1 py-1 cursor-pointer text-sm">
                       <Checkbox
                         checked={checked}
@@ -1233,10 +1173,23 @@ export function SubtitlesTab({
                       <span className="font-mono text-xs text-muted-foreground">
                         #{idx + 1}
                       </span>
-                      <span className="truncate">
-                        {track.name || track.codec || `Subtitle ${idx + 1}`}
-                        {track.language ? ` • ${track.language}` : ""}
+                      <span className="truncate flex-1 min-w-0">
+                        {override?.trackName || track.name || track.codec || `Subtitle ${idx + 1}`}
+                        {override?.language || track.language
+                          ? ` • ${override?.language || track.language}`
+                          : ""}
                       </span>
+                      {hasOverride && override?.delay ? (
+                        <span className="font-mono text-xs text-primary shrink-0">
+                          {override.delay > 0 ? "+" : ""}
+                          {override.delay}s
+                        </span>
+                      ) : null}
+                      <ImportTrackEditButton
+                        edited={hasOverride}
+                        label={`Edit stream ${idx + 1}`}
+                        onClick={() => setImportEditingKey(trackKey)}
+                      />
                     </label>
                   );
                 })
@@ -1246,121 +1199,30 @@ export function SubtitlesTab({
         </div>
       </BaseModal>
 
-      <BaseModal
-        open={bulkOpen}
-        onOpenChange={setBulkOpen}
-        title="Bulk Apply Subtitle Files"
-        subtitle="Apply selected subtitle files to selected videos with a track subset."
-        icon={<FileText className="w-5 h-5 text-primary" />}
-        className="max-w-2xl"
-        bodyClassName="px-5 py-4"
-        footerRight={
-          <>
-            <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setBulkOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={applyBulkMapping}>Apply</Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="rounded-md border border-panel-border bg-panel-header px-3 py-2 space-y-2">
-              <div className="text-xs font-semibold text-muted-foreground">Videos</div>
-              <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
-                {videoFiles.map((file) => {
-                  const checked = bulkSelectedVideoIds.includes(file.id);
-                  return (
-                    <label key={file.id} className="flex items-center gap-2 text-xs text-foreground/80 cursor-pointer">
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={(value) => {
-                          setBulkSelectedVideoIds((prev) =>
-                            value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
-                          );
-                        }}
-                      />
-                      <span className="truncate">{file.name}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="rounded-md border border-panel-border bg-panel-header px-3 py-2 space-y-2">
-              <div className="text-xs font-semibold text-muted-foreground">Subtitle files</div>
-              <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
-                {subtitleFiles.map((file) => {
-                  const checked = bulkSelectedSubtitleIds.includes(file.id);
-                  const trackCount = file.tracks?.length || file.includedTrackIds?.length || 0;
-                  const subtitleTrackCount = (file.tracks || []).filter((track) => track.type === "subtitle").length;
-                  return (
-                    <div key={file.id} className="flex items-center gap-2 text-xs text-foreground/80">
-                      <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(value) => {
-                            setBulkSelectedSubtitleIds((prev) =>
-                              value ? [...prev, file.id] : prev.filter((id) => id !== file.id),
-                            );
-                          }}
-                        />
-                        <span className="truncate">{file.name}</span>
-                      </label>
-                      {subtitleTrackCount > 1 && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-xs"
-                          onClick={() => openEditDialog(file.id)}
-                        >
-                          Tracks
-                        </Button>
-                      )}
-                      {trackCount > 1 && (
-                        <span className="text-xs text-muted-foreground/70 shrink-0">{trackCount} tracks</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-          <div className="rounded-md border border-panel-border bg-panel-header px-3 py-2 space-y-3">
-            <div className="text-xs font-semibold text-muted-foreground">Track Subset</div>
-            <div className="flex items-center gap-4 text-xs">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <Checkbox
-                  checked={bulkIncludeMode === "all"}
-                  onCheckedChange={(value) => value && setBulkIncludeMode("all")}
-                />
-                All tracks
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <Checkbox
-                  checked={bulkIncludeMode === "first"}
-                  onCheckedChange={(value) => value && setBulkIncludeMode("first")}
-                />
-                First
-                <Input
-                  value={bulkFirstCount}
-                  onChange={(event) => setBulkFirstCount(event.target.value)}
-                  className="h-[26px] w-12 text-center font-mono"
-                />
-                tracks
-              </label>
-            </div>
-          </div>
-          <div className="flex items-center justify-between rounded-md border border-panel-border bg-panel-header px-3 py-2">
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-              <Checkbox
-                checked={bulkReplaceExisting}
-                onCheckedChange={(value) => setBulkReplaceExisting(value as boolean)}
-              />
-              Replace existing bulk subtitle mappings for selected videos
-            </label>
-          </div>
-        </div>
-      </BaseModal>
+      <ImportTrackEditDialog
+        open={importEditingKey !== null}
+        onOpenChange={(open) => {
+          if (!open) setImportEditingKey(null);
+        }}
+        kind="subtitle"
+        trackLabel={(() => {
+          if (!importEditingKey) return "";
+          const idx = Number(importEditingKey.split(":")[0]);
+          const track = importableTracks[idx];
+          return track
+            ? `#${idx + 1} · ${track.name || track.codec || "Subtitle"}${track.language ? ` · ${track.language}` : ""}`
+            : "";
+        })()}
+        value={importEditingKey ? (importOverrides[importEditingKey] ?? {}) : {}}
+        onSave={(next) => {
+          if (!importEditingKey) return;
+          setImportOverrides((prev) => ({ ...prev, [importEditingKey]: next }));
+          // Editing a stream implies wanting it, so select it too.
+          setImportSelectedTrackKeys((prev) =>
+            prev.includes(importEditingKey) ? prev : [...prev, importEditingKey],
+          );
+        }}
+      />
 
       <BaseModal
         open={editDialogOpen}
@@ -1494,7 +1356,7 @@ export function SubtitlesTab({
                 </label>
               </div>
             </div>
-            <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-2">
+            <div className="rounded border border-panel-border px-3 py-2.5 space-y-2">
               <div className="text-xs font-semibold text-muted-foreground mb-2">Bulk Action</div>
               <label className="inline-flex items-center gap-3 cursor-pointer">
                 <Checkbox
@@ -1523,7 +1385,7 @@ export function SubtitlesTab({
           </div>
 
           {editingFile?.tracks && editingFile.tracks.length > 1 && (
-            <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
+            <div className="rounded border border-panel-border px-3 py-2.5 space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="text-xs font-semibold text-muted-foreground">
                     Included Tracks
@@ -1638,7 +1500,7 @@ export function SubtitlesTab({
         }
       >
         <div className="space-y-4">
-          <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
+          <div className="rounded border border-panel-border px-3 py-2.5 space-y-2">
             <div className="text-xs font-semibold text-muted-foreground">Bulk Fill</div>
             <div className="flex items-center gap-2">
               <Input
@@ -1672,7 +1534,7 @@ export function SubtitlesTab({
             </div>
           </div>
 
-          <div className="rounded-md border border-panel-border bg-panel-header px-4 py-3 space-y-3">
+          <div className="rounded border border-panel-border px-3 py-2.5 space-y-2">
             <div className="text-xs font-semibold text-muted-foreground">Per-Track Delays</div>
             <div className="max-h-72 overflow-y-auto pr-1 space-y-2 scrollbar-thin">
               {(multiDelayFile?.tracks || [])
@@ -1684,7 +1546,7 @@ export function SubtitlesTab({
                   return (
                     <div
                       key={`${track.id}-${index}`}
-                      className="grid grid-cols-[1fr_120px] items-center gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2"
+                      className="grid grid-cols-[1fr_120px] items-center gap-3 py-1"
                     >
                       <div className="min-w-0">
                         <div className="text-sm text-foreground truncate">

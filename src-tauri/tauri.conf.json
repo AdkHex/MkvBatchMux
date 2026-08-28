@@ -6,7 +6,7 @@
     "distDir": "../dist"
   },
   "package": {
-    "productName": "MKV Batch Muxing Tool",
+    "productName": "MKVBatchMux",
     "version": "1.30.0"
   },
   "tauri": {
@@ -27,15 +27,15 @@
       },
       "window": {
         "all": true
+      },
+      "process": {
+        "relaunch": true
       }
     },
     "bundle": {
       "identifier": "com.ionicboy.mkvbatchmuxingtool",
       "targets": [
-        "msi",
-        "dmg",
-        "deb",
-        "appimage",
+        "nsis",
         "updater"
       ],
       "icon": [
@@ -46,11 +46,19 @@
         "resources/engine",
         "resources/ffmpeg"
       ],
-      "active": true
+      "active": true,
+      "windows": {
+        "nsis": {
+          "installMode": "perMachine",
+          "languages": [
+            "English"
+          ]
+        }
+      }
     },
     "windows": [
       {
-        "title": "MKV Batch Muxing Tool",
+        "title": "MKVBatchMux",
         "width": 1280,
         "height": 800,
         "fullscreen": false,
@@ -65,7 +73,7 @@
       "endpoints": [
         "https://github.com/AdkHex/MkvBatchMux/releases/latest/download/latest.json"
       ],
-      "dialog": true,
+      "dialog": false,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVGRDBBQUEwQkZENEE3QzQKUldURXA5Uy9vS3JRWHkvbVV4eE01QzM1TlVybnZUNHgzMENvREpLNHlDdnhUamNaeXRTSXhneTcK"
     }
   }
