@@ -101,9 +101,14 @@ jobs:
           AUDIOSYNC_REPO: ${{ github.workspace }}/AudioSyncMaster
         run: |
           python -m pip install --upgrade pip pyinstaller
-          if [ -f "$AUDIOSYNC_REPO/python/requirements.txt" ]; then
-            python -m pip install -r "$AUDIOSYNC_REPO/python/requirements.txt"
-          fi
+          # requirements-dev.txt is what AudioSyncMaster's own release workflow
+          # installs; the runtime file alone misses what PyInstaller needs to
+          # trace imports correctly.
+          for req in requirements-dev.txt requirements.txt; do
+            if [ -f "$AUDIOSYNC_REPO/python/$req" ]; then
+              python -m pip install -r "$AUDIOSYNC_REPO/python/$req"
+            fi
+          done
           npm run fetch-engine
 
       - name: Fetch FFmpeg
@@ -128,8 +133,9 @@ jobs:
 
       - name: Build Tauri (Windows .exe installer + updater)
         if: startsWith(matrix.os, 'windows')
-        # NSIS rather than WiX: the installer runs hooks that fetch MKVToolNix
-        # and MediaInfo during setup, so a fresh machine needs no manual steps.
+        # NSIS rather than WiX, so the release is a .exe installer. FFmpeg and
+        # the analysis engine are bundled as resources above; MKVToolNix and
+        # MediaInfo are installed from the app's Settings panel on first run.
         # The updater bundle is that installer plus a detached signature.
         # Signing needs the private key: without these secrets the build still
         # succeeds but produces no .sig, and installed apps reject the update.

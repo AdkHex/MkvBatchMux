@@ -99,11 +99,12 @@ if (prebuilt) {
 }
 
 const repo = resolveRepo();
-const spec = path.join(repo, "audiosync-cli.spec");
-if (!fs.existsSync(spec)) {
+
+const entry = path.join(repo, "python", "bridge.py");
+if (!fs.existsSync(entry)) {
   fail(
-    `No audiosync-cli.spec found in ${repo}.`,
-    "The engine build needs AudioSyncMaster's PyInstaller spec file.",
+    `No python/bridge.py found in ${repo}.`,
+    "That file is the engine's entry point; the checkout looks incomplete.",
   );
 }
 
@@ -122,20 +123,32 @@ const python = fs.existsSync(venvPython)
 console.log(`fetch-engine: building the engine from ${repo}`);
 console.log(`fetch-engine: using ${python}`);
 
-const buildDir = path.join(repo, "build", "mkvbatchmux-engine");
-const distDir = path.join(repo, "dist", "mkvbatchmux-engine");
+const buildDir = path.join(repo, "build", "mkvbatchmux-pyi");
+const distDir = path.join(repo, "build", "mkvbatchmux-engine");
 
+// These flags mirror AudioSyncMaster's own release workflow. In particular
+// --onedir, NOT --onefile: a onefile build re-extracts itself to a temp
+// directory on every launch, which for an engine spawned per batch is both
+// slow and a reliable source of antivirus false positives.
 const result = spawnSync(
   python,
   [
     "-m",
     "PyInstaller",
+    "--onedir",
+    "--clean",
     "--noconfirm",
+    "--log-level",
+    "WARN",
     "--distpath",
     distDir,
     "--workpath",
     buildDir,
-    spec,
+    "--specpath",
+    buildDir,
+    "--name",
+    "audiosync-cli",
+    entry,
   ],
   { cwd: repo, stdio: "inherit" },
 );
@@ -143,7 +156,7 @@ const result = spawnSync(
 if (result.error) {
   fail(
     `Could not run PyInstaller: ${result.error.message}`,
-    `Install it in the AudioSyncMaster checkout: ${python} -m pip install pyinstaller`,
+    `Install it first: ${python} -m pip install pyinstaller`,
   );
 }
 if (result.status !== 0) {
@@ -153,11 +166,8 @@ if (result.status !== 0) {
   );
 }
 
-// The spec produces dist/<name>/; take whichever directory it created.
-const produced = fs.existsSync(path.join(distDir, "audiosync-cli"))
-  ? path.join(distDir, "audiosync-cli")
-  : distDir;
-
+// --onedir puts everything under dist/<name>/.
+const produced = path.join(distDir, "audiosync-cli");
 if (!fs.existsSync(produced)) {
   fail(`PyInstaller reported success but ${produced} does not exist.`);
 }
