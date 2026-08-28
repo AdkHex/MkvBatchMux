@@ -39,7 +39,16 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
           git commit -m "chore: bump version [skip ci]"
-          git push
+          # Two pushes landing close together race here: the second run's push
+          # is rejected because main moved under it, which fails the whole
+          # workflow and publishes no release. Rebase and retry instead.
+          for i in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "Push rejected (attempt $i); rebasing onto origin/main and retrying."
+            git pull --rebase origin main || exit 1
+          done
+          echo "Could not push the version bump after 3 attempts."
+          exit 1
       - name: Set sha output
         id: setsha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -74,9 +83,15 @@ jobs:
         if: startsWith(matrix.os, 'windows')
         run: choco install wixtoolset -y
 
-      - name: Build Tauri (Windows MSI)
+      - name: Build Tauri (Windows MSI + updater)
         if: startsWith(matrix.os, 'windows')
-        run: npm run tauri:build -- --bundles msi
+        # The updater bundle is the MSI plus a detached signature. Signing needs
+        # the private key: without these secrets the build still succeeds but
+        # produces no .sig, and installed apps reject the update.
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        run: npm run tauri:build -- --bundles msi,updater
 
       - name: Inspect bundle output
         shell: powershell
@@ -94,11 +109,64 @@ jobs:
           $exe = Get-ChildItem -Path "src-tauri/target/release" -Filter "*.exe" -ErrorAction SilentlyContinue
           if ($msi) { $msi | Copy-Item -Destination artifacts -Force }
           if ($exe) { $exe | Copy-Item -Destination artifacts -Force }
+          # The updater bundle: the archive the app downloads, plus its signature.
+          $upd = Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Include "*.msi.zip","*.msi.zip.sig" -Recurse -ErrorAction SilentlyContinue
+          if ($upd) { $upd | Copy-Item -Destination artifacts -Force }
           $count = (Get-ChildItem -Path artifacts -ErrorAction SilentlyContinue | Measure-Object).Count
           if ($count -eq 0) {
             Write-Error "No Windows installer (.msi) or app (.exe) found in build output."
             exit 1
           }
+          Get-ChildItem -Path artifacts | Select-Object Name, Length | Format-Table
+
+      - name: Build updater manifest
+        id: manifest
+        shell: powershell
+        # latest.json is what an installed app polls. It must carry the version,
+        # the download URL and the signature; a manifest without a matching .sig
+        # is worse than none, because the app will fetch and then reject it.
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $tag = "v$version-build.${{ github.run_number }}"
+          # Exported so the release step reuses this exact tag. Deriving the
+          # same string twice invites a mismatch, and a manifest whose URL
+          # points at a tag that was never created is a silent 404 at update
+          # time -- the app finds an update it can never download.
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          $zip = Get-ChildItem -Path artifacts -Filter "*.msi.zip" | Select-Object -First 1
+          $sigFile = Get-ChildItem -Path artifacts -Filter "*.msi.zip.sig" | Select-Object -First 1
+
+          if (-not $zip -or -not $sigFile) {
+            # Not fatal: the MSI is still published for manual download. But
+            # auto-update will not work, so say so loudly rather than leaving
+            # a green tick that implies it does.
+            Write-Warning "No signed updater bundle produced; skipping latest.json."
+            Write-Warning "Set the TAURI_PRIVATE_KEY and TAURI_KEY_PASSWORD repository secrets to enable auto-update."
+            "published=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          $signature = Get-Content $sigFile.FullName -Raw
+          $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$($zip.Name)"
+
+          $manifest = [ordered]@{
+            version   = $version
+            notes     = "Automated build from commit ${{ github.sha }}."
+            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = $signature.Trim()
+                url       = $url
+              }
+            }
+          }
+
+          $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath "artifacts/latest.json" -Encoding utf8
+          Write-Host "== latest.json =="
+          Get-Content artifacts/latest.json
+          "published=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -107,19 +175,21 @@ jobs:
           path: artifacts/**
           if-no-files-found: error
 
-      - name: Read app version
-        id: app_version
-        shell: powershell
-        run: |
-          $json = Get-Content package.json | ConvertFrom-Json
-          "version=$($json.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.app_version.outputs.version }}-build.${{ github.run_number }}
-          name: MKV Batch Muxing Tool v${{ steps.app_version.outputs.version }} (build ${{ github.run_number }})
+          # Same tag the updater manifest points at; see "Build updater manifest".
+          tag_name: ${{ steps.manifest.outputs.tag }}
+          name: MKV Batch Muxing Tool v${{ steps.manifest.outputs.version }} (build ${{ github.run_number }})
+          # Installed apps resolve the manifest through /releases/latest/, which
+          # skips prereleases and drafts -- so this must publish as the latest
+          # release or no update is ever offered.
+          prerelease: false
+          draft: false
+          make_latest: "true"
           body: |
             Automated build from commit ${{ github.sha }}.
             Artifacts: Windows installer (MSI) and/or portable EXE.
+
+            Installed apps update to this build automatically.
           files: artifacts/**

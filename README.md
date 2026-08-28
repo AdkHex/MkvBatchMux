@@ -50,6 +50,37 @@ directly, so the feature is usable without a PyInstaller build.
 ### Windows extras (MSI installer)
 - WiX Toolset (required to build `.msi`)
 
+## Automatic updates
+
+Installed builds check GitHub Releases on launch and offer any newer version.
+Pushing to `main` bumps the version, builds a signed installer, publishes it as
+the latest release, and installed apps pick it up from there.
+
+The user is asked before anything is installed — a mux batch can run for
+several minutes, so updates never restart the app unprompted.
+
+### Repository secrets (required)
+
+Updates are cryptographically signed and the app rejects unsigned ones, so CI
+needs two secrets. Without them the build still succeeds and publishes an MSI
+for manual download, but no `latest.json` is generated and auto-update stays off
+(the workflow logs a warning saying so).
+
+| Secret | Value |
+|---|---|
+| `TAURI_PRIVATE_KEY` | Contents of the updater private key file |
+| `TAURI_KEY_PASSWORD` | The key's password (empty string if none) |
+
+**Keep the private key safe.** If it is lost, already-installed apps can no
+longer be updated — every user would have to reinstall by hand. The matching
+public key lives in `src-tauri/tauri.conf.json` under `tauri.updater.pubkey`.
+
+To generate a fresh keypair (this invalidates existing installs):
+
+```bash
+npx tauri signer generate -w ~/.tauri/mkvbatchmux.key
+```
+
 ## Installation & Usage
 
 ### 1) Install dependencies
