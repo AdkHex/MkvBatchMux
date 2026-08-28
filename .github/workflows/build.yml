@@ -225,13 +225,30 @@ jobs:
         # BOM that made it unparseable. Both only surfaced when an installed
         # app tried to update. Fetching what the app fetches catches it here.
         run: |
+          $expected = "${{ steps.manifest.outputs.version }}"
           $endpoint = "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
-          $raw = (Invoke-WebRequest -Uri $endpoint -UseBasicParsing).Content
-          if ($raw[0] -eq [char]0xFEFF) {
-            Write-Error "latest.json starts with a BOM; the updater cannot parse it."
+
+          # GitHub's /releases/latest/ pointer lags the release by a few
+          # seconds, so an immediate fetch returns the *previous* manifest and
+          # the check fails against a build that was actually fine. Poll until
+          # the version matches rather than sleeping a guessed interval.
+          $manifest = $null
+          foreach ($attempt in 1..10) {
+            $raw = (Invoke-WebRequest -Uri $endpoint -UseBasicParsing).Content
+            if ($raw[0] -eq [char]0xFEFF) {
+              Write-Error "latest.json starts with a BOM; the updater cannot parse it."
+              exit 1
+            }
+            $candidate = $raw | ConvertFrom-Json
+            if ($candidate.version -eq $expected) { $manifest = $candidate; break }
+            Write-Host "Attempt ${attempt}: served version '$($candidate.version)', waiting for '$expected'."
+            Start-Sleep -Seconds 6
+          }
+
+          if (-not $manifest) {
+            Write-Error "The published manifest never advanced to $expected."
             exit 1
           }
-          $manifest = $raw | ConvertFrom-Json
           Write-Host "Published version: $($manifest.version)"
 
           $url = $manifest.platforms.'windows-x86_64'.url
