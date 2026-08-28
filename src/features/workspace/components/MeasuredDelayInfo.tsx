@@ -12,6 +12,7 @@ import { Button } from "@/shared/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/shared/ui/tooltip";
 import { cn } from "@/shared/lib/utils";
 import type { MeasuredDelay } from "@/shared/types";
+import { MAX_PLAUSIBLE_OFFSET_MS } from "@/shared/types/audiosync";
 import {
   confidenceLevel,
   formatConfidence,
@@ -32,6 +33,7 @@ interface MeasuredDelayInfoProps {
 }
 
 export function MeasuredDelayInfo({ measured, onApplyAnyway }: MeasuredDelayInfoProps) {
+  const implausible = Math.abs(measured.engineDelayMs) > MAX_PLAUSIBLE_OFFSET_MS;
   if (measured.error) {
     return (
       <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
@@ -61,7 +63,27 @@ export function MeasuredDelayInfo({ measured, onApplyAnyway }: MeasuredDelayInfo
 
         {frames && <span className="text-muted-foreground">{frames}</span>}
 
-        {measured.isLikelyCut && (
+        {/* Checked before the others: a result this large is not a delay, and
+            saying "different cut" about it would be a guess at the cause. */}
+        {implausible && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant="destructive" className="gap-1">
+                <AlertTriangle className="h-3 w-3" />
+                Not applied
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              {formatPlayerDelayMs(measured.engineDelayMs)} is far larger than any real
+              audio delay, so it was measured but not filled in. It usually means the
+              analysis locked onto a repeated part of the soundtrack rather than the
+              matching one — high confidence only means the sample windows agreed with
+              each other. Check the files play in sync before applying anything.
+            </TooltipContent>
+          </Tooltip>
+        )}
+
+        {!implausible && measured.isLikelyCut && (
           <Tooltip>
             <TooltipTrigger asChild>
               <Badge variant="destructive" className="gap-1">
@@ -110,7 +132,7 @@ export function MeasuredDelayInfo({ measured, onApplyAnyway }: MeasuredDelayInfo
           </Tooltip>
         )}
 
-        {measured.isLikelyCut && onApplyAnyway && (
+        {(measured.isLikelyCut || implausible) && onApplyAnyway && (
           <Button
             type="button"
             variant="ghost"

@@ -6,7 +6,7 @@
  *  See docs/AUDIOSYNC_INTEGRATION_PLAN.md §2.1-2.3.
  */
 
-import type { SyncResult } from "@/shared/types/audiosync";
+import { MAX_PLAUSIBLE_OFFSET_MS, type SyncResult } from "@/shared/types/audiosync";
 
 /** Engine milliseconds → the seconds value MkvBatchMux stores and mkvmerge consumes.
  *
@@ -41,12 +41,28 @@ export function sourceDelayMs(result: Pick<SyncResult, "delayMs" | "delayAtStart
  *  A likely-cut pair contains different material, so no single offset aligns it
  *  and auto-filling one would be a confident wrong answer. The user can still
  *  apply it deliberately -- that path passes `allowCut`.
+ *
+ *  The magnitude check is the same idea. High confidence only means the windows
+ *  agreed with each other, and a correlator that locks onto a repeated musical
+ *  phrase produces the same wrong answer in every window -- so agreement is not
+ *  evidence the answer is right. A dub is never tens of seconds out from its
+ *  own episode; a result that says otherwise gets shown, not applied.
  */
 export function isAutoFillable(result: SyncResult): boolean {
   if (result.error) return false;
-  if (sourceDelayMs(result) === null) return false;
+  const delay = sourceDelayMs(result);
+  if (delay === null) return false;
   if (result.isLikelyCut) return false;
+  if (Math.abs(delay) > MAX_PLAUSIBLE_OFFSET_MS) return false;
   return true;
+}
+
+/** True when a result was withheld only because it is implausibly large.
+ *  Lets the row explain that specifically rather than silently showing nothing. */
+export function isImplausiblyLarge(result: SyncResult): boolean {
+  const delay = sourceDelayMs(result);
+  if (delay === null) return false;
+  return Math.abs(delay) > MAX_PLAUSIBLE_OFFSET_MS;
 }
 
 /** Format a delay for the three-decimal seconds field the UI edits as a string. */

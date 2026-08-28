@@ -6,6 +6,7 @@ import {
   formatDelaySeconds,
   frameOffset,
   isAutoFillable,
+  isImplausiblyLarge,
   playerDelayMs,
   sourceDelayMs,
   stretchRatioFor,
@@ -130,6 +131,30 @@ describe("isAutoFillable", () => {
     // Low confidence is surfaced on the row rather than withheld -- the number
     // is still the best measurement available, unlike a cut where none exists.
     expect(isAutoFillable(makeResult({ delayMs: 120, confidence: 0.3 }))).toBe(true);
+  });
+
+  it("refuses an offset too large to be a real delay", () => {
+    // Regression: a batch of already-synced episodes measured -26041 ms at
+    // 100% confidence. Confidence only says the sample windows agreed with
+    // each other, and a correlator locked onto a repeated musical phrase
+    // agrees with itself in every window. A dub is never 26 seconds out from
+    // its own episode, so the number is shown but never filled in.
+    expect(isAutoFillable(makeResult({ delayMs: -26041 }))).toBe(false);
+    expect(isAutoFillable(makeResult({ delayMs: -26041, confidence: 1 }))).toBe(false);
+    expect(isImplausiblyLarge(makeResult({ delayMs: -26041 }))).toBe(true);
+  });
+
+  it("accepts offsets within the plausible range", () => {
+    // Real container and encoder offsets live here; the guard must not eat them.
+    expect(isAutoFillable(makeResult({ delayMs: 42 }))).toBe(true);
+    expect(isAutoFillable(makeResult({ delayMs: -2500 }))).toBe(true);
+    expect(isImplausiblyLarge(makeResult({ delayMs: -2500 }))).toBe(false);
+  });
+
+  it("judges plausibility on the value it would actually apply", () => {
+    // With drift the start value is what gets written, so that is the one
+    // the guard has to test.
+    expect(isAutoFillable(makeResult({ delayMs: 120, delayAtStartMs: -26041 }))).toBe(false);
   });
 
   it("accepts an ordinary result", () => {

@@ -86,10 +86,28 @@ export interface MeasurePair {
 
 /** Engine tuning. These are AudioSyncMaster's `DEFAULT_SETTINGS`; they are not
  *  exposed in the UI because a different value here changes measurements. */
+/** Beyond this, a "delay" is not a delay.
+ *
+ *  This app measures a dub against the video it will be muxed into, so a real
+ *  offset is container- and encoder-scale: milliseconds, occasionally a second
+ *  or two. Ten seconds is already generous.
+ *
+ *  It matters because the correlator picks the best peak *within the range it
+ *  is given*. Episodic TV reuses its score, so a wide search offers many
+ *  plausible-looking wrong answers at multiples of a musical phrase -- and
+ *  because the same wrong peak recurs in every window, the windows agree with
+ *  each other and the result is reported at full confidence. Narrowing the
+ *  search removes those candidates instead of trying to out-vote them.
+ */
+export const MAX_PLAUSIBLE_OFFSET_MS = 10000;
+
 export const ENGINE_DEFAULTS = {
   windowSeconds: 45,
   windowCount: 6,
-  maxOffsetMs: 60000,
+  // Upstream defaults to 60000, which suits its general-purpose case of
+  // aligning arbitrary rips. Here it produced a confident -26041 ms on files
+  // that were already in sync.
+  maxOffsetMs: MAX_PLAUSIBLE_OFFSET_MS,
   maxWorkers: 3,
 } as const;
 

@@ -15,6 +15,7 @@ import {
 import { AlertDialogAction, AlertDialogCancel } from "@/shared/ui/alert-dialog";
 import { BaseModal } from "@/shared/components/BaseModal";
 import { EmptyState } from "@/shared/components/EmptyState";
+import { MAX_PLAUSIBLE_OFFSET_MS } from "@/shared/types/audiosync";
 import { LanguageSelect } from "@/features/workspace/components/LanguageSelect";
 import {
   ImportTrackEditDialog,
@@ -1382,7 +1383,8 @@ export function AudiosTab({
                           <MeasuredDelayInfo
                             measured={file.measuredDelay}
                             onApplyAnyway={
-                              file.measuredDelay.isLikelyCut
+                              file.measuredDelay.isLikelyCut ||
+                              Math.abs(file.measuredDelay.engineDelayMs) > MAX_PLAUSIBLE_OFFSET_MS
                                 ? () => applyCutDelayAnyway(file.id, null)
                                 : undefined
                             }
@@ -1412,7 +1414,9 @@ export function AudiosTab({
                             <MeasuredDelayInfo
                               measured={override.measuredDelay!}
                               onApplyAnyway={
-                                override.measuredDelay!.isLikelyCut
+                                override.measuredDelay!.isLikelyCut ||
+                                Math.abs(override.measuredDelay!.engineDelayMs) >
+                                  MAX_PLAUSIBLE_OFFSET_MS
                                   ? () => applyCutDelayAnyway(file.id, trackId)
                                   : undefined
                               }
