@@ -91,7 +91,11 @@ jobs:
         env:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
-        run: npm run tauri:build -- --bundles msi,updater
+        # Space-separated, and --bundles last: as a multi-value flag it would
+        # otherwise swallow any argument that followed it. The comma form
+        # silently skipped the bundler entirely on 1.6.3, producing a release
+        # with a bare .exe and no installer.
+        run: npm run tauri:build -- --bundles msi updater
 
       - name: Inspect bundle output
         shell: powershell
@@ -112,9 +116,16 @@ jobs:
           # The updater bundle: the archive the app downloads, plus its signature.
           $upd = Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Include "*.msi.zip","*.msi.zip.sig" -Recurse -ErrorAction SilentlyContinue
           if ($upd) { $upd | Copy-Item -Destination artifacts -Force }
-          $count = (Get-ChildItem -Path artifacts -ErrorAction SilentlyContinue | Measure-Object).Count
-          if ($count -eq 0) {
-            Write-Error "No Windows installer (.msi) or app (.exe) found in build output."
+          # A bare .exe is not a release. The bundler silently doing nothing
+          # previously produced a green build whose release had no installer at
+          # all, so the MSI is checked for explicitly rather than accepting
+          # whatever happened to land in the directory.
+          if (-not $msi) {
+            Write-Error "No .msi produced. The bundler did not run -- check the --bundles arguments."
+            exit 1
+          }
+          if (-not $upd) {
+            Write-Error "No updater bundle (.msi.zip + .sig) produced, so auto-update would silently break. Check that TAURI_PRIVATE_KEY is set and 'updater' is in --bundles."
             exit 1
           }
           Get-ChildItem -Path artifacts | Select-Object Name, Length | Format-Table
@@ -138,14 +149,11 @@ jobs:
           $zip = Get-ChildItem -Path artifacts -Filter "*.msi.zip" | Select-Object -First 1
           $sigFile = Get-ChildItem -Path artifacts -Filter "*.msi.zip.sig" | Select-Object -First 1
 
+          # Collect bundles already fails the build if these are missing, so
+          # reaching here without them means that check regressed.
           if (-not $zip -or -not $sigFile) {
-            # Not fatal: the MSI is still published for manual download. But
-            # auto-update will not work, so say so loudly rather than leaving
-            # a green tick that implies it does.
-            Write-Warning "No signed updater bundle produced; skipping latest.json."
-            Write-Warning "Set the TAURI_PRIVATE_KEY and TAURI_KEY_PASSWORD repository secrets to enable auto-update."
-            "published=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            exit 0
+            Write-Error "Updater bundle missing after Collect bundles verified it. This should be unreachable."
+            exit 1
           }
 
           $signature = Get-Content $sigFile.FullName -Raw
