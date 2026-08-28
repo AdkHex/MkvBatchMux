@@ -92,6 +92,10 @@
 
     --row-height: 34px;
     --row-height-header: 32px;
+    /* Paired list rows. Tall enough for the audio row's 24px action buttons
+       plus padding, so both panes agree without depending on their contents. */
+    --media-row-h: 38px;
+    --media-row-tall-h: 38px;
     --control-height: 30px;
     --icon-button-size: 30px;
 
@@ -868,19 +872,24 @@
      Both truncate rather than growing to fit: `w-max` here made long names
      force a horizontal scrollbar in the left pane only, and that scrollbar
      consumed vertical space, so row N no longer lined up with row N. */
-  .file-item-video {
+  /* The two lists sit side by side and must agree row for row.
+     --media-row-h is a fixed height rather than a minimum: the audio row
+     carries 24px action buttons and the video row only text, so any
+     content-driven height put them permanently out of step. An audio row that
+     has been measured grows, and its video partner grows with it via
+     .file-item-video--tall. */
+  .file-item-video,
+  .file-item-audio {
     @apply px-3 cursor-pointer transition-colors font-mono w-full min-w-0;
     display: grid;
-    grid-template-columns: 22px minmax(0, 1fr);
-    align-items: start;
+    align-items: center;
     column-gap: 12px;
-    min-height: 34px;
-    /* Must match .file-item-audio exactly: the two lists sit side by side and
-       any difference in the box model puts row N of one beside row N±1 of the
-       other. */
-    padding-top: 7px;
-    padding-bottom: 7px;
+    height: var(--media-row-h);
     border-left: 2px solid transparent;
+  }
+
+  .file-item-video {
+    grid-template-columns: 22px minmax(0, 1fr);
   }
 
   .file-item-video:hover {
@@ -896,18 +905,19 @@
      stretch toggle, and centring would drag the handle and index off the
      filename they label. */
   .file-item-audio {
-    @apply px-3 cursor-pointer transition-colors font-mono w-full min-w-0;
-    display: grid;
     grid-template-columns: 16px 22px minmax(0, 1fr) 88px;
-    align-items: start;
-    column-gap: 12px;
-    min-height: 34px;
-    padding-top: 7px;
-    padding-bottom: 7px;
-    /* Reserved even when unselected, so selecting a row does not nudge its
-       text sideways by the width of the indicator. */
-    border-left: 2px solid transparent;
     background: transparent;
+  }
+
+  /* A measured row shows its delay readout and stretch toggle under the name,
+     so it needs the room; both panes switch together to stay in step. */
+  .file-item-audio--tall,
+  .file-item-video--tall {
+    height: auto;
+    min-height: var(--media-row-tall-h);
+    align-items: start;
+    padding-top: 8px;
+    padding-bottom: 8px;
   }
 
   .file-item-audio:hover {

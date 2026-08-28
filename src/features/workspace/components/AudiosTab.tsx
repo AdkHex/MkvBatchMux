@@ -327,6 +327,22 @@ export function AudiosTab({
     () => getUnlinkedExternalFiles(audioFiles, videoFiles).length,
     [audioFiles, videoFiles],
   );
+  /**
+   * Whether the audio row at this index has grown to show a measurement.
+   *
+   * The two panes are separate scroll areas paired by index, so a taller audio
+   * row has to push its video partner to the same height or every row below
+   * drifts out of alignment.
+   */
+  const audioRowIsTall = useCallback(
+    (index: number) => {
+      const file = audioFiles[index];
+      if (!file) return false;
+      return Boolean(file.measuredDelay) || measuredTrackEntries(file).length > 0;
+    },
+    [audioFiles],
+  );
+
   const visibleVideoFiles = useMemo(() => {
     const term = searchValue.trim().toLowerCase();
     const filtered = videoFiles.filter((file) =>
@@ -1261,6 +1277,7 @@ export function AudiosTab({
                 onClick={() => setSelectedVideoIndex(index)}
                 className={cn(
                   "file-item-video",
+                  audioRowIsTall(index) && "file-item-video--tall",
                   selectedVideoIndex === index && "selected",
                 )}
               >
@@ -1344,13 +1361,21 @@ export function AudiosTab({
                     onDragOver={(e) => e.preventDefault()}
                     onClick={() => setSelectedAudioIndex(index)}
                     onDoubleClick={() => openEditDialog(file.id)}
-                    className={cn("file-item-audio", selectedAudioIndex === index && "selected", draggedIndex === index && "opacity-60")}
+                    className={cn(
+                      "file-item-audio",
+                      // Grows for the delay readout; the paired video row is
+                      // told to grow too so the lists stay in step.
+                      (file.measuredDelay || measuredTrackEntries(file).length > 0) &&
+                        "file-item-audio--tall",
+                      selectedAudioIndex === index && "selected",
+                      draggedIndex === index && "opacity-60",
+                    )}
                   >
                     <span className="media-row-handle">
                       <GripVertical className="w-4 h-4" />
                     </span>
                     <span className="media-row-index">{index + 1}</span>
-                    <div className="min-w-0 flex-1 py-1">
+                    <div className="min-w-0 flex-1">
                       <div className="media-row-name">{file.name}</div>
                       {file.measuredDelay && (
                         <>
