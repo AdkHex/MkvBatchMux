@@ -130,7 +130,15 @@ export function buildMeasurementPlan({
           key: measurementKey(file.id, null),
           method: "mkvbatchmux",
           score: 1,
-          primaryTrack,
+          // An explicit reference choice wins here: with a single track the
+          // user's selection is unambiguous, and language matching is only a
+          // fallback for when they have not chosen one.
+          primaryTrack:
+            referenceTrackByVideoId[video.id] ??
+            (includedTracks[0]
+              ? matchingReferenceTrack(video, file, includedTracks[0].trackId)
+              : null) ??
+            primaryTrack,
           secondaryTrack: includedTracks[0]?.streamIndex ?? 0,
         },
         audioFileId: file.id,
@@ -150,7 +158,13 @@ export function buildMeasurementPlan({
           key: measurementKey(file.id, track.trackId),
           method: "mkvbatchmux",
           score: 1,
-          primaryTrack,
+          // Each track is compared against the video track that carries the
+          // same language where one exists, rather than all of them against
+          // one reference. Correlation works by matching waveforms, so a
+          // Korean track measured against the video's Hindi has no true peak
+          // to find -- and the correlator returns whatever fit best, with the
+          // windows agreeing on it and reporting high confidence.
+          primaryTrack: matchingReferenceTrack(video, file, track.trackId) ?? primaryTrack,
           secondaryTrack: track.streamIndex,
         },
         audioFileId: file.id,
@@ -163,6 +177,45 @@ export function buildMeasurementPlan({
   });
 
   return { measurements, unmatched, skipped };
+}
+
+/** The video audio stream that speaks the same language as an external track.
+ *
+ *  Returns an audio-relative index for the engine, or null when the video has
+ *  no track in that language -- in which case the caller falls back to the
+ *  chosen reference, since measuring against something is better than not
+ *  measuring at all, and the magnitude guard catches a nonsense result.
+ *
+ *  Only used when the external file has several tracks. With one track the
+ *  user's reference choice is unambiguous and is respected as-is.
+ */
+export function matchingReferenceTrack(
+  video: VideoFile,
+  file: ExternalFile,
+  trackId: number,
+): number | null {
+  const externalTrack = (file.tracks ?? []).find(
+    (track) => track.type === "audio" && Number(track.id) === trackId,
+  );
+  const language = normalizeLanguage(
+    // A per-track override wins: it is what the user says this track is.
+    file.trackOverrides?.[trackId]?.language ?? externalTrack?.language,
+  );
+  if (!language) return null;
+
+  const videoAudio = (video.tracks ?? []).filter((track) => track.type === "audio");
+  const index = videoAudio.findIndex(
+    (track) => normalizeLanguage(track.language) === language,
+  );
+  return index >= 0 ? index : null;
+}
+
+/** Language codes vary in case and in the 2- vs 3-letter form between tools. */
+function normalizeLanguage(value: string | undefined | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed || trimmed === "und" || trimmed === "mul") return null;
+  return trimmed;
 }
 
 /** The audio tracks of an external file that will actually be muxed.

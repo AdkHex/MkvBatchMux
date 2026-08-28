@@ -226,3 +226,87 @@ describe("measurement keys", () => {
     });
   });
 });
+
+describe("choosing the reference track per external track", () => {
+  const langTrack = (id: string, language: string): Track => ({
+    id,
+    type: "audio",
+    language,
+  });
+
+  it("measures each track against the video track in its own language", () => {
+    // Regression: every track of a multi-track file was measured against one
+    // reference, so a Korean track was compared with the video's Hindi. Two
+    // languages share no waveform, so the correlator found no true peak and
+    // returned whatever fit best -- consistently, and at high confidence,
+    // because every sample window agreed on the same wrong answer.
+    const video = makeVideo("v1", "Ep01.mkv", [
+      langTrack("0", "hin"),
+      langTrack("1", "kor"),
+    ]);
+    const audio = makeAudio("a1", "Ep01.mkv", {
+      matchedVideoId: "v1",
+      tracks: [langTrack("0", "hin"), langTrack("1", "kor")],
+      includedTrackIds: [0, 1],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements).toHaveLength(2);
+    // Hindi against Hindi, Korean against Korean.
+    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
+    expect(plan.measurements[1].pair.primaryTrack).toBe(1);
+  });
+
+  it("falls back to the reference when the video has no matching language", () => {
+    // Measuring against something beats not measuring; an implausible result
+    // is caught downstream rather than by refusing to try.
+    const video = makeVideo("v1", "Ep01.mkv", [langTrack("0", "jpn")]);
+    const audio = makeAudio("a1", "Ep01.mkv", {
+      matchedVideoId: "v1",
+      tracks: [langTrack("0", "hin"), langTrack("1", "kor")],
+      includedTrackIds: [0, 1],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements.every((m) => m.pair.primaryTrack === 0)).toBe(true);
+  });
+
+  it("respects an explicit reference choice for a single-track file", () => {
+    const video = makeVideo("v1", "Ep01.mkv", [
+      langTrack("0", "hin"),
+      langTrack("1", "kor"),
+    ]);
+    const audio = makeAudio("a1", "Ep01.mkv", {
+      matchedVideoId: "v1",
+      tracks: [langTrack("0", "kor")],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({
+      videoFiles: [video],
+      audioFiles: [audio],
+      referenceTrackByVideoId: { v1: 0 },
+    });
+
+    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
+  });
+
+  it("ignores und, which says nothing about the language", () => {
+    const video = makeVideo("v1", "Ep01.mkv", [
+      langTrack("0", "und"),
+      langTrack("1", "kor"),
+    ]);
+    const audio = makeAudio("a1", "Ep01.mkv", {
+      matchedVideoId: "v1",
+      tracks: [langTrack("0", "und"), langTrack("1", "kor")],
+      includedTrackIds: [0, 1],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements[0].pair.primaryTrack).toBe(0); // fallback
+    expect(plan.measurements[1].pair.primaryTrack).toBe(1); // matched on kor
+  });
+});
