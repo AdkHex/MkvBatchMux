@@ -323,6 +323,11 @@ export function SubtitlesTab({
     setSubtitlePresetApplied(true);
   }, [preset, subtitlePresetApplied, subtitleTracks, updateSubtitleTrackConfig, setSubtitlePresetApplied]);
 
+  // Read through a ref so a rescan sees the current list without making
+  // scanSubtitles depend on it, which would rebuild the callback on every edit.
+  const subtitleFilesRef = useRef(subtitleFiles);
+  subtitleFilesRef.current = subtitleFiles;
+
   const scanSubtitles = useCallback(async (folderPath: string) => {
     if (!folderPath) {
       onSubtitleFilesChange([]);
@@ -337,27 +342,45 @@ export function SubtitlesTab({
       type: 'subtitle',
       include_tracks: true,
     });
-    const normalized = (results as ExternalFile[]).map((file, index) => ({
+    // A rescan re-reads the same folder, so a delay already typed for a file
+    // still applies. Carrying it over means refresh does not discard edits.
+    const priorByPath = new Map(
+      subtitleFilesRef.current.map((file) => [file.path.toLowerCase(), file] as const),
+    );
+
+    const normalized = (results as ExternalFile[]).map((file) => {
+      const prior = priorByPath.get(file.path.toLowerCase());
+      const keepsOwnDelay =
+        prior && (prior.delayProvenance === "measured" || prior.delayProvenance === "manual");
+
+      return {
       ...file,
       type: 'subtitle' as const,
-      language: currentConfig.language,
-      trackName: currentConfig.trackName,
-      delay: Number(currentConfig.delay) || 0,
+      language: prior?.language ?? currentConfig.language,
+      trackName: prior?.trackName ?? currentConfig.trackName,
+      delay: keepsOwnDelay ? prior.delay : Number(currentConfig.delay) || 0,
+      ...(keepsOwnDelay ? { delayProvenance: prior.delayProvenance } : {}),
       isDefault: currentConfig.isDefault,
       isForced: currentConfig.isForced,
       muxAfter: currentConfig.muxAfter,
-      trackOverrides: file.trackOverrides ?? {},
+      trackOverrides: prior?.trackOverrides ?? file.trackOverrides ?? {},
       includedTrackIds:
         file.tracks && file.tracks.length > 0
           ? file.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id))
           : file.includedTrackIds,
-    }));
+      };
+    });
     onSubtitleFilesChange(syncSubtitleLinks(normalized));
   }, [currentConfig, onSubtitleFilesChange, syncSubtitleLinks]);
 
   useEffect(() => {
     if (subtitleFiles.length === 0) return;
-    const needsRowMatch = subtitleFiles.some((file, index) => file.matchedVideoId !== videoFiles[index]?.id);
+    // Only the files that have a video to pair with: rows past the end
+    // keep their existing link, so comparing them against undefined
+    // would report a mismatch that relinking can never resolve.
+    const needsRowMatch = subtitleFiles
+      .slice(0, videoFiles.length)
+      .some((file, index) => file.matchedVideoId !== videoFiles[index]?.id);
     if (needsRowMatch) {
       onSubtitleFilesChange(linkExternalFilesByOrder(subtitleFiles, videoFiles));
     }

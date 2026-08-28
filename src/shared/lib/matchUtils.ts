@@ -208,15 +208,22 @@ export function matchExternalToVideos(
   });
 }
 
+/**
+ * Pair the nth external file with the nth video.
+ *
+ * Files past the end of the video list keep whatever link they already had.
+ * Overwriting them with `undefined` silently unlinked every extra file -- and
+ * because the relink runs whenever the lists differ, a batch with more audio
+ * than video dropped those files from the mux with nothing on screen to say so.
+ */
 export function linkExternalFilesByOrder(
   externalFiles: ExternalFile[],
   videoFiles: VideoFile[],
 ): ExternalFile[] {
   const videoIds = videoFiles.map((video) => video.id);
-  return externalFiles.map((file, index) => ({
-    ...file,
-    matchedVideoId: videoIds[index],
-  }));
+  return externalFiles.map((file, index) =>
+    index < videoIds.length ? { ...file, matchedVideoId: videoIds[index] } : file,
+  );
 }
 
 export function assignExternalFileToVideo(

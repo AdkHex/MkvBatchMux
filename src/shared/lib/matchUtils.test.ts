@@ -179,3 +179,30 @@ describe("extractEpisodeNumber", () => {
     expect(extractEpisodeNumber("Show.EP12.1080p.mkv")).toBe(12);
   });
 });
+
+describe("linkExternalFilesByOrder", () => {
+  it("pairs the nth file with the nth video", () => {
+    const videos = [makeVideo("v1", "Episode01.mkv"), makeVideo("v2", "Episode02.mkv")];
+    const audios = [makeAudio("a1", "Episode01.eac3"), makeAudio("a2", "Episode02.eac3")];
+
+    const linked = linkExternalFilesByOrder(audios, videos);
+
+    expect(linked.map((file) => file.matchedVideoId)).toEqual(["v1", "v2"]);
+  });
+
+  it("leaves files past the end of the video list alone", () => {
+    // Regression: these were overwritten with `undefined`, so a batch with
+    // more audio than video silently dropped the extras from the mux -- and
+    // the relink ran again on every render, never converging.
+    const videos = [makeVideo("v1", "Episode01.mkv")];
+    const audios = [
+      makeAudio("a1", "Episode01.eac3"),
+      { ...makeAudio("a2", "Episode02.eac3"), matchedVideoId: "v9" },
+    ];
+
+    const linked = linkExternalFilesByOrder(audios, videos);
+
+    expect(linked[0].matchedVideoId).toBe("v1");
+    expect(linked[1].matchedVideoId).toBe("v9");
+  });
+});
