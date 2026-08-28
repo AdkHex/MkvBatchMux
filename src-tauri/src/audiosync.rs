@@ -473,16 +473,28 @@ pub fn audiosync_engine_status(
             dev_bridge_script().map(|p| format!("{} (development)", p.to_string_lossy()))
         });
 
+    // Release builds bundle both, so these only surface if something went
+    // wrong with the install -- or in a dev checkout, where the build command
+    // is the useful answer. Debug builds get the developer wording; installed
+    // users get something they can act on.
     let message = if located.is_none() {
-        Some(
-            "The audio analysis engine is not installed. Run `npm run fetch-engine` to build it."
-                .to_string(),
-        )
+        Some(if cfg!(debug_assertions) {
+            "The audio analysis engine is not built. Run `npm run fetch-engine`.".to_string()
+        } else {
+            "The audio analysis engine is missing from this install. Reinstalling the app \
+             restores it."
+                .to_string()
+        })
     } else if !ffmpeg {
-        Some(
-            "FFmpeg was not found. Install FFmpeg and make sure ffmpeg and ffprobe are on your PATH."
-                .to_string(),
-        )
+        Some(if cfg!(debug_assertions) {
+            "FFmpeg was not found. Run `npm run fetch-ffmpeg`, or put ffmpeg and ffprobe on \
+             your PATH."
+                .to_string()
+        } else {
+            "FFmpeg is missing from this install. Open Settings to install it, or reinstall \
+             the app."
+                .to_string()
+        })
     } else {
         None
     };

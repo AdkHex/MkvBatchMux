@@ -110,7 +110,7 @@ function FileMediaInfo({ file }: { file: VideoFile }) {
             <span className="font-mono">{file.duration || "—"}</span>
           </div>
           <div className="flex gap-2">
-            <span className="text-muted-foreground/60 w-20 shrink-0">Frame Rate</span>
+            <span className="text-muted-foreground/60 w-20 shrink-0">Frame rate</span>
             <span className="font-mono">{formatFps(file.fps)}</span>
           </div>
           <div className="col-span-2 flex gap-2">

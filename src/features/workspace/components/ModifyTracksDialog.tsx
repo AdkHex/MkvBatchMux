@@ -614,7 +614,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
 
       <div className="px-6 pt-3 pb-3 border-t border-panel-border shrink-0">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-xs font-semibold text-muted-foreground">Track Info Across Videos</h3>
+          <h3 className="text-xs font-semibold text-muted-foreground">Track info Across Videos</h3>
           <span className="text-xs text-muted-foreground bg-muted/40 px-2 py-1 rounded-full">
             Track {String(selectedTrackNumber).padStart(2, "0")}
           </span>

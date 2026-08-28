@@ -276,7 +276,7 @@ export function ChaptersTab({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Formats</SelectItem>
+                <SelectItem value="all">All formats</SelectItem>
                 {CHAPTER_EXTENSIONS.map((ext) => (
                   <SelectItem key={ext} value={ext}>
                     {ext.toUpperCase()}

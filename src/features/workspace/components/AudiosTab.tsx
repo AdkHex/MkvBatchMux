@@ -1107,7 +1107,7 @@ export function AudiosTab({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Formats</SelectItem>
+                <SelectItem value="all">All formats</SelectItem>
                 {AUDIO_EXTENSIONS.map((ext) => (
                   <SelectItem key={ext} value={ext}>
                     {ext.toUpperCase()}
@@ -1406,7 +1406,7 @@ export function AudiosTab({
       >
         <div className="space-y-4">
           <div className="space-y-2">
-            <label className="text-xs font-semibold text-muted-foreground">Source Video</label>
+            <label className="text-xs font-semibold text-muted-foreground">Source video</label>
             <Select value={importSourceVideoId} onValueChange={(value) => {
               setImportSourceVideoId(value);
               setImportSelectedTrackKeys([]);
@@ -1425,7 +1425,7 @@ export function AudiosTab({
             </Select>
           </div>
           <div className="space-y-2">
-            <label className="text-xs font-semibold text-muted-foreground">Audio Streams</label>
+            <label className="text-xs font-semibold text-muted-foreground">Audio streams</label>
             <div className="max-h-56 overflow-y-auto rounded border border-panel-border p-2 space-y-2">
               {importableTracks.length === 0 ? (
                 <div className="text-xs text-muted-foreground px-1 py-2">No audio streams available in selected video.</div>
@@ -1531,9 +1531,9 @@ export function AudiosTab({
       >
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Source File</label>
+            <label className="text-xs font-medium text-muted-foreground">Source file</label>
             <div
-              className="h-[30px] px-3 flex items-center rounded-md border border-panel-border bg-panel-header text-sm text-foreground truncate"
+              className="text-[13px] text-foreground truncate font-mono"
               title={editingFile?.name || ""}
             >
               {editingFile?.name || "—"}
@@ -1566,7 +1566,7 @@ export function AudiosTab({
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Track Order</label>
+              <label className="text-xs font-medium text-muted-foreground">Track order</label>
               <Select
                 value={editForm.muxAfter}
                 onValueChange={(value) => setEditForm((prev) => ({ ...prev, muxAfter: value }))}

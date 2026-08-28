@@ -320,10 +320,10 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
         <section className="space-y-3">
           <div className="flex items-center gap-2">
             <Folder className="w-4 h-4 text-muted-foreground" />
-            <h3 className="text-xs font-semibold text-muted-foreground">Default Directories</h3>
+            <h3 className="text-xs font-semibold text-muted-foreground">Default directories</h3>
           </div>
           <div className="rounded-lg border border-panel-border bg-card p-3 space-y-3">
-            <div className="text-xs font-semibold text-muted-foreground">Input Directories</div>
+            <div className="text-xs font-semibold text-muted-foreground">Input directories</div>
             <div className="space-y-2">
               {directoryFields.slice(0, 5).map((item) => (
                 <div key={item.label} className="flex items-center gap-3 group">
@@ -363,7 +363,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
               ))}
             </div>
             <div className="pt-1 border-t border-panel-border">
-              <div className="text-xs font-semibold text-muted-foreground">Output Directory</div>
+              <div className="text-xs font-semibold text-muted-foreground">Output directory</div>
             </div>
             <div className="space-y-2">
               {directoryFields.slice(5).map((item) => (
@@ -409,7 +409,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
         <section className="space-y-2">
           <div className="flex items-center gap-2">
             <FileType2 className="w-4 h-4 text-muted-foreground" />
-            <h3 className="text-xs font-semibold text-muted-foreground">File Extensions</h3>
+            <h3 className="text-xs font-semibold text-muted-foreground">File extensions</h3>
             <span className="text-xs text-muted-foreground/70">(Advanced)</span>
           </div>
           <p className="text-xs text-muted-foreground/70">Used when scanning folders.</p>
@@ -444,7 +444,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
         <section className="space-y-2">
           <div className="flex items-center gap-2">
             <Languages className="w-4 h-4 text-muted-foreground" />
-            <h3 className="text-xs font-semibold text-muted-foreground">Favorite Languages</h3>
+            <h3 className="text-xs font-semibold text-muted-foreground">Favourite languages</h3>
           </div>
           <p className="text-xs text-muted-foreground/70">Used as default when adding new tracks.</p>
           <div className="flex items-center gap-6">

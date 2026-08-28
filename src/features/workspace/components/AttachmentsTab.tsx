@@ -237,7 +237,7 @@ export function AttachmentsTab({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Formats</SelectItem>
+                <SelectItem value="all">All formats</SelectItem>
                 {ATTACHMENT_EXTENSIONS.map((ext) => (
                   <SelectItem key={ext} value={ext}>
                     {ext.toUpperCase()}
@@ -306,7 +306,7 @@ export function AttachmentsTab({
       <div className="panel-card flex-1 flex flex-col overflow-hidden">
         <div className="panel-card-header">
           <div className="flex items-center gap-2">
-            <h4 className="panel-card-title">Attachment Files</h4>
+            <h4 className="panel-card-title">Attachment files</h4>
             <span className="text-xs font-mono text-muted-foreground">{attachmentFiles.length}</span>
           </div>
           <div className="panel-card-actions">

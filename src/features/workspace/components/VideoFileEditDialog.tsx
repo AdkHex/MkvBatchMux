@@ -1000,7 +1000,7 @@ export function VideoFileEditDialog({
       >
         <div className="space-y-4">
           <div className="grid gap-2">
-            <label className="text-xs text-muted-foreground">Source Video File</label>
+            <label className="text-xs text-muted-foreground">Source video File</label>
             <Select
               value={importSourceVideoId}
               onValueChange={(value) => {

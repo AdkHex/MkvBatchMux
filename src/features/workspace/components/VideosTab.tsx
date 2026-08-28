@@ -406,7 +406,7 @@ export function VideosTab({
             <div className="fluent-loading-header">
               <div className="fluent-loading-title">
                 <Film className="w-4 h-4" />
-                <span>Loading Media Info</span>
+                <span>Loading media Info</span>
               </div>
               <button
                 type="button"
@@ -431,7 +431,7 @@ export function VideosTab({
       <div className="fluent-surface p-4">
         <div className="video-source-panel">
           <div className="video-source-copy">
-            <div className="video-source-kicker">Video Import</div>
+            <div className="video-source-kicker">Video import</div>
             <div className="video-source-title-row">
               <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">Source folder</label>
             </div>
@@ -487,7 +487,7 @@ export function VideosTab({
                 <SelectValue />
               </DropdownTrigger>
               <DropdownContent>
-                <SelectItem value="all">All Formats</SelectItem>
+                <SelectItem value="all">All formats</SelectItem>
                 {VIDEO_EXTENSIONS.map((ext) => (
                   <SelectItem key={ext} value={ext}>
                     {ext.toUpperCase()}
@@ -536,7 +536,7 @@ export function VideosTab({
       <div className="fluent-surface flex-1 flex flex-col min-h-0 p-0 overflow-hidden">
         <DataTable className="h-full flex flex-col">
           <DataTableHeader className="grid grid-cols-[1fr_90px_120px_140px] items-center">
-            <DataTableCell>File Name</DataTableCell>
+            <DataTableCell>File name</DataTableCell>
             <DataTableCell className="right">FPS</DataTableCell>
             <DataTableCell className="right">Duration</DataTableCell>
             <DataTableCell className="right">Size</DataTableCell>

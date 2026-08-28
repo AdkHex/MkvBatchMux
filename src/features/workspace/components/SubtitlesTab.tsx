@@ -874,7 +874,7 @@ export function SubtitlesTab({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Formats</SelectItem>
+                <SelectItem value="all">All formats</SelectItem>
                 {SUBTITLE_EXTENSIONS.map((ext) => (
                   <SelectItem key={ext} value={ext}>
                     {ext.toUpperCase()}
@@ -1127,7 +1127,7 @@ export function SubtitlesTab({
       >
         <div className="space-y-4">
           <div className="space-y-2">
-            <label className="text-xs font-semibold text-muted-foreground">Source Video</label>
+            <label className="text-xs font-semibold text-muted-foreground">Source video</label>
             <Select value={importSourceVideoId} onValueChange={(value) => {
               setImportSourceVideoId(value);
               setImportSelectedTrackKeys([]);
@@ -1146,7 +1146,7 @@ export function SubtitlesTab({
             </Select>
           </div>
           <div className="space-y-2">
-            <label className="text-xs font-semibold text-muted-foreground">Subtitle Streams</label>
+            <label className="text-xs font-semibold text-muted-foreground">Subtitle streams</label>
             <div className="max-h-56 overflow-y-auto rounded border border-panel-border p-2 space-y-2">
               {importableTracks.length === 0 ? (
                 <div className="text-xs text-muted-foreground px-1 py-2">No subtitle streams available in selected video.</div>
@@ -1248,9 +1248,9 @@ export function SubtitlesTab({
       >
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Source File</label>
+            <label className="text-xs font-medium text-muted-foreground">Source file</label>
             <div
-              className="h-[30px] px-3 flex items-center rounded-md border border-panel-border bg-panel-header text-sm text-foreground truncate"
+              className="text-[13px] text-foreground truncate font-mono"
               title={editingFile?.name || ""}
             >
               {editingFile?.name || "—"}
@@ -1283,7 +1283,7 @@ export function SubtitlesTab({
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Track Order</label>
+              <label className="text-xs font-medium text-muted-foreground">Track order</label>
               <Select
                 value={editForm.muxAfter}
                 onValueChange={(value) => setEditForm((prev) => ({ ...prev, muxAfter: value }))}
@@ -1304,7 +1304,7 @@ export function SubtitlesTab({
 
           <div className="grid grid-cols-1 md:grid-cols-2 items-stretch gap-3">
             <div className="rounded-md border border-panel-border bg-panel/40 px-4 py-3 space-y-3">
-              <div className="text-xs font-semibold text-muted-foreground">Track Flags</div>
+              <div className="text-xs font-semibold text-muted-foreground">Track flags</div>
               <div className="space-y-3">
                 <label className="flex items-start gap-3 rounded-md bg-[hsl(var(--muted))] px-3 py-2 cursor-pointer">
                   <Checkbox
@@ -1357,7 +1357,7 @@ export function SubtitlesTab({
               </div>
             </div>
             <div className="rounded border border-panel-border px-3 py-2.5 space-y-2">
-              <div className="text-xs font-semibold text-muted-foreground mb-2">Bulk Action</div>
+              <div className="text-xs font-semibold text-muted-foreground mb-2">Apply to</div>
               <label className="inline-flex items-center gap-3 cursor-pointer">
                 <Checkbox
                   id="sub-edit-delay-all"
@@ -1501,7 +1501,7 @@ export function SubtitlesTab({
       >
         <div className="space-y-4">
           <div className="rounded border border-panel-border px-3 py-2.5 space-y-2">
-            <div className="text-xs font-semibold text-muted-foreground">Bulk Fill</div>
+            <div className="text-xs font-semibold text-muted-foreground">Fill all</div>
             <div className="flex items-center gap-2">
               <Input
                 value={multiDelayBulkValue}
