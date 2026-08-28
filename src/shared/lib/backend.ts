@@ -2,6 +2,14 @@ import { invoke } from "@tauri-apps/api/tauri";
 import { open } from "@tauri-apps/api/dialog";
 import { listen } from "@tauri-apps/api/event";
 import type { OptionsData, VideoFile, ExternalFile, MuxSettings } from "@/shared/types";
+import type {
+  EngineStatus,
+  MeasureDoneEvent,
+  MeasureProgressEvent,
+  MeasureResultEvent,
+  MeasureStartRequest,
+  TrackListing,
+} from "@/shared/types/audiosync";
 
 export interface AppPaths {
   app_data_dir: string;
@@ -188,4 +196,38 @@ export function listenInspectPathsStreamError(
   return listen<InspectStreamErrorEvent>("inspect-paths-stream-error", (event) =>
     handler(event.payload),
   );
+}
+
+export async function audiosyncEngineStatus() {
+  return invoke<EngineStatus>("audiosync_engine_status");
+}
+
+export async function listReferenceTracks(paths: string[]) {
+  return invoke<{ files: TrackListing[] }>("list_reference_tracks", { paths });
+}
+
+export async function measureDelaysStart(request: MeasureStartRequest) {
+  return invoke<void>("measure_delays_start", { request });
+}
+
+export async function measureDelaysCancel() {
+  return invoke<void>("measure_delays_cancel");
+}
+
+export function listenMeasureDelaysProgress(handler: (payload: MeasureProgressEvent) => void) {
+  return listen<MeasureProgressEvent>("measure-delays-progress", (event) =>
+    handler(event.payload),
+  );
+}
+
+export function listenMeasureDelaysResult(handler: (payload: MeasureResultEvent) => void) {
+  return listen<MeasureResultEvent>("measure-delays-result", (event) => handler(event.payload));
+}
+
+export function listenMeasureDelaysDone(handler: (payload: MeasureDoneEvent) => void) {
+  return listen<MeasureDoneEvent>("measure-delays-done", (event) => handler(event.payload));
+}
+
+export function listenAudiosyncLog(handler: (line: string) => void) {
+  return listen<string>("audiosync-log", (event) => handler(event.payload));
 }

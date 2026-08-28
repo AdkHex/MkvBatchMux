@@ -23,3 +23,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# AudioSync analysis engine: a ~37MB PyInstaller build artifact, not source.
+# Build it with `npm run fetch-engine`.
+src-tauri/resources/engine/*
+!src-tauri/resources/engine/README.md

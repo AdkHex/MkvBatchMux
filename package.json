@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "fetch-engine": "node scripts/fetch-engine.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audiosync;
+
 use crc32fast::Hasher;
 use fs2::available_space;
 use rayon::prelude::*;
@@ -181,6 +183,8 @@ struct ExternalFileInfo {
     included_subtitles_first: Option<bool>,
     #[serde(rename = "trackOverrides", default)]
     track_overrides: HashMap<String, TrackOverride>,
+    #[serde(default)]
+    stretch: Option<StretchSetting>,
     #[serde(skip)]
     apply_language: bool,
 }
@@ -191,6 +195,57 @@ struct TrackOverride {
     delay: Option<f64>,
     #[serde(rename = "trackName")]
     track_name: Option<String>,
+    #[serde(default)]
+    stretch: Option<StretchSetting>,
+}
+
+/// An opt-in linear stretch for a frame-rate-converted track, emitted as the
+/// extended `--sync <tid>:<offset>,<num>/<den>` form. Absent for every track
+/// the user has not explicitly opted in, so the plain offset stays the default.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+struct StretchSetting {
+    num: f64,
+    den: f64,
+}
+
+impl StretchSetting {
+    /// A ratio is only usable if both halves are finite and positive; a zero
+    /// denominator would make mkvmerge reject the whole command.
+    fn is_usable(&self) -> bool {
+        self.num.is_finite() && self.den.is_finite() && self.num > 0.0 && self.den > 0.0
+    }
+}
+
+/// Render the `--sync` value for a track: a plain offset, or an offset with a
+/// linear stretch when one is set.
+///
+/// The offset and the stretch are independent -- the stretch is applied about
+/// t=0, so the offset remains the start-referenced delay either way.
+fn format_sync_value(track_id: u64, delay_seconds: f64, stretch: Option<StretchSetting>) -> String {
+    let offset_ms = (delay_seconds * 1000.0) as i64;
+    match stretch {
+        Some(ratio) if ratio.is_usable() => {
+            format!(
+                "{}:{},{}/{}",
+                track_id,
+                offset_ms,
+                format_ratio_part(ratio.num),
+                format_ratio_part(ratio.den)
+            )
+        }
+        _ => format!("{}:{}", track_id, offset_ms),
+    }
+}
+
+/// Ratios are whole numbers in every case this app generates (24000/25025 and
+/// friends), so they are printed without a trailing ".0" that would read as a
+/// float to anyone comparing the command against MKVToolNix documentation.
+fn format_ratio_part(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{}", value as i64)
+    } else {
+        format!("{}", value)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -488,7 +543,7 @@ fn matches_any_pattern(path: &Path, root: &Path, patterns: &[String]) -> bool {
         .any(|pattern| wildcard_match(pattern, &name) || wildcard_match(pattern, &relative))
 }
 
-fn hidden_command(program: &str) -> Command {
+pub(crate) fn hidden_command(program: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
         let mut command = Command::new(program);
@@ -502,7 +557,7 @@ fn hidden_command(program: &str) -> Command {
     }
 }
 
-fn tool_available(tool: &str, version_arg: &str) -> bool {
+pub(crate) fn tool_available(tool: &str, version_arg: &str) -> bool {
     hidden_command(tool)
         .arg(version_arg)
         .stdout(Stdio::null())
@@ -1236,6 +1291,7 @@ fn build_file_info(
             included_subtitles_forced: None,
             included_subtitles_first: None,
             track_overrides: HashMap::new(),
+            stretch: None,
             apply_language: true,
         };
         serde_json::to_value(external)
@@ -2446,9 +2502,18 @@ fn build_mkvmerge_command(
         let delay = override_entry
             .and_then(|entry| entry.delay)
             .or_else(|| audio.delay);
-        if let Some(delay) = delay {
+        let stretch = override_entry
+            .and_then(|entry| entry.stretch)
+            .or(audio.stretch);
+        // A stretch on its own still needs a --sync to carry it, so the
+        // argument is emitted whenever either half is present.
+        if delay.is_some() || stretch.filter(StretchSetting::is_usable).is_some() {
             args.push("--sync".to_string());
-            args.push(format!("{}:{}", track_id, (delay * 1000.0) as i64));
+            args.push(format_sync_value(
+                *track_id,
+                delay.unwrap_or(0.0),
+                stretch,
+            ));
         }
         if let Some(is_default) = audio.is_default {
             args.push("--default-track-flag".to_string());
@@ -2505,7 +2570,7 @@ fn build_mkvmerge_command(
             .or_else(|| subtitle.delay);
         if let Some(delay) = delay {
             args.push("--sync".to_string());
-            args.push(format!("{}:{}", track_id, (delay * 1000.0) as i64));
+            args.push(format_sync_value(*track_id, delay, None));
         }
         if let Some(is_default) = subtitle.is_default {
             args.push("--default-track-flag".to_string());
@@ -3281,6 +3346,7 @@ fn main() {
                 cancelled_scans: Arc::new(Mutex::new(HashSet::new())),
             };
             app.manage(state);
+            app.manage(audiosync::EngineHandle::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3297,9 +3363,19 @@ fn main() {
             resume_muxing,
             stop_muxing,
             open_log_file,
+            audiosync::audiosync_engine_status,
+            audiosync::list_reference_tracks,
+            audiosync::measure_delays_start,
+            audiosync::measure_delays_cancel,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            // Leave no engine process behind when the app closes.
+            if let tauri::RunEvent::Exit = event {
+                app_handle.state::<audiosync::EngineHandle>().shutdown();
+            }
+        });
 }
 
 #[cfg(test)]
@@ -3382,6 +3458,71 @@ mod regression_tests {
                 output_path.to_string_lossy()
             );
         }
+    }
+
+    /// Guards the existing plain-offset behaviour against regression: this is
+    /// the form every mux has always produced and it must not change.
+    #[test]
+    fn sync_value_is_a_plain_offset_when_no_stretch_is_set() {
+        assert_eq!(format_sync_value(1, -0.088, None), "1:-88");
+        assert_eq!(format_sync_value(0, 1.890, None), "0:1890");
+        assert_eq!(format_sync_value(2, 0.0, None), "2:0");
+    }
+
+    /// The extended form carries the ratio after the offset, and only when a
+    /// ratio is actually set -- a stretch applied by accident would drift the
+    /// whole file.
+    #[test]
+    fn sync_value_includes_the_ratio_only_when_a_stretch_is_set() {
+        let stretch = StretchSetting {
+            num: 24000.0,
+            den: 25025.0,
+        };
+        assert_eq!(
+            format_sync_value(1, -0.088, Some(stretch)),
+            "1:-88,24000/25025"
+        );
+        // The offset and the stretch are independent; a zero offset still
+        // carries the ratio.
+        assert_eq!(format_sync_value(1, 0.0, Some(stretch)), "1:0,24000/25025");
+    }
+
+    /// A malformed ratio must degrade to the plain offset rather than emitting
+    /// something mkvmerge rejects, which would fail the whole job.
+    #[test]
+    fn unusable_stretch_ratios_fall_back_to_a_plain_offset() {
+        let zero_denominator = StretchSetting {
+            num: 25.0,
+            den: 0.0,
+        };
+        assert_eq!(format_sync_value(1, -0.088, Some(zero_denominator)), "1:-88");
+
+        let negative = StretchSetting {
+            num: -25.0,
+            den: 24.0,
+        };
+        assert_eq!(format_sync_value(1, -0.088, Some(negative)), "1:-88");
+    }
+
+    /// The value the frontend computes must survive the cast main.rs performs.
+    /// This is the Rust half of the round-trip proved in delayConversion.test.ts.
+    #[test]
+    fn sync_offset_matches_the_frontend_rounding() {
+        // engineMsToDelaySeconds(87.7) == -0.088
+        assert_eq!(format_sync_value(1, -0.088, None), "1:-88");
+        // engineMsToDelaySeconds(-33.5) == 0.034
+        assert_eq!(format_sync_value(1, 0.034, None), "1:34");
+        // engineMsToDelaySeconds(1890.4) == -1.890
+        assert_eq!(format_sync_value(1, -1.890, None), "1:-1890");
+    }
+
+    /// Saved sessions written before the stretch field existed must still load.
+    #[test]
+    fn track_override_tolerates_a_missing_stretch() {
+        let parsed: TrackOverride =
+            serde_json::from_str(r#"{"language":"eng","delay":-0.088}"#).expect("should parse");
+        assert!(parsed.stretch.is_none());
+        assert_eq!(parsed.delay, Some(-0.088));
     }
 
     /// The temp file must differ from the final path, otherwise

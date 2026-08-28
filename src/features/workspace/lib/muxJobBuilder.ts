@@ -23,7 +23,14 @@ const normalizeName = (value: string) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
-const buildStrictVideoMatcher = (videoFiles: VideoFile[]) => {
+/**
+ * Resolve which video each external file belongs to.
+ *
+ * Exported because delay measurement pairs files with exactly this function:
+ * a second matcher could measure one pairing while the mux performs another,
+ * producing a silently wrong delay with nothing on screen to explain it.
+ */
+export const buildStrictVideoMatcher = (videoFiles: VideoFile[]) => {
   const byId = new Map(videoFiles.map((video) => [video.id, video] as const));
   const episodeMap = new Map<number, string>();
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { X, RefreshCw, FolderOpen, ChevronUp, ChevronDown, Plus, Trash2, Copy, AudioLines, Pencil, GripVertical } from "lucide-react";
+import { X, RefreshCw, FolderOpen, ChevronUp, ChevronDown, Plus, Trash2, Copy, AudioLines, Pencil, GripVertical, Gauge, Ban } from "lucide-react";
 import { toast } from "@/shared/hooks/use-toast";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
@@ -16,7 +16,7 @@ import { BaseModal } from "@/shared/components/BaseModal";
 import { EmptyState } from "@/shared/components/EmptyState";
 import { LanguageSelect } from "@/features/workspace/components/LanguageSelect";
 import { cn } from "@/shared/lib/utils";
-import type { VideoFile, ExternalFile, Preset } from "@/shared/types";
+import type { VideoFile, ExternalFile, Preset, StretchSetting } from "@/shared/types";
 import { pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { AUDIO_EXTENSIONS } from "@/shared/lib/extensions";
@@ -25,6 +25,12 @@ import {
   linkExternalFilesByOrder,
 } from "@/shared/lib/matchUtils";
 import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/shared/data/languages-iso6393";
+import { useMeasureDelays } from "@/features/workspace/hooks/useMeasureDelays";
+import { MeasuredDelayInfo } from "@/features/workspace/components/MeasuredDelayInfo";
+import { StretchToggle } from "@/features/workspace/components/StretchToggle";
+import { ReferenceTrackPicker } from "@/features/workspace/components/ReferenceTrackPicker";
+import { applyMeasurement, markDelayAsManual } from "@/features/workspace/lib/applyMeasurement";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/shared/ui/tooltip";
 
 interface AudiosTabProps {
   audioFiles: ExternalFile[];
@@ -122,6 +128,96 @@ export function AudiosTab({
   }));
   const [selectedVideoIndex, setSelectedVideoIndex] = useState<number | null>(null);
   const [selectedAudioIndex, setSelectedAudioIndex] = useState<number | null>(null);
+  /** Which audio track of each video to measure against, by video id. Empty
+   *  means "use each video's default", resolved at plan time. */
+  const [referenceTrackByVideoId, setReferenceTrackByVideoId] = useState<Record<string, number>>(
+    {},
+  );
+  const {
+    engine: audiosyncEngine,
+    isMeasuring,
+    progress: measureProgress,
+    start: startMeasuring,
+    cancel: cancelMeasuring,
+  } = useMeasureDelays({
+    videoFiles,
+    audioFiles,
+    onAudioFilesChange,
+    referenceTrackByVideoId,
+  });
+
+  const measurementAvailable = Boolean(
+    audiosyncEngine?.engineAvailable && audiosyncEngine.ffmpegAvailable,
+  );
+
+  const setStretchForFile = useCallback(
+    (fileId: string, stretch: StretchSetting | undefined) => {
+      onAudioFilesChange(
+        audioFiles.map((file) => (file.id === fileId ? { ...file, stretch } : file)),
+      );
+    },
+    [audioFiles, onAudioFilesChange],
+  );
+
+  /** Re-measure one row, ignoring the skip rules for it alone. */
+  const remeasureFile = useCallback(
+    (fileId: string) => {
+      startMeasuring({ onlyAudioFileIds: [fileId], force: true });
+    },
+    [startMeasuring],
+  );
+
+  /** Apply a delay that cut detection withheld -- a deliberate act, per §5.4. */
+  const applyCutDelayAnyway = useCallback(
+    (fileId: string, trackId: number | null) => {
+      const file = audioFiles.find((candidate) => candidate.id === fileId);
+      const measured = trackId === null
+        ? file?.measuredDelay
+        : file?.trackOverrides?.[trackId]?.measuredDelay;
+      if (!file || !measured) return;
+
+      // Rebuild the minimal result the writer needs from what was stored, so
+      // this path shares the same conversion as an ordinary measurement.
+      onAudioFilesChange(
+        audioFiles.map((candidate) =>
+          candidate.id === fileId
+            ? applyMeasurement({
+                file: candidate,
+                result: {
+                  videoFile: "",
+                  audioFile: candidate.name,
+                  delayMs: measured.engineDelayMs,
+                  delayAtStartMs: null,
+                  confidence: measured.confidence,
+                  driftMsPerS: measured.driftMsPerS,
+                  totalDriftMs: null,
+                  hasSignificantDrift: measured.hasSignificantDrift,
+                  startDelayMs: null,
+                  endDelayMs: null,
+                  windowsUsed: null,
+                  windowsTotal: null,
+                  error: null,
+                  elapsedMs: null,
+                  isLikelyCut: measured.isLikelyCut,
+                  isRateMismatch: measured.isRateMismatch,
+                  primaryFps: measured.primaryFps,
+                },
+                trackId,
+                referenceTrack: measured.referenceTrack,
+                measuredAt: measured.measuredAt,
+                allowCut: true,
+                force: true,
+              })
+            : candidate,
+        ),
+      );
+      toast({
+        title: "Delay applied",
+        description: "The measured delay was applied despite the different-cut warning.",
+      });
+    },
+    [audioFiles, onAudioFilesChange],
+  );
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [trackToDelete, setTrackToDelete] = useState<string | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -464,8 +560,9 @@ export function AudiosTab({
           .filter(({ i }) => selSubIdx.has(i))
           .map(({ id }) => id)
           .filter((id) => Number.isFinite(id));
+        const base = file.delay !== delayValue ? markDelayAsManual(file, null) : file;
         return {
-          ...file,
+          ...base,
           language: editForm.language,
           trackName: editForm.trackName,
           delay: delayValue,
@@ -491,8 +588,11 @@ export function AudiosTab({
 
     let updated = audioFiles.map((file) => {
       if (file.id === editingFileId) {
+        // Only a changed delay counts as hand-typed. Saving the dialog without
+        // touching it must not lock the field against a later measurement.
+        const base = file.delay !== delayValue ? markDelayAsManual(file, null) : file;
         return {
-          ...file,
+          ...base,
           trackName: editForm.trackName,
           language: editForm.language,
           delay: delayValue,
@@ -505,12 +605,14 @@ export function AudiosTab({
           includedSubtitlesDefault: editForm.includeSubtitles && editForm.includedSubtitlesDefault,
           includedSubtitlesForced: editForm.includeSubtitles && editForm.includedSubtitlesForced,
           includedSubtitlesFirst: editForm.includeSubtitles && editForm.includedSubtitlesFirst,
-          trackOverrides: file.trackOverrides,
+          trackOverrides: base.trackOverrides,
           isManuallyEdited: true,
         };
       }
       if (editForm.applyDelayToAll) {
-        return { ...file, delay: delayValue };
+        return file.delay !== delayValue
+          ? { ...markDelayAsManual(file, null), delay: delayValue }
+          : file;
       }
       return file;
     });
@@ -589,13 +691,18 @@ export function AudiosTab({
       updates.trackName !== undefined ? updates.trackName : trackEditForm.trackName;
 
     applyTrackChangesToDuplicateFiles(fileId, (file) => {
-      const nextOverrides = { ...(file.trackOverrides || {}) };
+      const previous = file.trackOverrides?.[trackId];
+      // A changed delay is hand-typed, and clears the measurement it replaces;
+      // an unchanged one leaves the existing provenance and metadata intact.
+      const source = previous?.delay !== nextDelay ? markDelayAsManual(file, trackId) : file;
+      const nextOverrides = { ...(source.trackOverrides || {}) };
       nextOverrides[trackId] = {
+        ...nextOverrides[trackId],
         language: nextLanguage || undefined,
         delay: nextDelay,
         trackName: nextName || undefined,
       };
-      return { ...file, trackOverrides: nextOverrides, isManuallyEdited: true };
+      return { ...source, trackOverrides: nextOverrides, isManuallyEdited: true };
     });
   };
 
@@ -609,9 +716,14 @@ export function AudiosTab({
         if (!Number.isFinite(trackId)) return;
         const nextDelay = Number(multiDelayValues[trackId]) || 0;
         const prev = nextOverrides[trackId] || {};
+        const changed = prev.delay !== nextDelay;
         nextOverrides[trackId] = {
           ...prev,
           delay: nextDelay,
+          // Typing a delay here overrides any measurement for that track.
+          ...(changed
+            ? { delayProvenance: "manual" as const, measuredDelay: undefined }
+            : {}),
         };
       });
       return {
@@ -903,6 +1015,53 @@ export function AudiosTab({
             )}
           </div>
           <div className="track-selector-actions">
+            {isMeasuring ? (
+              <>
+                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                  {measureProgress
+                    ? `Measuring ${measureProgress.processed} of ${measureProgress.total}${
+                        measureProgress.current ? ` — ${measureProgress.current}` : ""
+                      }`
+                    : "Measuring…"}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-2"
+                  onClick={cancelMeasuring}
+                >
+                  <Ban className="w-4 h-4" />
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    {/* A span keeps the tooltip reachable while the button is
+                        disabled, which is exactly when the reason matters. */}
+                    <span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-2"
+                        disabled={!measurementAvailable || audioFiles.length === 0}
+                        onClick={() => startMeasuring()}
+                      >
+                        <Gauge className="w-4 h-4" />
+                        Measure delays
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    {audiosyncEngine?.message ??
+                      (audioFiles.length === 0
+                        ? "Add audio files to measure their delays."
+                        : "Measure each audio file's delay against the video it will be muxed into.")}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -1071,6 +1230,15 @@ export function AudiosTab({
         </div>
       </div>
 
+      {measurementAvailable && (
+        <ReferenceTrackPicker
+          videos={videoFiles}
+          value={referenceTrackByVideoId}
+          onChange={setReferenceTrackByVideoId}
+          disabled={isMeasuring}
+        />
+      )}
+
       {/* Matching Panel */}
       <div className="workspace-split flex-1 grid grid-cols-[minmax(400px,1fr)_minmax(400px,1fr)] gap-4 min-h-0 overflow-x-auto">
         {/* Video Files Card */}
@@ -1194,8 +1362,52 @@ export function AudiosTab({
                     <span className="media-row-index">{index + 1}</span>
                     <div className="min-w-0 flex-1">
                       <div className="media-row-name">{file.name}</div>
+                      {file.measuredDelay && (
+                        <>
+                          <MeasuredDelayInfo
+                            measured={file.measuredDelay}
+                            onApplyAnyway={
+                              file.measuredDelay.isLikelyCut
+                                ? () => applyCutDelayAnyway(file.id, null)
+                                : undefined
+                            }
+                          />
+                          <div onClick={(event) => event.stopPropagation()}>
+                            <StretchToggle
+                              id={`stretch-${file.id}`}
+                              measured={file.measuredDelay}
+                              value={file.stretch}
+                              disabled={isMeasuring}
+                              onChange={(next) => setStretchForFile(file.id, next)}
+                            />
+                          </div>
+                        </>
+                      )}
                     </div>
                     <div className="media-row-actions">
+                      {measurementAvailable && (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="file-action-btn file-action-btn--muted"
+                                disabled={isMeasuring}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  remeasureFile(file.id);
+                                }}
+                              >
+                                <Gauge className="w-3.5 h-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {file.measuredDelay ? "Re-measure delay" : "Measure delay"}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
                       <Button
                         variant="ghost"
                         size="icon"

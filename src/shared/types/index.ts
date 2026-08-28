@@ -1,3 +1,7 @@
+import type { DelayProvenance, MeasuredDelay, StretchSetting } from "./audiosync";
+
+export type { DelayProvenance, MeasuredDelay, StretchSetting };
+
 export interface VideoFile {
   id: string;
   name: string;
@@ -48,9 +52,27 @@ export interface ExternalFile {
   includedSubtitlesDefault?: boolean;
   includedSubtitlesForced?: boolean;
   includedSubtitlesFirst?: boolean;
-  trackOverrides?: Record<number, { language?: string; delay?: number; trackName?: string }>;
+  trackOverrides?: Record<
+    number,
+    {
+      language?: string;
+      delay?: number;
+      trackName?: string;
+      stretch?: StretchSetting;
+      measuredDelay?: MeasuredDelay;
+      delayProvenance?: DelayProvenance;
+    }
+  >;
   muxAfter?: string;
   isManuallyEdited?: boolean;
+  /** What a measurement produced for this file, kept so the row can keep
+   *  explaining itself after a reload. Every field below is optional: sessions
+   *  and presets saved before measurement existed must still load. */
+  measuredDelay?: MeasuredDelay;
+  /** Where `delay` came from. Absent is treated as 'none'. */
+  delayProvenance?: DelayProvenance;
+  /** Opt-in linear stretch for a frame-rate-converted track. */
+  stretch?: StretchSetting;
 }
 
 export interface OutputSettings {
