@@ -234,11 +234,31 @@ jobs:
           # the version matches rather than sleeping a guessed interval.
           $manifest = $null
           foreach ($attempt in 1..10) {
-            $raw = (Invoke-WebRequest -Uri $endpoint -UseBasicParsing).Content
-            if ($raw[0] -eq [char]0xFEFF) {
+            # .Content can come back as a byte array rather than a string, in
+            # which case indexing it yields a byte and every field parses as
+            # empty. Decode explicitly so the BOM check tests characters.
+            $response = Invoke-WebRequest -Uri $endpoint -UseBasicParsing
+            $raw = if ($response.Content -is [byte[]]) {
+              [System.Text.Encoding]::UTF8.GetString($response.Content)
+            } else {
+              [string]$response.Content
+            }
+
+            if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) {
               Write-Error "latest.json starts with a BOM; the updater cannot parse it."
               exit 1
             }
+
+            # Fail loudly on a body that is not the manifest at all, rather
+            # than letting ConvertFrom-Json yield empty fields that read as a
+            # stale release and burn every retry.
+            if ($raw -notmatch '"version"') {
+              Write-Host "Attempt ${attempt}: response did not look like the manifest. First 200 chars:"
+              Write-Host $raw.Substring(0, [Math]::Min(200, $raw.Length))
+              Start-Sleep -Seconds 6
+              continue
+            }
+
             $candidate = $raw | ConvertFrom-Json
             if ($candidate.version -eq $expected) { $manifest = $candidate; break }
             Write-Host "Attempt ${attempt}: served version '$($candidate.version)', waiting for '$expected'."
