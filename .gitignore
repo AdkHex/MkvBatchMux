@@ -28,3 +28,11 @@ Thumbs.db
 # Build it with `npm run fetch-engine`.
 src-tauri/resources/engine/*
 !src-tauri/resources/engine/README.md
+
+# Bundled ffmpeg/ffprobe: downloaded build artifacts, not source.
+# Fetch them with `npm run fetch-ffmpeg`.
+src-tauri/resources/ffmpeg/*
+!src-tauri/resources/ffmpeg/README.md
+
+# Editor session scratch (screenshots, transcripts)
+.nimbalyst/

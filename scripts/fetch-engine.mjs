@@ -52,9 +52,14 @@ function resolveRepo() {
   );
 }
 
+/** Clear a previous build but keep the committed README, which is what holds
+ *  the directory in git for checkouts that never build the engine. */
 function emptyDestination() {
-  fs.rmSync(destination, { recursive: true, force: true });
   fs.mkdirSync(destination, { recursive: true });
+  for (const entry of fs.readdirSync(destination)) {
+    if (entry === "README.md") continue;
+    fs.rmSync(path.join(destination, entry), { recursive: true, force: true });
+  }
 }
 
 function copyTree(from, to) {

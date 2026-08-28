@@ -43,7 +43,8 @@
         "icons/icon.ico"
       ],
       "resources": [
-        "resources/engine"
+        "resources/engine",
+        "resources/ffmpeg"
       ],
       "active": true
     },

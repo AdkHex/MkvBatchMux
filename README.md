@@ -23,29 +23,41 @@ A desktop app for scanning MKV collections and batch muxing with a premium, focu
 - MKVToolNix (for `mkvmerge` / `mkvpropedit`)
 - MediaInfo CLI (for `mediainfo`)
 
-### Optional: delay measurement
+Installed builds need nothing else: the delay-measurement dependencies are
+bundled into the installer (see below).
+
+### Delay measurement
+
 The **Measure delays** action measures each external audio track's offset
 against the video it will be muxed into, and fills in the delay field for you.
-It needs two things:
+It needs FFmpeg (`ffmpeg` and `ffprobe`) and the AudioSync analysis engine.
 
-- **FFmpeg** on your PATH (both `ffmpeg` and `ffprobe`). Detected, not bundled.
-- **The AudioSync engine**, built from the
-  [AudioSyncMaster](https://github.com/AdkHex/AudioSyncMaster) checkout:
+**Installed builds ship both**, so the feature works on a machine that has
+never installed FFmpeg. CI fetches them before bundling and fails the build if
+either is missing, so a release can never go out with the feature quietly
+disabled.
 
-  ```bash
-  npm run fetch-engine                              # uses ../AudioSyncMaster
-  AUDIOSYNC_REPO=/path/to/AudioSyncMaster npm run fetch-engine
-  AUDIOSYNC_ENGINE_DIR=/path/to/prebuilt npm run fetch-engine
-  ```
+In a development checkout neither is present by default. The app falls back to
+whatever `ffmpeg`/`ffprobe` are on your PATH, and to running AudioSyncMaster's
+`python/bridge.py` directly, so the feature is usable without a PyInstaller
+build. To mirror a release build locally:
 
-  This builds the engine into `src-tauri/resources/engine/`, which is a build
-  artifact and is not committed. The engine is built from that repo rather than
-  vendored here so it does not diverge from the fixes made there.
+```bash
+npm run fetch-ffmpeg                              # downloads a static build
+FFMPEG_DIR=/path/to/bin npm run fetch-ffmpeg      # or copy from a local dir
 
-Without either one the button is disabled and explains what is missing;
-everything else in the app works normally. In development, if no built engine
-is present, the app falls back to running the checkout's `python/bridge.py`
-directly, so the feature is usable without a PyInstaller build.
+npm run fetch-engine                              # uses ../AudioSyncMaster
+AUDIOSYNC_REPO=/path/to/AudioSyncMaster npm run fetch-engine
+AUDIOSYNC_ENGINE_DIR=/path/to/prebuilt npm run fetch-engine
+```
+
+These write into `src-tauri/resources/ffmpeg/` and `src-tauri/resources/engine/`.
+Both are build artifacts and are not committed. The engine is built from
+[AudioSyncMaster](https://github.com/AdkHex/AudioSyncMaster) rather than
+vendored here so it does not diverge from the fixes made there.
+
+A bundled FFmpeg takes precedence over one on your PATH: it is the version the
+app was tested against.
 
 ### Windows extras (MSI installer)
 - WiX Toolset (required to build `.msi`)

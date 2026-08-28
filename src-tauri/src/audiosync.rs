@@ -23,13 +23,55 @@ use tauri::{AppHandle, Manager};
 use crate::hidden_command;
 
 static FFMPEG_AVAILABLE: OnceLock<bool> = OnceLock::new();
+static FFMPEG_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-/// Mirrors `mediainfo_available()` / `mkvmerge_available()` in main.rs.
-pub fn ffmpeg_available() -> bool {
+/// Directory holding the bundled ffmpeg/ffprobe, if this build shipped them.
+///
+/// The installer bundles them under `resources/ffmpeg` so delay measurement
+/// works on a machine that has never installed FFmpeg. A user's own PATH copy
+/// is still honoured as a fallback (and in dev builds, where nothing is
+/// bundled), but the bundled pair wins: it is the version this app was tested
+/// against.
+fn bundled_ffmpeg_dir(app: &AppHandle) -> Option<PathBuf> {
+    FFMPEG_DIR
+        .get_or_init(|| {
+            let dir = app.path_resolver().resolve_resource("resources/ffmpeg")?;
+            let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+            let probe = if cfg!(windows) {
+                "ffprobe.exe"
+            } else {
+                "ffprobe"
+            };
+            // Only claim the directory when *both* tools are present: the engine
+            // needs ffprobe as much as ffmpeg, and a half-populated resource
+            // folder would fail later with a much more confusing error.
+            (dir.join(exe).is_file() && dir.join(probe).is_file()).then_some(dir)
+        })
+        .clone()
+}
+
+/// Absolute path to a bundled tool, else the bare name for PATH lookup.
+pub fn ffmpeg_tool(app: &AppHandle, tool: &str) -> String {
+    let name = if cfg!(windows) {
+        format!("{tool}.exe")
+    } else {
+        tool.to_string()
+    };
+    match bundled_ffmpeg_dir(app) {
+        Some(dir) => dir.join(&name).to_string_lossy().to_string(),
+        None => tool.to_string(),
+    }
+}
+
+/// Mirrors `mediainfo_available()` / `mkvmerge_available()` in main.rs, but
+/// checks the bundled copies first so a fresh install reports available.
+pub fn ffmpeg_available_for(app: &AppHandle) -> bool {
     *FFMPEG_AVAILABLE.get_or_init(|| {
-        crate::tool_available("ffmpeg", "-version") && crate::tool_available("ffprobe", "-version")
+        crate::tool_available(&ffmpeg_tool(app, "ffmpeg"), "-version")
+            && crate::tool_available(&ffmpeg_tool(app, "ffprobe"), "-version")
     })
 }
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -359,12 +401,32 @@ fn find_python(repo_root: &std::path::Path) -> PathBuf {
 
 /// Build the command that starts the engine, preferring the bundled sidecar.
 /// Returns the command and a human-readable description for the log.
+/// Prepend the bundled ffmpeg directory to the child's PATH.
+///
+/// The engine shells out to ffmpeg/ffprobe by bare name, so bundling the
+/// binaries is not enough on its own -- the child has to be able to find them.
+/// Prepending (rather than replacing) means a user's own FFmpeg still works if
+/// nothing is bundled, and the tested pair wins when it is.
+fn apply_ffmpeg_path(app: &AppHandle, command: &mut Command) {
+    let Some(dir) = bundled_ffmpeg_dir(app) else {
+        return;
+    };
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut entries = vec![dir];
+    entries.extend(std::env::split_paths(&existing));
+    if let Ok(joined) = std::env::join_paths(entries) {
+        command.env("PATH", joined);
+    }
+}
+
 fn build_command(app: &AppHandle) -> Result<(Command, String), String> {
     if let Some(sidecar) = find_sidecar(app) {
         let described = sidecar.to_string_lossy().to_string();
         // hidden_command applies CREATE_NO_WINDOW on Windows; without it a
         // console window flashes on every run.
-        return Ok((hidden_command(&described), described));
+        let mut command = hidden_command(&described);
+        apply_ffmpeg_path(app, &mut command);
+        return Ok((command, described));
     }
 
     if let Some(script) = dev_bridge_script() {
@@ -383,6 +445,7 @@ fn build_command(app: &AppHandle) -> Result<(Command, String), String> {
         command.arg(&script);
         // Run from the repo root so the engine resolves its own package.
         command.current_dir(&repo_root);
+        apply_ffmpeg_path(app, &mut command);
         return Ok((command, described));
     }
 
@@ -398,7 +461,7 @@ pub fn audiosync_engine_status(
     app: AppHandle,
     engine: tauri::State<'_, EngineHandle>,
 ) -> EngineStatus {
-    let ffmpeg = ffmpeg_available();
+    let ffmpeg = ffmpeg_available_for(&app);
     let located = find_sidecar(&app)
         .map(|p| p.to_string_lossy().to_string())
         .or_else(|| {
@@ -514,7 +577,7 @@ pub fn measure_delays_start(
     engine: tauri::State<'_, EngineHandle>,
     request: MeasureStartRequest,
 ) -> Result<(), String> {
-    if !ffmpeg_available() {
+    if !ffmpeg_available_for(&app) {
         return Err(
             "FFmpeg was not found. Install FFmpeg and make sure ffmpeg and ffprobe are on your PATH."
                 .to_string(),
