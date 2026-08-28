@@ -82,6 +82,12 @@ function shouldSkip(file: ExternalFile): boolean {
   if (file.delayProvenance === "manual") return true;
   // Already measured: re-measuring is an explicit, separate action.
   if (file.delayProvenance === "measured") return true;
+  // Already attempted and withheld -- a failure, a cut, or a result too large
+  // to be a delay. Retrying changes nothing about the files, but a correlator
+  // with no true peak to find returns a different arbitrary answer each time,
+  // so pressing the button again looked like the engine was unstable. The
+  // per-row re-measure still forces a retry.
+  if (file.measuredDelay) return true;
   return false;
 }
 
@@ -115,99 +121,103 @@ export function buildMeasurementPlan({
       return;
     }
 
-    const primaryTrack = referenceTrackByVideoId[video.id] ?? defaultReferenceTrack(video);
-
-    // A multi-track external file needs one measurement per included track:
-    // each track can carry its own offset, and main.rs already prefers a
-    // per-track delay over the file-level one.
     const includedTracks = includedAudioTrackIndices(file);
 
-    if (includedTracks.length <= 1) {
-      measurements.push({
-        pair: {
-          primaryPath: video.path,
-          secondaryPath: file.path,
-          key: measurementKey(file.id, null),
-          method: "mkvbatchmux",
-          score: 1,
-          // An explicit reference choice wins here: with a single track the
-          // user's selection is unambiguous, and language matching is only a
-          // fallback for when they have not chosen one.
-          primaryTrack:
-            referenceTrackByVideoId[video.id] ??
-            (includedTracks[0]
-              ? matchingReferenceTrack(video, file, includedTracks[0].trackId)
-              : null) ??
-            primaryTrack,
-          secondaryTrack: includedTracks[0]?.streamIndex ?? 0,
-        },
-        audioFileId: file.id,
-        trackId: null,
-        videoId: video.id,
-        videoName: video.name,
-        audioName: file.name,
-      });
-      return;
-    }
+    // One measurement per file, not per track.
+    //
+    // Every audio track inside an external file was muxed into that container
+    // on one timeline, so they all sit at the same offset from the video --
+    // and main.rs falls back to the file-level delay for any track without its
+    // own, so a single answer already covers them all.
+    //
+    // Measuring each track separately asked a much harder question than
+    // necessary: a Korean dub against a *different encode* of the same Korean
+    // audio shares no waveform detail, and produced "no distinct correlation
+    // peak" or a confident wrong answer, while the easy Hindi-against-Hindi
+    // comparison that answers the question was never surfaced.
+    const chosen = chooseMeasurementTracks(video, file, includedTracks, referenceTrackByVideoId);
 
-    includedTracks.forEach((track) => {
-      measurements.push({
-        pair: {
-          primaryPath: video.path,
-          secondaryPath: file.path,
-          key: measurementKey(file.id, track.trackId),
-          method: "mkvbatchmux",
-          score: 1,
-          // Each track is compared against the video track that carries the
-          // same language where one exists, rather than all of them against
-          // one reference. Correlation works by matching waveforms, so a
-          // Korean track measured against the video's Hindi has no true peak
-          // to find -- and the correlator returns whatever fit best, with the
-          // windows agreeing on it and reporting high confidence.
-          primaryTrack: matchingReferenceTrack(video, file, track.trackId) ?? primaryTrack,
-          secondaryTrack: track.streamIndex,
-        },
-        audioFileId: file.id,
-        trackId: track.trackId,
-        videoId: video.id,
-        videoName: video.name,
-        audioName: file.name,
-      });
+    measurements.push({
+      pair: {
+        primaryPath: video.path,
+        secondaryPath: file.path,
+        key: measurementKey(file.id, null),
+        method: "mkvbatchmux",
+        score: 1,
+        primaryTrack: chosen.primaryTrack,
+        secondaryTrack: chosen.secondaryTrack,
+      },
+      audioFileId: file.id,
+      trackId: null,
+      videoId: video.id,
+      videoName: video.name,
+      audioName: file.name,
     });
   });
 
   return { measurements, unmatched, skipped };
 }
 
-/** The video audio stream that speaks the same language as an external track.
+/** Pick the one track pair a file's measurement should be taken from.
  *
- *  Returns an audio-relative index for the engine, or null when the video has
- *  no track in that language -- in which case the caller falls back to the
- *  chosen reference, since measuring against something is better than not
- *  measuring at all, and the magnitude guard catches a nonsense result.
+ *  Correlation compares waveforms, so the pair most likely to succeed is the
+ *  one carrying the same language -- ideally the same recording. Preference
+ *  order, best first:
  *
- *  Only used when the external file has several tracks. With one track the
- *  user's reference choice is unambiguous and is respected as-is.
+ *  1. An explicit reference choice, paired with the external track in that
+ *     same language. The user's choice is a statement about the video; the
+ *     language link picks the external side that can actually match it.
+ *  2. Any language shared by both files, first match wins.
+ *  3. First audio of each, which is what AudioSyncMaster itself uses and what
+ *     works for the common single-dub case.
  */
-export function matchingReferenceTrack(
+function chooseMeasurementTracks(
   video: VideoFile,
   file: ExternalFile,
-  trackId: number,
-): number | null {
-  const externalTrack = (file.tracks ?? []).find(
-    (track) => track.type === "audio" && Number(track.id) === trackId,
-  );
-  const language = normalizeLanguage(
-    // A per-track override wins: it is what the user says this track is.
-    file.trackOverrides?.[trackId]?.language ?? externalTrack?.language,
-  );
-  if (!language) return null;
+  includedTracks: Array<{ trackId: number; streamIndex: number }>,
+  referenceTrackByVideoId: Record<string, number>,
+): { primaryTrack: number; secondaryTrack: number } {
+  const fallback = {
+    primaryTrack: referenceTrackByVideoId[video.id] ?? defaultReferenceTrack(video),
+    secondaryTrack: includedTracks[0]?.streamIndex ?? 0,
+  };
 
   const videoAudio = (video.tracks ?? []).filter((track) => track.type === "audio");
-  const index = videoAudio.findIndex(
-    (track) => normalizeLanguage(track.language) === language,
-  );
-  return index >= 0 ? index : null;
+  const externalLanguage = (trackId: number) =>
+    normalizeLanguage(
+      // A per-track override wins: it is what the user says this track is.
+      file.trackOverrides?.[trackId]?.language ??
+        (file.tracks ?? []).find(
+          (track) => track.type === "audio" && Number(track.id) === trackId,
+        )?.language ??
+        // A single-track file often carries the language on the file itself.
+        (includedTracks.length === 1 ? file.language : undefined),
+    );
+
+  const explicit = referenceTrackByVideoId[video.id];
+  if (explicit !== undefined) {
+    const wanted = normalizeLanguage(videoAudio[explicit]?.language);
+    if (wanted) {
+      const match = includedTracks.find((track) => externalLanguage(track.trackId) === wanted);
+      if (match) {
+        return { primaryTrack: explicit, secondaryTrack: match.streamIndex };
+      }
+    }
+    return fallback;
+  }
+
+  for (const track of includedTracks) {
+    const language = externalLanguage(track.trackId);
+    if (!language) continue;
+    const index = videoAudio.findIndex(
+      (candidate) => normalizeLanguage(candidate.language) === language,
+    );
+    if (index >= 0) {
+      return { primaryTrack: index, secondaryTrack: track.streamIndex };
+    }
+  }
+
+  return fallback;
 }
 
 /** Language codes vary in case and in the 2- vs 3-letter form between tools. */

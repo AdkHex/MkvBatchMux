@@ -155,7 +155,12 @@ describe("buildMeasurementPlan", () => {
     expect(plan.measurements).toHaveLength(1);
   });
 
-  it("measures each included track of a multi-track file separately", () => {
+  it("measures a multi-track file once, not once per track", () => {
+    // Every track inside one external file shares that container's timeline,
+    // so they share an offset -- and the mux falls back to the file-level
+    // delay for any track without its own. Measuring each separately asked
+    // the correlator to match a dub against a different encode of the same
+    // language, which routinely found no peak at all.
     const videos = [makeVideo("v1", "Show - 01.mkv")];
     const audios = [
       makeAudio("a1", "Show - 01.mka", {
@@ -166,11 +171,12 @@ describe("buildMeasurementPlan", () => {
 
     const plan = buildMeasurementPlan({ videoFiles: videos, audioFiles: audios });
 
-    expect(plan.measurements).toHaveLength(2);
-    expect(plan.measurements.map((m) => m.trackId)).toEqual([0, 2]);
+    expect(plan.measurements).toHaveLength(1);
+    // Written to the file, not to a per-track override.
+    expect(plan.measurements[0].trackId).toBeNull();
     // secondaryTrack counts audio streams from zero, which is what the engine
     // expects -- not this app's track id.
-    expect(plan.measurements.map((m) => m.pair.secondaryTrack)).toEqual([0, 2]);
+    expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
   });
 
   it("uses the video's default audio track as the reference", () => {
@@ -234,28 +240,27 @@ describe("choosing the reference track per external track", () => {
     language,
   });
 
-  it("measures each track against the video track in its own language", () => {
-    // Regression: every track of a multi-track file was measured against one
-    // reference, so a Korean track was compared with the video's Hindi. Two
-    // languages share no waveform, so the correlator found no true peak and
-    // returned whatever fit best -- consistently, and at high confidence,
-    // because every sample window agreed on the same wrong answer.
+  it("compares a shared language rather than whatever is first", () => {
+    // Regression: a Korean track was measured against the video's Hindi.
+    // Two languages share no waveform, so the correlator had no true peak to
+    // find and returned whatever fit best -- at high confidence, because every
+    // sample window agreed on the same wrong answer.
     const video = makeVideo("v1", "Ep01.mkv", [
-      langTrack("0", "hin"),
+      langTrack("0", "jpn"),
       langTrack("1", "kor"),
     ]);
     const audio = makeAudio("a1", "Ep01.mkv", {
       matchedVideoId: "v1",
-      tracks: [langTrack("0", "hin"), langTrack("1", "kor")],
-      includedTrackIds: [0, 1],
+      tracks: [langTrack("0", "kor")],
+      includedTrackIds: [0],
     });
 
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
-    expect(plan.measurements).toHaveLength(2);
-    // Hindi against Hindi, Korean against Korean.
-    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
-    expect(plan.measurements[1].pair.primaryTrack).toBe(1);
+    expect(plan.measurements).toHaveLength(1);
+    // Korean against Korean, not against the video's first track.
+    expect(plan.measurements[0].pair.primaryTrack).toBe(1);
+    expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
   });
 
   it("falls back to the reference when the video has no matching language", () => {
@@ -294,6 +299,7 @@ describe("choosing the reference track per external track", () => {
   });
 
   it("ignores und, which says nothing about the language", () => {
+    // und on both sides is not a match; the kor pair is.
     const video = makeVideo("v1", "Ep01.mkv", [
       langTrack("0", "und"),
       langTrack("1", "kor"),
@@ -306,7 +312,64 @@ describe("choosing the reference track per external track", () => {
 
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
-    expect(plan.measurements[0].pair.primaryTrack).toBe(0); // fallback
-    expect(plan.measurements[1].pair.primaryTrack).toBe(1); // matched on kor
+    expect(plan.measurements).toHaveLength(1);
+    expect(plan.measurements[0].pair.primaryTrack).toBe(1);
+    expect(plan.measurements[0].pair.secondaryTrack).toBe(1);
+  });
+});
+
+describe("re-running a bulk measurement", () => {
+  const measured = {
+    engineDelayMs: 8695.9,
+    appliedMs: -8696,
+    confidence: 0.9,
+    driftMsPerS: null,
+    hasSignificantDrift: false,
+    isRateMismatch: false,
+    isLikelyCut: true,
+    correctionRatio: null,
+    rateSourceFps: null,
+    rateTargetFps: null,
+    rateExplanation: null,
+    referenceTrack: 0,
+    primaryFps: 23.976,
+    measuredAt: "2026-08-28T00:00:00.000Z",
+    error: null,
+  };
+
+  it("does not retry a file whose measurement was withheld", () => {
+    // Regression: a withheld result leaves delayProvenance at "none", so the
+    // next bulk pass measured it again -- and a correlator with no true peak
+    // returns a different arbitrary answer each time. One episode read
+    // +8695.9 ms at 90% and then -96.2 ms at 46% on identical files, which
+    // looked like the engine was unstable.
+    const video = makeVideo("v1", "Ep01.mkv");
+    const audio = makeAudio("a1", "Ep01.mka", {
+      matchedVideoId: "v1",
+      delayProvenance: "none",
+      measuredDelay: measured,
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements).toHaveLength(0);
+    expect(plan.skipped.map((file) => file.id)).toEqual(["a1"]);
+  });
+
+  it("still retries when the row explicitly asks for it", () => {
+    const video = makeVideo("v1", "Ep01.mkv");
+    const audio = makeAudio("a1", "Ep01.mka", {
+      matchedVideoId: "v1",
+      delayProvenance: "none",
+      measuredDelay: measured,
+    });
+
+    const plan = buildMeasurementPlan({
+      videoFiles: [video],
+      audioFiles: [audio],
+      force: true,
+    });
+
+    expect(plan.measurements).toHaveLength(1);
   });
 });
