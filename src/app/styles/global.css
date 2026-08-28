@@ -864,24 +864,49 @@
   }
 
   /* Video and audio rows sit side by side in the split panes, so they share
-     height, gutters and type -- otherwise the two lists visibly disagree. */
+     height, gutters and type -- otherwise the two lists visibly disagree.
+     Both truncate rather than growing to fit: `w-max` here made long names
+     force a horizontal scrollbar in the left pane only, and that scrollbar
+     consumed vertical space, so row N no longer lined up with row N. */
   .file-item-video {
-    @apply table-row px-3 cursor-pointer transition-colors font-mono w-max min-w-full;
+    @apply px-3 cursor-pointer transition-colors font-mono w-full min-w-0;
     display: grid;
-    grid-template-columns: 22px max-content;
-    align-items: center;
+    grid-template-columns: 22px minmax(0, 1fr);
+    align-items: start;
     column-gap: 12px;
     min-height: 34px;
-    white-space: nowrap;
+    /* Must match .file-item-audio exactly: the two lists sit side by side and
+       any difference in the box model puts row N of one beside row N±1 of the
+       other. */
+    padding-top: 7px;
+    padding-bottom: 7px;
+    border-left: 2px solid transparent;
   }
 
+  .file-item-video:hover {
+    background: hsl(var(--hover));
+  }
+
+  .file-item-video.selected {
+    background: hsl(var(--selection));
+    border-left-color: hsl(var(--selection-border));
+  }
+
+  /* start, not center: a measured row grows to carry its delay readout and
+     stretch toggle, and centring would drag the handle and index off the
+     filename they label. */
   .file-item-audio {
     @apply px-3 cursor-pointer transition-colors font-mono w-full min-w-0;
     display: grid;
     grid-template-columns: 16px 22px minmax(0, 1fr) 88px;
-    align-items: center;
+    align-items: start;
     column-gap: 12px;
     min-height: 34px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+    /* Reserved even when unselected, so selecting a row does not nudge its
+       text sideways by the width of the indicator. */
+    border-left: 2px solid transparent;
     background: transparent;
   }
 

@@ -8,7 +8,10 @@
  *  opening this does not cost a second probe of every file. See plan §5.3b.
  */
 
+import { useState } from "react";
+import { ChevronRight } from "lucide-react";
 import { Button } from "@/shared/ui/button";
+import { cn } from "@/shared/lib/utils";
 import {
   Select,
   SelectContent,
@@ -46,6 +49,7 @@ export function ReferenceTrackPicker({
   onChange,
   disabled,
 }: ReferenceTrackPickerProps) {
+  const [expanded, setExpanded] = useState(false);
   // Only worth showing for videos that actually offer a choice.
   const withChoice = videos.filter(
     (video) => (video.tracks ?? []).filter((track) => track.type === "audio").length > 1,
@@ -67,19 +71,37 @@ export function ReferenceTrackPicker({
   const firstTracks = (first.tracks ?? []).filter((track) => track.type === "audio");
 
   return (
-    <div className="space-y-2 rounded-md border border-border/60 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium">Reference audio track</span>
+    // Collapsed by default: the per-video list is one row per file, which on a
+    // full season took half the window for a setting almost nobody changes.
+    <div className="rounded border border-panel-border">
+      <div className="flex items-center gap-3 px-3 h-10">
+        <button
+          type="button"
+          onClick={() => setExpanded((prev) => !prev)}
+          className="flex items-center gap-2 min-w-0 flex-1 text-left"
+          aria-expanded={expanded}
+        >
+          <ChevronRight
+            className={cn(
+              "w-3.5 h-3.5 shrink-0 text-muted-foreground transition-transform",
+              expanded && "rotate-90",
+            )}
+          />
+          <span className="text-[13px] shrink-0">Reference audio track</span>
+          <span className="text-xs text-muted-foreground truncate">
+            Delays are measured against this track of each video.
+          </span>
+        </button>
         {withChoice.length > 1 && (
-          <div className="flex items-center gap-1">
-            <span className="text-xs text-muted-foreground">Apply to all:</span>
+          <div className="flex items-center gap-1 shrink-0">
+            <span className="text-xs text-muted-foreground">Apply to all</span>
             {firstTracks.map((track, index) => (
               <Button
                 key={track.id}
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-6 px-2 text-xs"
+                className="h-[26px] px-2 text-xs"
                 disabled={disabled}
                 onClick={() => applyToAll(index)}
               >
@@ -89,10 +111,12 @@ export function ReferenceTrackPicker({
           </div>
         )}
       </div>
-      <p className="text-xs text-muted-foreground">
-        Delays are measured against this track of each video.
-      </p>
-      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+      <div
+        className={cn(
+          "space-y-1.5 max-h-48 overflow-y-auto scrollbar-thin px-3 pb-3",
+          !expanded && "hidden",
+        )}
+      >
         {withChoice.map((video) => {
           const audioTracks = (video.tracks ?? []).filter((track) => track.type === "audio");
           const selected = value[video.id] ?? defaultReferenceTrack(video);

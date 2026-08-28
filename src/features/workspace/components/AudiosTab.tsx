@@ -91,6 +91,29 @@ const getSubtitleTrackIds = (file: ExternalFile) =>
     ? file.tracks.filter((t) => t.type === "subtitle").map((t) => Number(t.id)).filter((id) => Number.isFinite(id))
     : [];
 
+/**
+ * Per-track measurement results for a file, in track order.
+ *
+ * A multi-track external file is measured once per included track, and each
+ * result is written to trackOverrides[trackId] rather than to the file. Rows
+ * render file.measuredDelay directly, so without this the results of a batch
+ * were invisible even though the mux used them.
+ */
+const measuredTrackEntries = (file: ExternalFile) => {
+  const overrides = file.trackOverrides;
+  if (!overrides) return [];
+  const audioTracks = (file.tracks ?? []).filter((track) => track.type === "audio");
+
+  return audioTracks
+    .map((track, index) => {
+      const trackId = Number(track.id);
+      const override = overrides[trackId];
+      if (!Number.isFinite(trackId) || !override?.measuredDelay) return null;
+      return { trackId, override, label: `#${index + 1}` };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+};
+
 const getDefaultIncludeSubtitles = (file: ExternalFile) =>
   file.includeSubtitles !== undefined ? file.includeSubtitles : getSubtitleTrackIds(file).length > 0;
 
@@ -1189,7 +1212,7 @@ export function AudiosTab({
       )}
 
       {/* Matching Panel */}
-      <div className="workspace-split flex-1 grid grid-cols-[minmax(400px,1fr)_minmax(400px,1fr)] gap-4 min-h-0 overflow-x-auto">
+      <div className="workspace-split flex-1 grid grid-cols-[minmax(400px,1fr)_minmax(400px,1fr)] gap-4 min-h-0">
         {/* Video Files Card */}
         <div className="panel-card flex flex-col min-h-0 overflow-hidden">
           <div className="panel-card-header">
@@ -1198,7 +1221,7 @@ export function AudiosTab({
               <span className="text-xs font-mono text-muted-foreground">{videoFiles.length}</span>
             </div>
           </div>
-          <div className="flex-1 overflow-auto scrollbar-thin">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
             {visibleVideoFiles.map((file) => {
               const index = videoFiles.findIndex((entry) => entry.id === file.id);
               return (
@@ -1257,7 +1280,7 @@ export function AudiosTab({
               </Button>
             </div>
           </div>
-          <div className="flex-1 overflow-auto scrollbar-thin">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
             {unlinkedCount > 0 && (
               <div className="px-3 py-2 text-xs text-warning border-b border-panel-border bg-warning/8">
                 {unlinkedCount} audio file{unlinkedCount === 1 ? "" : "s"} do not have a matching video row before muxing.
@@ -1296,7 +1319,7 @@ export function AudiosTab({
                       <GripVertical className="w-4 h-4" />
                     </span>
                     <span className="media-row-index">{index + 1}</span>
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1 py-1">
                       <div className="media-row-name">{file.name}</div>
                       {file.measuredDelay && (
                         <>
@@ -1319,6 +1342,28 @@ export function AudiosTab({
                           </div>
                         </>
                       )}
+                      {/* A file with several included tracks is measured once
+                          per track, and each result lands in trackOverrides
+                          rather than on the file. Without this the whole batch
+                          appeared to do nothing: the delays were stored and
+                          used by the mux, but never shown. */}
+                      {measuredTrackEntries(file).map(({ trackId, override, label }) => (
+                        <div key={trackId} className="flex items-start gap-2">
+                          <span className="text-xs text-muted-foreground shrink-0 mt-px">
+                            {label}
+                          </span>
+                          <div className="min-w-0">
+                            <MeasuredDelayInfo
+                              measured={override.measuredDelay!}
+                              onApplyAnyway={
+                                override.measuredDelay!.isLikelyCut
+                                  ? () => applyCutDelayAnyway(file.id, trackId)
+                                  : undefined
+                              }
+                            />
+                          </div>
+                        </div>
+                      ))}
                     </div>
                     <div className="media-row-actions">
                       {measurementAvailable && (

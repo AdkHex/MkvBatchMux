@@ -51,7 +51,7 @@ import { SidebarNav } from "@/shared/components/SidebarNav";
 import { CommandBar } from "@/shared/components/CommandBar";
 import { IconButton } from "@/shared/components/IconButton";
 import { buildMuxJobRequests } from "@/features/workspace/lib/muxJobBuilder";
-import { areVideoFilesEquivalent } from "@/features/workspace/lib/videoCompare";
+import { areVideoListsEquivalent } from "@/features/workspace/lib/videoCompare";
 import type { MuxProgressEvent } from "@/shared/lib/backend";
 import { getUnlinkedExternalFiles } from "@/shared/lib/matchUtils";
 
@@ -838,35 +838,17 @@ const WorkspacePage = () => {
   }, []);
 
   /** Smart video file change handler for add, remove, and modify updates. */
-  const handleVideoFilesChange = useCallback(
-    (newFiles: VideoFile[]) => {
-      const currentIds = new Set(videoFiles.map((v) => v.id));
-      const newIds = new Set(newFiles.map((v) => v.id));
-      const added = newFiles.filter((v) => !currentIds.has(v.id));
-      const removed = videoFiles.filter((v) => !newIds.has(v.id));
-
-      if (added.length > 0 && removed.length === 0) {
-        setVideoFiles((prev) => [...prev, ...added]);
-      } else if (removed.length > 0 && added.length === 0) {
-        const removedIds = new Set(removed.map((file) => file.id));
-        setVideoFiles((prev) => prev.filter((file) => !removedIds.has(file.id)));
-      } else if (added.length === 0 && removed.length === 0) {
-        const modified = newFiles.filter((v) => {
-          const orig = videoFiles.find((o) => o.id === v.id);
-          return orig && !areVideoFilesEquivalent(orig, v);
-        });
-        if (modified.length > 0) {
-          const modifiedById = new Map(modified.map((file) => [file.id, file] as const));
-          setVideoFiles((prev) => prev.map((file) => modifiedById.get(file.id) || file));
-        } else {
-          setVideoFiles(newFiles);
-        }
-      } else {
-        setVideoFiles(newFiles);
-      }
-    },
-    [videoFiles],
-  );
+  // The caller already merged by file identity (path, then name+size), so the
+  // list it hands over is authoritative and simply replaces state.
+  //
+  // This used to diff by `id` and append anything whose id was unseen. A scan
+  // emits each file twice -- once as a pending stub, then again once inspected
+  // -- and the backend mints a fresh id each time. mergeVideoFiles collapses
+  // the pair and keeps the *first* id, so every inspected file read as "added"
+  // and was appended: 16 files became 32.
+  const handleVideoFilesChange = useCallback((newFiles: VideoFile[]) => {
+    setVideoFiles((prev) => (areVideoListsEquivalent(prev, newFiles) ? prev : newFiles));
+  }, []);
 
   const handleNewTrack = useCallback(() => {
     if (activeTab === "subtitles" && window.__subtitlesAddTrack) {

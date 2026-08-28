@@ -34,3 +34,28 @@ export function areVideoFilesEquivalent(a: VideoFile, b: VideoFile) {
     areTracksEquivalent(a.tracks || [], b.tracks || [])
   );
 }
+
+/**
+ * Whether two lists describe the same files in the same order, ignoring `id`.
+ *
+ * Ids are minted per backend call, so the same file inspected twice arrives
+ * with a different id each time. Comparing them would report every scan chunk
+ * as a change and re-render the whole list; comparing what the row actually
+ * displays does not.
+ */
+export function areVideoListsEquivalent(a: VideoFile[], b: VideoFile[]) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((file, index) => {
+    const other = b[index];
+    return (
+      file.name === other.name &&
+      file.path === other.path &&
+      file.size === other.size &&
+      file.duration === other.duration &&
+      file.fps === other.fps &&
+      file.status === other.status &&
+      areTracksEquivalent(file.tracks || [], other.tracks || [])
+    );
+  });
+}

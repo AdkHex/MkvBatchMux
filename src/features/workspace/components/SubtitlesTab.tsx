@@ -954,7 +954,7 @@ export function SubtitlesTab({
       </div>
 
       {/* Matching Panel */}
-      <div className="workspace-split flex-1 grid grid-cols-[minmax(400px,1fr)_minmax(400px,1fr)] gap-4 min-h-0 overflow-x-auto">
+      <div className="workspace-split flex-1 grid grid-cols-[minmax(400px,1fr)_minmax(400px,1fr)] gap-4 min-h-0">
         {/* Video Files Card */}
         <div className="panel-card flex flex-col min-h-0 overflow-hidden">
           <div className="panel-card-header">
@@ -963,7 +963,7 @@ export function SubtitlesTab({
               <span className="text-xs font-mono text-muted-foreground">{videoFiles.length}</span>
             </div>
           </div>
-          <div className="flex-1 overflow-auto scrollbar-thin">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
             {visibleVideoFiles.map((file) => {
               const index = videoFiles.findIndex((entry) => entry.id === file.id);
               return (
@@ -1022,7 +1022,7 @@ export function SubtitlesTab({
               </Button>
             </div>
           </div>
-          <div className="flex-1 overflow-auto scrollbar-thin">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
             {unlinkedCount > 0 && (
               <div className="px-3 py-2 text-xs text-warning border-b border-panel-border bg-warning/8">
                 {unlinkedCount} subtitle file{unlinkedCount === 1 ? "" : "s"} do not have a matching video row before muxing.

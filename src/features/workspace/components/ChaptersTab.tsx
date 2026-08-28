@@ -341,7 +341,7 @@ export function ChaptersTab({
               <span className="text-xs font-mono text-muted-foreground">{videoFiles.length}</span>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
             {visibleVideos.map((file) => {
               const index = videoFiles.findIndex((entry) => entry.id === file.id);
               return (
@@ -434,7 +434,7 @@ export function ChaptersTab({
               <span className="text-xs font-mono text-muted-foreground">{chapterFiles.length}</span>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
             {chapterFiles.length === 0 ? (
               <EmptyState
                 icon={<BookOpen className="w-5 h-5 text-muted-foreground/65" />}
