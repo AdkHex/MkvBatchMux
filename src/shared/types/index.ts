@@ -57,6 +57,8 @@ export interface ExternalFile {
     {
       language?: string;
       delay?: number;
+      /** Per-track equivalent of the file-level pendingDelay. */
+      pendingDelay?: number;
       trackName?: string;
       stretch?: StretchSetting;
       measuredDelay?: MeasuredDelay;
@@ -71,6 +73,9 @@ export interface ExternalFile {
   measuredDelay?: MeasuredDelay;
   /** Where `delay` came from. Absent is treated as 'none'. */
   delayProvenance?: DelayProvenance;
+  /** A measured delay waiting to be accepted. Measuring writes here rather
+   *  than to `delay`, so nothing reaches the mux until the user applies it. */
+  pendingDelay?: number;
   /** Opt-in linear stretch for a frame-rate-converted track. */
   stretch?: StretchSetting;
 }

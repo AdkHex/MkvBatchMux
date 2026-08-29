@@ -140,7 +140,12 @@ export function useMeasureDelays({
           description: "Delays measured before cancelling have been kept.",
         });
       } else {
-        toast({ title: "Measurement complete" });
+        // Measuring no longer writes the delay field, so say what to do next
+        // rather than implying the work is finished.
+        toast({
+          title: "Measurement complete",
+          description: "Review the results, then Apply to fill in the delays.",
+        });
       }
     }).then((un) => unlisteners.push(un));
 
@@ -175,7 +180,7 @@ export function useMeasureDelays({
           plan.unmatched.length > 0
             ? `${plan.unmatched.length} audio file(s) match no video, so there is nothing to measure against.`
             : plan.skipped.length > 0
-              ? "Every audio file already has a delay. Use Re-measure on a row to measure it again."
+              ? "Every audio file has already been measured. Use Re-measure all, or the re-measure button on a row."
               : "Add audio files first.";
         toast({ title: "Nothing to measure", description: reason });
         return;

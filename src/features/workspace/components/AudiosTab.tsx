@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { X, RefreshCw, FolderOpen, ChevronUp, ChevronDown, Plus, Trash2, Copy, AudioLines, Pencil, GripVertical, Gauge, Ban } from "lucide-react";
+import { X, RefreshCw, FolderOpen, ChevronUp, ChevronDown, Plus, Trash2, Copy, AudioLines, Pencil, GripVertical, Gauge, Ban, Check } from "lucide-react";
 import { toast } from "@/shared/hooks/use-toast";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
@@ -36,7 +36,12 @@ import { useMeasureDelays } from "@/features/workspace/hooks/useMeasureDelays";
 import { MeasuredDelayInfo } from "@/features/workspace/components/MeasuredDelayInfo";
 import { StretchToggle } from "@/features/workspace/components/StretchToggle";
 import { ReferenceTrackPicker } from "@/features/workspace/components/ReferenceTrackPicker";
-import { applyMeasurement, markDelayAsManual } from "@/features/workspace/lib/applyMeasurement";
+import {
+  applyMeasurement,
+  applyAllPendingDelays,
+  hasPendingDelay,
+  markDelayAsManual,
+} from "@/features/workspace/lib/applyMeasurement";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/shared/ui/tooltip";
 
 interface AudiosTabProps {
@@ -198,6 +203,42 @@ export function AudiosTab({
   );
 
   /** Apply a delay that cut detection withheld -- a deliberate act, per §5.4. */
+  // How many files have a measurement waiting to be accepted, and how many
+  // have been measured at all -- the first drives the Apply button, the second
+  // decides whether re-measuring is a meaningful offer.
+  const pendingCount = useMemo(
+    () => audioFiles.filter(hasPendingDelay).length,
+    [audioFiles],
+  );
+  const measuredCount = useMemo(
+    () =>
+      audioFiles.filter(
+        (file) =>
+          file.measuredDelay ||
+          Object.values(file.trackOverrides ?? {}).some((o) => o.measuredDelay),
+      ).length,
+    [audioFiles],
+  );
+
+  const applyAllMeasuredDelays = useCallback(() => {
+    const next = audioFiles.map(applyAllPendingDelays);
+    onAudioFilesChange(next);
+    toast({
+      title: `Applied ${pendingCount} ${pendingCount === 1 ? "delay" : "delays"}`,
+      description: "The measured values are now in the delay fields.",
+    });
+  }, [audioFiles, onAudioFilesChange, pendingCount]);
+
+  /** Accept one file's measurement, leaving every other file alone. */
+  const applyOneMeasuredDelay = useCallback(
+    (fileId: string) => {
+      onAudioFilesChange(
+        audioFiles.map((file) => (file.id === fileId ? applyAllPendingDelays(file) : file)),
+      );
+    },
+    [audioFiles, onAudioFilesChange],
+  );
+
   const applyCutDelayAnyway = useCallback(
     (fileId: string, trackId: number | null) => {
       const file = audioFiles.find((candidate) => candidate.id === fileId);
@@ -1089,6 +1130,33 @@ export function AudiosTab({
                 </Tooltip>
               </TooltipProvider>
             )}
+            {/* Measuring no longer fills the delay field, so accepting the
+                results is its own action. Shown only once there is something
+                to accept, so the toolbar stays quiet the rest of the time. */}
+            {pendingCount > 0 && !isMeasuring && (
+              <Button
+                variant="default"
+                size="sm"
+                className="h-[30px] gap-2"
+                onClick={applyAllMeasuredDelays}
+              >
+                <Check className="w-4 h-4" />
+                Apply {pendingCount} {pendingCount === 1 ? "delay" : "delays"}
+              </Button>
+            )}
+            {measuredCount > 0 && !isMeasuring && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-[30px] gap-2"
+                disabled={!measurementAvailable}
+                onClick={() => startMeasuring({ force: true })}
+                title="Measure every file again, including ones already measured"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Re-measure all
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -1382,6 +1450,7 @@ export function AudiosTab({
                         <>
                           <MeasuredDelayInfo
                             measured={file.measuredDelay}
+                            pending={file.pendingDelay !== undefined}
                             onApplyAnyway={
                               file.measuredDelay.isLikelyCut ||
                               Math.abs(file.measuredDelay.engineDelayMs) > MAX_PLAUSIBLE_OFFSET_MS
@@ -1413,6 +1482,7 @@ export function AudiosTab({
                           <div className="min-w-0">
                             <MeasuredDelayInfo
                               measured={override.measuredDelay!}
+                              pending={override.pendingDelay !== undefined}
                               onApplyAnyway={
                                 override.measuredDelay!.isLikelyCut ||
                                 Math.abs(override.measuredDelay!.engineDelayMs) >
@@ -1426,6 +1496,31 @@ export function AudiosTab({
                       ))}
                     </div>
                     <div className="media-row-actions">
+                      {/* Accept just this file's measurement. Sits before the
+                          other actions so the common follow-up to measuring is
+                          the first thing under the cursor. */}
+                      {hasPendingDelay(file) && (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="file-action-btn text-primary"
+                                disabled={isMeasuring}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  applyOneMeasuredDelay(file.id);
+                                }}
+                                aria-label="Apply this measured delay"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Apply this delay only</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
                       {measurementAvailable && (
                         <TooltipProvider>
                           <Tooltip>

@@ -81,17 +81,17 @@ export function applyMeasurement({
   const engineMs = sourceDelayMs(result);
   const delay = writable && engineMs !== null ? engineMsToDelaySeconds(engineMs) : undefined;
 
+  // Measuring records what was found; it does not change the delay field.
+  // Filling it in automatically meant a wrong measurement silently became the
+  // number the mux used, and there was no moment at which the user agreed to
+  // it. `applyMeasuredDelay` is that moment.
+  const pending = writable && delay !== undefined ? delay : undefined;
+
   if (trackId === null) {
     return {
       ...file,
-      // The metadata is stored either way: a withheld delay still needs its
-      // row to explain why nothing was filled in.
       measuredDelay: measured,
-      ...(writable
-        ? { delay, delayProvenance: "measured" as const }
-        : blockedByManual
-          ? {}
-          : { delayProvenance: file.delayProvenance ?? ("none" as const) }),
+      pendingDelay: pending,
     };
   }
 
@@ -103,14 +103,61 @@ export function applyMeasurement({
       [trackId]: {
         ...existingOverride,
         measuredDelay: measured,
-        ...(writable
-          ? { delay, delayProvenance: "measured" as const }
-          : blockedByManual
-            ? {}
-            : {}),
+        pendingDelay: pending,
       },
     },
   };
+}
+
+/** Commit a measured delay into the field the mux reads.
+ *
+ *  Separate from `applyMeasurement` so measuring and accepting are two
+ *  decisions: the engine can be wrong, and a number that reaches the mux
+ *  should be one the user chose.
+ */
+export function applyMeasuredDelay(file: ExternalFile, trackId: number | null): ExternalFile {
+  if (trackId === null) {
+    if (file.pendingDelay === undefined) return file;
+    return {
+      ...file,
+      delay: file.pendingDelay,
+      delayProvenance: "measured",
+      pendingDelay: undefined,
+    };
+  }
+
+  const existing = file.trackOverrides?.[trackId];
+  if (!existing || existing.pendingDelay === undefined) return file;
+  return {
+    ...file,
+    trackOverrides: {
+      ...(file.trackOverrides ?? {}),
+      [trackId]: {
+        ...existing,
+        delay: existing.pendingDelay,
+        delayProvenance: "measured",
+        pendingDelay: undefined,
+      },
+    },
+  };
+}
+
+/** Whether this file has a measured delay waiting to be accepted. */
+export function hasPendingDelay(file: ExternalFile): boolean {
+  if (file.pendingDelay !== undefined) return true;
+  return Object.values(file.trackOverrides ?? {}).some(
+    (override) => override.pendingDelay !== undefined,
+  );
+}
+
+/** Accept every pending delay on a file, including per-track ones. */
+export function applyAllPendingDelays(file: ExternalFile): ExternalFile {
+  let next = applyMeasuredDelay(file, null);
+  for (const key of Object.keys(next.trackOverrides ?? {})) {
+    const trackId = Number(key);
+    if (Number.isFinite(trackId)) next = applyMeasuredDelay(next, trackId);
+  }
+  return next;
 }
 
 /** Mark a delay as hand-typed, clearing the measurement it replaces.

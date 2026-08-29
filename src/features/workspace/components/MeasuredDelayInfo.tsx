@@ -30,9 +30,11 @@ interface MeasuredDelayInfoProps {
   measured: MeasuredDelay;
   /** Offered only for a cut, where no delay was written. */
   onApplyAnyway?: () => void;
+  /** True while this measurement is staged but not yet in the delay field. */
+  pending?: boolean;
 }
 
-export function MeasuredDelayInfo({ measured, onApplyAnyway }: MeasuredDelayInfoProps) {
+export function MeasuredDelayInfo({ measured, onApplyAnyway, pending }: MeasuredDelayInfoProps) {
   const implausible = Math.abs(measured.engineDelayMs) > MAX_PLAUSIBLE_OFFSET_MS;
   if (measured.error) {
     return (
@@ -63,6 +65,14 @@ export function MeasuredDelayInfo({ measured, onApplyAnyway }: MeasuredDelayInfo
 
         {frames && <span className="text-muted-foreground">{frames}</span>}
 
+        {/* Measuring stages a value; the delay field is unchanged until it is
+            applied. Without this the row looked identical either way. */}
+        {pending && (
+          <Badge variant="outline" className="gap-1 border-primary/50 text-primary">
+            Ready to apply
+          </Badge>
+        )}
+
         {/* Checked before the others: a result this large is not a delay, and
             saying "different cut" about it would be a guess at the cause. */}
         {implausible && (
@@ -70,7 +80,7 @@ export function MeasuredDelayInfo({ measured, onApplyAnyway }: MeasuredDelayInfo
             <TooltipTrigger asChild>
               <Badge variant="destructive" className="gap-1">
                 <AlertTriangle className="h-3 w-3" />
-                Not applied
+                Implausible
               </Badge>
             </TooltipTrigger>
             <TooltipContent className="max-w-xs">

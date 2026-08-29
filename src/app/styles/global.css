@@ -799,7 +799,8 @@
 
   .media-row-actions {
     @apply flex items-center gap-1 shrink-0 justify-end pl-2;
-    width: 88px;
+    /* Four 24px buttons plus gaps: apply, re-measure, delete, edit. */
+    width: 116px;
     padding-top: 1px;
   }
 
@@ -905,7 +906,7 @@
      stretch toggle, and centring would drag the handle and index off the
      filename they label. */
   .file-item-audio {
-    grid-template-columns: 16px 22px minmax(0, 1fr) 88px;
+    grid-template-columns: 16px 22px minmax(0, 1fr) 116px;
     background: transparent;
   }
 
@@ -952,7 +953,7 @@
 
   @media (max-width: 1480px) {
     .file-item-audio {
-      grid-template-columns: 16px 22px minmax(0, 1fr) 88px;
+      grid-template-columns: 16px 22px minmax(0, 1fr) 116px;
     }
   }
 }

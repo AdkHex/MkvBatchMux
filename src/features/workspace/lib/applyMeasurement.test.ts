@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ExternalFile } from "@/shared/types";
 import type { SyncResult } from "@/shared/types/audiosync";
-import { applyMeasurement, markDelayAsManual } from "./applyMeasurement";
+import {
+  applyMeasurement,
+  applyMeasuredDelay,
+  applyAllPendingDelays,
+  hasPendingDelay,
+  markDelayAsManual,
+} from "./applyMeasurement";
 
 const MEASURED_AT = "2026-08-28T12:00:00.000Z";
 
@@ -43,10 +49,18 @@ const apply = (file: ExternalFile, result: SyncResult, extra = {}) =>
   });
 
 describe("applyMeasurement", () => {
-  it("writes the negated, rounded delay in seconds", () => {
+  it("stages the negated, rounded delay rather than writing it", () => {
+    // Measuring proposes; applying commits. Filling the field outright meant
+    // a wrong measurement silently became the number the mux used.
     const updated = apply(makeFile(), makeResult({ delayMs: 87.7 }));
-    expect(updated.delay).toBe(-0.088);
-    expect(updated.delayProvenance).toBe("measured");
+    expect(updated.pendingDelay).toBe(-0.088);
+    expect(updated.delay).toBeUndefined();
+    expect(updated.delayProvenance).toBeUndefined();
+
+    const applied = applyMeasuredDelay(updated, null);
+    expect(applied.delay).toBe(-0.088);
+    expect(applied.delayProvenance).toBe("measured");
+    expect(applied.pendingDelay).toBeUndefined();
   });
 
   it("prefers delayAtStartMs, because --sync applies from t=0", () => {
@@ -54,7 +68,7 @@ describe("applyMeasurement", () => {
       makeFile(),
       makeResult({ delayMs: 120, delayAtStartMs: 80, hasSignificantDrift: true }),
     );
-    expect(updated.delay).toBe(-0.08);
+    expect(updated.pendingDelay).toBe(-0.08);
   });
 
   it("stores the metadata the row displays", () => {
@@ -81,12 +95,11 @@ describe("applyMeasurement", () => {
     expect(updated.measuredDelay?.isLikelyCut).toBe(true);
   });
 
-  it("applies a cut result when the user explicitly confirms it", () => {
+  it("stages a cut result when the user explicitly confirms it", () => {
     const updated = apply(makeFile(), makeResult({ delayMs: 87.7, isLikelyCut: true }), {
       allowCut: true,
     });
-    expect(updated.delay).toBe(-0.088);
-    expect(updated.delayProvenance).toBe("measured");
+    expect(updated.pendingDelay).toBe(-0.088);
   });
 
   it("leaves a hand-typed delay untouched", () => {
@@ -97,11 +110,13 @@ describe("applyMeasurement", () => {
     expect(updated.delayProvenance).toBe("manual");
   });
 
-  it("overrides a hand-typed delay only on an explicit re-measure", () => {
+  it("offers to replace a hand-typed delay only on an explicit re-measure", () => {
     const file = makeFile({ delay: -0.5, delayProvenance: "manual" });
     const updated = apply(file, makeResult({ delayMs: 87.7 }), { force: true });
-    expect(updated.delay).toBe(-0.088);
-    expect(updated.delayProvenance).toBe("measured");
+    // The typed value still stands until the measurement is applied.
+    expect(updated.delay).toBe(-0.5);
+    expect(updated.pendingDelay).toBe(-0.088);
+    expect(applyMeasuredDelay(updated, null).delay).toBe(-0.088);
   });
 
   it("writes nothing for a failed measurement", () => {
@@ -110,9 +125,9 @@ describe("applyMeasurement", () => {
     expect(updated.measuredDelay?.error).toBe("ffprobe failed");
   });
 
-  it("fills a low-confidence result, which the row flags rather than withholds", () => {
+  it("stages a low-confidence result, which the row flags rather than withholds", () => {
     const updated = apply(makeFile(), makeResult({ delayMs: 87.7, confidence: 0.3 }));
-    expect(updated.delay).toBe(-0.088);
+    expect(updated.pendingDelay).toBe(-0.088);
     expect(updated.measuredDelay?.confidence).toBe(0.3);
   });
 
@@ -152,8 +167,12 @@ describe("applyMeasurement, per track", () => {
       measuredAt: MEASURED_AT,
     });
     expect(updated.delay).toBeUndefined();
-    expect(updated.trackOverrides?.[2].delay).toBe(-0.088);
-    expect(updated.trackOverrides?.[2].delayProvenance).toBe("measured");
+    expect(updated.trackOverrides?.[2].pendingDelay).toBe(-0.088);
+    expect(updated.trackOverrides?.[2].delay).toBeUndefined();
+
+    const applied = applyMeasuredDelay(updated, 2);
+    expect(applied.trackOverrides?.[2].delay).toBe(-0.088);
+    expect(applied.trackOverrides?.[2].delayProvenance).toBe("measured");
   });
 
   it("leaves other tracks' overrides alone", () => {
@@ -168,7 +187,7 @@ describe("applyMeasurement, per track", () => {
       measuredAt: MEASURED_AT,
     });
     expect(updated.trackOverrides?.[1]).toEqual({ delay: -0.2, language: "eng" });
-    expect(updated.trackOverrides?.[2].delay).toBe(-0.088);
+    expect(updated.trackOverrides?.[2].pendingDelay).toBe(-0.088);
   });
 
   it("respects a hand-typed per-track delay", () => {
@@ -267,10 +286,31 @@ describe("a measurement pass over a mixed set", () => {
       cut: makeResult({ delayMs: 87.7, isLikelyCut: true }),
     };
 
-    const updated = files.map((file) => apply(file, results[file.id]));
+    const measured = files.map((file) => apply(file, results[file.id]));
 
-    expect(updated[0].delay).toBe(-0.5);
-    expect(updated[1].delay).toBe(-0.088);
-    expect(updated[2].delay).toBeUndefined();
+    // Nothing is written yet: measuring only proposes.
+    expect(measured[0].delay).toBe(-0.5);
+    expect(measured[1].delay).toBeUndefined();
+    expect(measured[1].pendingDelay).toBe(-0.088);
+    // A cut has nothing to propose.
+    expect(measured[2].pendingDelay).toBeUndefined();
+
+    // Applying everything fills only what was proposed. The manual delay is
+    // untouched because a measurement pass never staged one for it.
+    const applied = measured.map(applyAllPendingDelays);
+    expect(applied[0].delay).toBe(-0.5);
+    expect(applied[0].delayProvenance).toBe("manual");
+    expect(applied[1].delay).toBe(-0.088);
+    expect(applied[2].delay).toBeUndefined();
+  });
+
+  it("reports which files are waiting to be accepted", () => {
+    // Drives both the Apply button's count and the per-row tick.
+    const staged = apply(makeFile(), makeResult({ delayMs: 87.7 }));
+    const cut = apply(makeFile(), makeResult({ delayMs: 87.7, isLikelyCut: true }));
+
+    expect(hasPendingDelay(staged)).toBe(true);
+    expect(hasPendingDelay(cut)).toBe(false);
+    expect(hasPendingDelay(applyAllPendingDelays(staged))).toBe(false);
   });
 });
