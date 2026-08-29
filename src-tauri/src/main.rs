@@ -793,6 +793,15 @@ fn file_info_cache() -> &'static Mutex<HashMap<String, serde_json::Value>> {
     FILE_INFO_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Raw `mkvmerge -J` output, keyed by path, size and mtime. Separate from
+/// FILE_INFO_CACHE, which stores the app's own parsed shape rather than the
+/// probe it was derived from.
+fn mkvmerge_info_cache() -> &'static Mutex<HashMap<String, serde_json::Value>> {
+    static MKVMERGE_INFO_CACHE: OnceLock<Mutex<HashMap<String, serde_json::Value>>> =
+        OnceLock::new();
+    MKVMERGE_INFO_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn build_file_cache_key(
     path: &Path,
     metadata: &fs::Metadata,
@@ -828,10 +837,36 @@ fn put_cached_file_info(cache_key: String, value: &serde_json::Value) {
     }
 }
 
+/// Probe a file with `mkvmerge -J`, reusing the answer for identical files.
+///
+/// Building one job's command line probes every external file attached to it,
+/// and a batch typically attaches the same dub to every episode -- so the same
+/// file was being probed once per job, each time paying a process spawn and a
+/// full container parse. The key includes size and mtime, so a file edited
+/// between runs is re-read rather than served stale.
 fn get_mkvmerge_info(path: &Path) -> Option<serde_json::Value> {
     if !mkvmerge_available() {
         return None;
     }
+
+    let cache_key = fs::metadata(path).ok().map(|metadata| {
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{}|{}|{modified}", path.to_string_lossy(), metadata.len())
+    });
+
+    if let Some(key) = &cache_key {
+        if let Ok(cache) = mkvmerge_info_cache().lock() {
+            if let Some(cached) = cache.get(key) {
+                return Some(cached.clone());
+            }
+        }
+    }
+
     let output = hidden_command("mkvmerge")
         .arg("-J")
         .arg(path)
@@ -840,7 +875,14 @@ fn get_mkvmerge_info(path: &Path) -> Option<serde_json::Value> {
     if !output.status.success() {
         return None;
     }
-    serde_json::from_slice(&output.stdout).ok()
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+
+    if let Some(key) = cache_key {
+        if let Ok(mut cache) = mkvmerge_info_cache().lock() {
+            cache.insert(key, value.clone());
+        }
+    }
+    Some(value)
 }
 
 fn parse_mkvmerge_duration(mkvmerge: &serde_json::Value) -> Option<String> {
@@ -2846,7 +2888,16 @@ fn spawn_log_reader<R: Read + Send + 'static>(
                 break;
             }
             let trimmed = line.trim_end().to_string();
-            let _ = write_log_line(&state.paths, &trimmed);
+
+            // `--gui-mode` emits a progress line per percent, so a single job
+            // produces a hundred of them and a batch produces hundreds more.
+            // Each one used to reopen the log file under a lock every worker
+            // shares, and to cross the IPC boundary as its own event -- work
+            // that competes with the copy for both disk and the main thread,
+            // to say "#GUI#progress 42%" in a file nobody reads.
+            //
+            // The progress event itself still fires: that is what drives the
+            // bar. Only the logging and the raw line are skipped.
             if let Some(progress) = parse_progress(&trimmed) {
                 emit_progress(
                     &app,
@@ -2859,7 +2910,11 @@ fn spawn_log_reader<R: Read + Send + 'static>(
                         error_message: None,
                     },
                 );
+                line.clear();
+                continue;
             }
+
+            let _ = write_log_line(&state.paths, &trimmed);
             let _ = app.emit_all(
                 "mux-log",
                 serde_json::json!({ "job_id": job_id, "line": trimmed }),
