@@ -56,6 +56,10 @@ jobs:
   build:
     needs: bump
     runs-on: ${{ matrix.os }}
+    # A healthy run finishes in about ten minutes. Without a cap a hung
+    # bundler sat for fifty before the runner gave up, which wastes an hour
+    # and reports the same red tick as a real failure.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -146,6 +150,9 @@ jobs:
         # otherwise swallow any argument that followed it. The comma form
         # silently skipped the bundler entirely on 1.6.3, producing a release
         # with a bare .exe and no installer.
+        # Tighter than the job cap so a hang here is attributed to the
+        # bundler rather than to whatever step happened to be running.
+        timeout-minutes: 20
         run: npm run tauri:build -- --bundles nsis updater
 
       - name: Inspect bundle output
