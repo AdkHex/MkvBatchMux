@@ -19,6 +19,11 @@ import { pickFiles } from "@/shared/lib/backend";
 import { AUDIO_EXTENSIONS, SUBTITLE_EXTENSIONS } from "@/shared/lib/extensions";
 import type { VideoFile, Track, ExternalFile } from "@/shared/types";
 import { moveTrackRow } from "@/features/workspace/lib/modifyTracks";
+import {
+  ImportTrackEditDialog,
+  ImportTrackEditButton,
+  type ImportTrackOverride,
+} from "./ImportTrackEditDialog";
 import { getAutoScrollDelta, getReorderIndexFromPointer } from "@/features/workspace/lib/reorderDrag";
 
 interface VideoFileEditDialogProps {
@@ -104,6 +109,13 @@ export function VideoFileEditDialog({
   const [importStreamsOpen, setImportStreamsOpen] = useState(false);
   const [importSourceVideoId, setImportSourceVideoId] = useState("");
   const [importSelectedTrackIds, setImportSelectedTrackIds] = useState<number[]>([]);
+  // Per-stream language, name and delay for an import, keyed by track id.
+  // Without these every imported stream took the source's own metadata and a
+  // zero delay, and there was no way to change any of it before importing.
+  const [importOverrides, setImportOverrides] = useState<
+    Record<number, ImportTrackOverride>
+  >({});
+  const [importEditingId, setImportEditingId] = useState<number | null>(null);
 
   useEffect(() => {
     if (videoFile && open) {
@@ -158,6 +170,8 @@ export function VideoFileEditDialog({
       setImportStreamsOpen(false);
       setImportSourceVideoId("");
       setImportSelectedTrackIds([]);
+      setImportOverrides({});
+      setImportEditingId(null);
     }
   }, [open]);
 
@@ -542,8 +556,17 @@ export function VideoFileEditDialog({
       .filter((track) => importSelectedTrackIds.includes(Number(track.id)))
       .map((track, idx) => {
         const numericId = Number(track.id);
+        // What the user typed in the per-stream editor wins over the source
+        // file's own metadata; each stream becomes its own ExternalFile, so
+        // these belong at file level rather than in trackOverrides.
+        const override = Number.isFinite(numericId) ? importOverrides[numericId] : undefined;
         const trackLabel =
-          track.name || track.codec || `${importStreamType === "audio" ? "Audio" : "Subtitle"} ${idx + 1}`;
+          override?.trackName ||
+          track.name ||
+          track.codec ||
+          `${importStreamType === "audio" ? "Audio" : "Subtitle"} ${idx + 1}`;
+        const language = override?.language || track.language || "und";
+        const delay = override?.delay ?? 0;
 
         const externalFile: ExternalFile = {
           id: `import-${importStreamType}-${selectedImportSource.id}-${track.id}-${Date.now()}-${idx}`,
@@ -551,9 +574,12 @@ export function VideoFileEditDialog({
           path: selectedImportSource.path,
           type: importStreamType,
           source: "per-file",
-          language: track.language || "und",
+          language,
           trackName: trackLabel,
-          delay: 0,
+          delay,
+          // A hand-typed delay must not be overwritten by a later measurement
+          // pass, which is exactly what "manual" means everywhere else.
+          ...(delay !== 0 ? { delayProvenance: "manual" as const } : {}),
           isDefault: false,
           isForced: false,
           matchedVideoId: videoFile.id,
@@ -568,7 +594,7 @@ export function VideoFileEditDialog({
           setDefault: false,
           setForced: false,
           trackName: trackLabel,
-          language: track.language || "und",
+          language,
           source: "external",
           externalFile,
         };
@@ -583,6 +609,9 @@ export function VideoFileEditDialog({
     setImportStreamsOpen(false);
     setImportSourceVideoId("");
     setImportSelectedTrackIds([]);
+    // Consumed by the rows just created; leaving them would silently reapply
+    // to the next import from a different source.
+    setImportOverrides({});
   };
 
   if (!videoFile) return null;
@@ -984,7 +1013,10 @@ export function VideoFileEditDialog({
             <Button
               variant="ghost"
               className="h-[30px] px-5 text-sm text-muted-foreground hover:text-foreground"
-              onClick={() => setImportStreamsOpen(false)}
+              onClick={() => {
+                setImportStreamsOpen(false);
+                setImportOverrides({});
+              }}
             >
               Cancel
             </Button>
@@ -1006,6 +1038,7 @@ export function VideoFileEditDialog({
               onValueChange={(value) => {
                 setImportSourceVideoId(value);
                 setImportSelectedTrackIds([]);
+                setImportOverrides({});
               }}
             >
               <SelectTrigger className="h-[30px]">
@@ -1070,6 +1103,10 @@ export function VideoFileEditDialog({
                 {importableTracks.map((track, index) => {
                   const numericTrackId = Number(track.id);
                   const checked = importSelectedTrackIds.includes(numericTrackId);
+                  const override = importOverrides[numericTrackId];
+                  const edited = Boolean(
+                    override && (override.delay || override.language || override.trackName),
+                  );
                   return (
                     <label
                       key={`${track.id}-${index}`}
@@ -1086,10 +1123,25 @@ export function VideoFileEditDialog({
                         }}
                       />
                       <span className="text-xs text-muted-foreground min-w-[22px]">#{index + 1}</span>
-                      <span className="truncate">
-                        {track.name || track.codec || "Unnamed"}
-                        {track.language ? ` • ${track.language}` : ""}
+                      <span className="truncate flex-1 min-w-0">
+                        {override?.trackName || track.name || track.codec || "Unnamed"}
+                        {override?.language || track.language
+                          ? ` • ${override?.language || track.language}`
+                          : ""}
                       </span>
+                      {override?.delay ? (
+                        <span className="font-mono text-xs text-primary shrink-0">
+                          {override.delay > 0 ? "+" : ""}
+                          {override.delay}s
+                        </span>
+                      ) : null}
+                      <ImportTrackEditButton
+                        edited={edited}
+                        label={`Edit stream ${index + 1}`}
+                        onClick={() => {
+                          if (Number.isFinite(numericTrackId)) setImportEditingId(numericTrackId);
+                        }}
+                      />
                     </label>
                   );
                 })}
@@ -1098,6 +1150,33 @@ export function VideoFileEditDialog({
           </div>
         </div>
       </BaseModal>
+
+      <ImportTrackEditDialog
+        open={importEditingId !== null}
+        onOpenChange={(next) => {
+          if (!next) setImportEditingId(null);
+        }}
+        kind={importStreamType === "audio" ? "audio" : "subtitle"}
+        trackLabel={(() => {
+          if (importEditingId === null) return "";
+          const index = importableTracks.findIndex(
+            (track) => Number(track.id) === importEditingId,
+          );
+          const track = importableTracks[index];
+          if (!track) return "";
+          const name = track.name || track.codec || "Unnamed";
+          return `#${index + 1} · ${name}${track.language ? ` · ${track.language}` : ""}`;
+        })()}
+        value={importEditingId !== null ? (importOverrides[importEditingId] ?? {}) : {}}
+        onSave={(next) => {
+          if (importEditingId === null) return;
+          setImportOverrides((prev) => ({ ...prev, [importEditingId]: next }));
+          // Editing a stream implies wanting it, so select it too.
+          setImportSelectedTrackIds((prev) =>
+            prev.includes(importEditingId) ? prev : [...prev, importEditingId],
+          );
+        }}
+      />
     </BaseModal>
   );
 }
