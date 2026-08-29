@@ -3620,6 +3620,26 @@ fn main() {
             // app's data directory, which is not on the system PATH. Register
             // it before the first availability probe caches a "missing".
             register_tools_on_path(&app.handle());
+
+            // The configured size suits a large display. On a smaller one it
+            // would open larger than the screen, so shrink to fit -- leaving
+            // room for the taskbar -- and re-centre. Only ever shrinks: a
+            // monitor big enough for the default is left alone.
+            if let Some(window) = app.get_window("main") {
+                if let Ok(Some(monitor)) = window.current_monitor() {
+                    let scale = monitor.scale_factor();
+                    let screen = monitor.size().to_logical::<f64>(scale);
+                    if let Ok(size) = window.inner_size() {
+                        let current = size.to_logical::<f64>(scale);
+                        let width = current.width.min(screen.width * 0.9);
+                        let height = current.height.min(screen.height * 0.9);
+                        if width < current.width || height < current.height {
+                            let _ = window.set_size(tauri::LogicalSize::new(width, height));
+                            let _ = window.center();
+                        }
+                    }
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

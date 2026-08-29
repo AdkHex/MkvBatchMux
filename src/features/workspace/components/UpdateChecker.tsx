@@ -2,6 +2,7 @@ import * as React from "react";
 import { Download, RefreshCw } from "lucide-react";
 import { Button } from "@/shared/ui/button";
 import { toast } from "@/shared/hooks/use-toast";
+import { installUpdateAndRestart } from "@/features/workspace/hooks/useAutoUpdate";
 import { cn } from "@/shared/lib/utils";
 
 type UpdateState =
@@ -46,15 +47,10 @@ export function UpdateChecker() {
   const install = React.useCallback(async () => {
     setState({ status: "downloading" });
     try {
-      const { installUpdate } = await import("@tauri-apps/api/updater");
-      await installUpdate();
+      // Shared with the background offer, so both paths install and relaunch
+      // identically.
+      await installUpdateAndRestart();
       setState({ status: "ready" });
-      toast({
-        title: "Update installed",
-        description: "Restart the app to finish updating.",
-      });
-      const { relaunch } = await import("@tauri-apps/api/process");
-      await relaunch();
     } catch (error) {
       setState({ status: "error", message: String(error) });
       toast({

@@ -59,13 +59,16 @@
     "windows": [
       {
         "title": "MKVBatchMux",
-        "width": 1280,
-        "height": 800,
+        "width": 1600,
+        "height": 1000,
         "fullscreen": false,
         "maximized": false,
         "resizable": true,
         "decorations": false,
-        "transparent": false
+        "transparent": false,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "center": true
       }
     ],
     "updater": {

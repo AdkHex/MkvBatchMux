@@ -65,12 +65,16 @@ needed; the bundler ships its own NSIS.
 
 ## Automatic updates
 
-Installed builds check GitHub Releases on launch and offer any newer version.
+Installed builds check GitHub Releases shortly after launch and every six
+hours, and offer any newer version as a toast with an Install action. Settings
+also has a Check now button for an immediate check.
+
 Pushing to `main` bumps the version, builds a signed installer, publishes it as
 the latest release, and installed apps pick it up from there.
 
-The user is asked before anything is installed — a mux batch can run for
-several minutes, so updates never restart the app unprompted.
+Nothing installs without being asked. A check is skipped entirely while a mux
+batch is running, and each version is offered once per session — an install
+restarts the app, and a batch can be many minutes from finishing.
 
 ### Repository secrets (required)
 

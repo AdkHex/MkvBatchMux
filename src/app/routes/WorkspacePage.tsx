@@ -22,6 +22,11 @@ import { KeyboardShortcutsDialog } from "@/features/workspace/components/Keyboar
 import { useKeyboardShortcuts } from "@/features/workspace/hooks/useKeyboardShortcuts";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { toast } from "@/shared/hooks/use-toast";
+import { ToastAction } from "@/shared/ui/toast";
+import {
+  useAutoUpdate,
+  installUpdateAndRestart,
+} from "@/features/workspace/hooks/useAutoUpdate";
 import type {
   VideoFile,
   ExternalFile,
@@ -725,6 +730,41 @@ const WorkspacePage = () => {
       ),
     );
   }, []);
+
+  // Checked in the background rather than only when Settings is opened. The
+  // offer is a toast with an action, never a modal: an install restarts the
+  // app, and a batch can be many minutes from finishing.
+  const muxIsRunning = useMemo(
+    () => jobs.some((job) => job.status === "processing" || job.status === "queued"),
+    [jobs],
+  );
+
+  useAutoUpdate({
+    isBusy: muxIsRunning,
+    onUpdateAvailable: useCallback((version: string) => {
+      toast({
+        title: `Version ${version} is available`,
+        description: "Installing restarts the app. Your queue and settings are kept.",
+        duration: 30000,
+        action: (
+          <ToastAction
+            altText={`Install version ${version}`}
+            onClick={() => {
+              installUpdateAndRestart().catch((error) => {
+                toast({
+                  title: "Update failed",
+                  description: String(error),
+                  variant: "destructive",
+                });
+              });
+            }}
+          >
+            Install
+          </ToastAction>
+        ),
+      });
+    }, []),
+  });
 
   const handleViewLog = useCallback(() => {
     openLogFile().catch((error) => {
