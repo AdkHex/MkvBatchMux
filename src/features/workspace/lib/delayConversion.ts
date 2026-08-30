@@ -7,6 +7,7 @@
  */
 
 import { MAX_PLAUSIBLE_OFFSET_MS, type SyncResult } from "@/shared/types/audiosync";
+import type { MeasuredDelay } from "@/shared/types";
 
 /** Engine milliseconds → the seconds value MkvBatchMux stores and mkvmerge consumes.
  *
@@ -42,6 +43,13 @@ export function sourceDelayMs(result: Pick<SyncResult, "delayMs" | "delayAtStart
  *  and auto-filling one would be a confident wrong answer. The user can still
  *  apply it deliberately -- that path passes `allowCut`.
  *
+ *  Confidence below the low band means the correlator never found a distinct
+ *  peak -- the windows disagreed, or the best match was barely better than the
+ *  average one. That is not a small offset, it is no offset: staging it puts a
+ *  number in front of the user that carries no information, and Apply-all would
+ *  then push it into the mux. It is still measured, still shown, and still
+ *  applicable by hand from the row.
+ *
  *  The magnitude check is the same idea. High confidence only means the windows
  *  agreed with each other, and a correlator that locks onto a repeated musical
  *  phrase produces the same wrong answer in every window -- so agreement is not
@@ -54,7 +62,20 @@ export function isAutoFillable(result: SyncResult): boolean {
   if (delay === null) return false;
   if (result.isLikelyCut) return false;
   if (Math.abs(delay) > MAX_PLAUSIBLE_OFFSET_MS) return false;
+  if (isUnconvincing(result)) return false;
   return true;
+}
+
+/** The confidence below which a result is noise rather than a measurement. */
+export const MIN_AUTOFILL_CONFIDENCE = 0.5;
+
+/** True when a result was withheld only because the correlation was too weak. */
+export function isUnconvincing(result: SyncResult): boolean {
+  const confidence = result.confidence;
+  if (confidence === null || confidence === undefined || !Number.isFinite(confidence)) {
+    return false;
+  }
+  return confidence < MIN_AUTOFILL_CONFIDENCE;
 }
 
 /** True when a result was withheld only because it is implausibly large.
@@ -224,4 +245,35 @@ export function stretchRatioFor(
 
   const { num, den } = approximateRatio(correctionRatio);
   return { num, den, exact: false };
+}
+
+/** Why a stored measurement's delay was not staged for Apply, or null if it
+ *  was. Derived from the stored record rather than the live result so a row
+ *  can still explain itself after a reload.
+ *
+ *  Shared by every row so the reasons cannot drift apart from `isAutoFillable`.
+ */
+export function withheldReason(
+  measured: Pick<
+    MeasuredDelay,
+    "isLikelyCut" | "engineDelayMs" | "confidence" | "error"
+  >,
+): string | null {
+  if (measured.error) return measured.error;
+  if (measured.isLikelyCut) {
+    return "These look like different cuts, so no single delay aligns them.";
+  }
+  if (Math.abs(measured.engineDelayMs) > MAX_PLAUSIBLE_OFFSET_MS) {
+    return "Too large to be a real offset -- the correlator most likely locked onto a repeated passage.";
+  }
+  const confidence = measured.confidence;
+  if (
+    confidence !== null &&
+    confidence !== undefined &&
+    Number.isFinite(confidence) &&
+    confidence < MIN_AUTOFILL_CONFIDENCE
+  ) {
+    return "The correlation was too weak to trust; check this one before applying it.";
+  }
+  return null;
 }

@@ -127,10 +127,18 @@ describe("isAutoFillable", () => {
     expect(isAutoFillable(makeResult({ delayMs: null, delayAtStartMs: null }))).toBe(false);
   });
 
-  it("accepts a low-confidence result, which is filled but flagged", () => {
-    // Low confidence is surfaced on the row rather than withheld -- the number
-    // is still the best measurement available, unlike a cut where none exists.
-    expect(isAutoFillable(makeResult({ delayMs: 120, confidence: 0.3 }))).toBe(true);
+  it("rejects a result whose correlation was too weak to mean anything", () => {
+    expect(isAutoFillable(makeResult({ delayMs: 87.7, confidence: 0.3 }))).toBe(false);
+  });
+
+  it("accepts a medium-confidence result", () => {
+    expect(isAutoFillable(makeResult({ delayMs: 87.7, confidence: 0.55 }))).toBe(true);
+  });
+
+  it("accepts a result that reports no confidence at all", () => {
+    // Absent is not the same as low: an engine that reports no figure should
+    // not have every result silently withheld.
+    expect(isAutoFillable(makeResult({ delayMs: 87.7, confidence: null }))).toBe(true);
   });
 
   it("refuses an offset too large to be a real delay", () => {
@@ -251,5 +259,31 @@ describe("stretchRatioFor", () => {
     expect(stretchRatioFor(null, null, null)).toBeNull();
     expect(stretchRatioFor(undefined, null, null)).toBeNull();
     expect(stretchRatioFor(0, null, null)).toBeNull();
+  });
+});
+
+describe("candidate ranking", () => {
+  // Mirrors the score in useMeasureDelays: usability tier, then confidence.
+  const score = (r: Parameters<typeof isAutoFillable>[0]) =>
+    (r.confidence ?? 0) + (isAutoFillable(r) ? 1 : 0);
+
+  it("prefers a usable result over a confident unusable one", () => {
+    // The real case: a candidate correlates at 97% against the wrong track and
+    // reports an impossible -26041 ms, while the right track lands at 62%.
+    const wrong = makeResult({ delayMs: -26041, confidence: 0.97 });
+    const right = makeResult({ delayMs: 120, confidence: 0.62 });
+    expect(score(right)).toBeGreaterThan(score(wrong));
+  });
+
+  it("prefers the sharper correlation between two usable results", () => {
+    const weaker = makeResult({ delayMs: 120, confidence: 0.62 });
+    const sharper = makeResult({ delayMs: 118, confidence: 0.91 });
+    expect(score(sharper)).toBeGreaterThan(score(weaker));
+  });
+
+  it("still ranks among unusable results rather than treating them as equal", () => {
+    const cut = makeResult({ delayMs: 120, confidence: 0.2 });
+    const better = makeResult({ delayMs: 120, confidence: 0.45 });
+    expect(score(better)).toBeGreaterThan(score(cut));
   });
 });

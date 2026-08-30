@@ -125,10 +125,20 @@ describe("applyMeasurement", () => {
     expect(updated.measuredDelay?.error).toBe("ffprobe failed");
   });
 
-  it("stages a low-confidence result, which the row flags rather than withholds", () => {
+  it("does not stage a low-confidence result, but still records it", () => {
+    // 30% means the correlator found no distinct peak. Showing it is useful;
+    // queueing it for Apply-all is not, because nothing distinguishes it from
+    // a real measurement once it is sitting in the field.
     const updated = apply(makeFile(), makeResult({ delayMs: 87.7, confidence: 0.3 }));
-    expect(updated.pendingDelay).toBe(-0.088);
+    expect(updated.pendingDelay).toBeUndefined();
     expect(updated.measuredDelay?.confidence).toBe(0.3);
+    expect(updated.measuredDelay?.engineDelayMs).toBe(87.7);
+  });
+
+  it("stages a merely-medium result", () => {
+    // The floor rejects noise, not imperfection.
+    const updated = apply(makeFile(), makeResult({ delayMs: 87.7, confidence: 0.55 }));
+    expect(updated.pendingDelay).toBe(-0.088);
   });
 
   it("records a rate mismatch without applying any stretch by itself", () => {

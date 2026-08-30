@@ -19,6 +19,7 @@ import {
   measureDelaysStart,
 } from "@/shared/lib/backend";
 import { applyMeasurement } from "@/features/workspace/lib/applyMeasurement";
+import { isAutoFillable } from "@/features/workspace/lib/delayConversion";
 import {
   buildMeasurementPlan,
   parseMeasurementKey,
@@ -60,7 +61,7 @@ export function useMeasureDelays({
   const runIdRef = useRef<string | null>(null);
   const planRef = useRef<Map<string, PlannedMeasurement>>(new Map());
   const forcedRef = useRef(false);
-  // Best confidence seen per file this run. When a video's audio tracks give
+  // Best score seen per file this run (usability tier + confidence). When a video's audio tracks give
   // no clue which one matches the dub, several are measured and the sharpest
   // correlation wins -- so a later, worse result must not overwrite a better
   // one that already arrived.
@@ -96,11 +97,18 @@ export function useMeasureDelays({
 
     // Results arrive in whatever order the workers finish, so compare against
     // the best so far rather than assuming the first one is authoritative.
-    const confidence = result.confidence ?? 0;
+    //
+    // Usability outranks confidence. A candidate that correlated beautifully
+    // against the wrong track still reports a cut, or an offset too large to
+    // be real, and letting it win on score alone would discard the usable
+    // answer sitting behind it -- which is exactly the pairing the user wants.
+    // Within a tier the sharper correlation wins as before.
+    const usable = isAutoFillable(result);
+    const score = (result.confidence ?? 0) + (usable ? 1 : 0);
     const scope = `${audioFileId}::${trackId ?? "file"}`;
     const best = bestConfidenceRef.current.get(scope);
-    if (best !== undefined && confidence <= best) return;
-    bestConfidenceRef.current.set(scope, confidence);
+    if (best !== undefined && score <= best) return;
+    bestConfidenceRef.current.set(scope, score);
 
     const measuredAt = new Date().toISOString();
 
@@ -190,20 +198,6 @@ export function useMeasureDelays({
       });
 
       if (plan.measurements.length === 0) {
-        // Ordered by how actionable each reason is.
-        if (plan.languageMismatch.length > 0) {
-          toast({
-            title: "No matching audio to measure against",
-            description:
-              "Delays are found by comparing sound, so both files need a track " +
-              "in the same language. " +
-              `${plan.languageMismatch.length === 1 ? "This file has" : "These files have"} only one audio track, ` +
-              "and the video carries nothing in that language. Use a version that " +
-              "also has the video's original audio, or type the delay by hand.",
-            variant: "destructive",
-          });
-          return;
-        }
         const reason =
           plan.unmatched.length > 0
             ? `${plan.unmatched.length} audio file(s) match no video, so there is nothing to measure against.`
@@ -212,15 +206,6 @@ export function useMeasureDelays({
               : "Add audio files first.";
         toast({ title: "Nothing to measure", description: reason });
         return;
-      }
-
-      if (plan.languageMismatch.length > 0) {
-        toast({
-          title: `Skipping ${plan.languageMismatch.length} file(s)`,
-          description:
-            "The video carries no audio in their language, and comparing two " +
-            "different languages produces a confident wrong answer rather than a failure.",
-        });
       }
 
       if (plan.unmatched.length > 0) {

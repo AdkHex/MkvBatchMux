@@ -33,10 +33,6 @@ export interface MeasurementPlan {
   unmatched: ExternalFile[];
   /** Files skipped because their delay was typed by hand or already measured. */
   skipped: ExternalFile[];
-  /** Files whose language exists in neither of the video's audio tracks.
-   *  Measuring these compares two different languages, which shares no
-   *  waveform and produces a confident wrong number rather than a failure. */
-  languageMismatch: ExternalFile[];
 }
 
 /** The key encodes what to write back to, so the result never has to be
@@ -121,7 +117,6 @@ export function buildMeasurementPlan({
   const measurements: PlannedMeasurement[] = [];
   const unmatched: ExternalFile[] = [];
   const skipped: ExternalFile[] = [];
-  const languageMismatch: ExternalFile[] = [];
 
   const candidates = onlyAudioFileIds
     ? audioFiles.filter((file) => onlyAudioFileIds.includes(file.id))
@@ -155,10 +150,6 @@ export function buildMeasurementPlan({
     // peak" or a confident wrong answer, while the easy Hindi-against-Hindi
     // comparison that answers the question was never surfaced.
     const chosen = chooseMeasurementTracks(video, file, includedTracks, referenceTrackByVideoId);
-    if (!chosen) {
-      languageMismatch.push(file);
-      return;
-    }
 
     // More than one candidate means nothing identified the right video track,
     // so each is measured and the best-correlating result wins. The key
@@ -186,7 +177,7 @@ export function buildMeasurementPlan({
     });
   });
 
-  return { measurements, unmatched, skipped, languageMismatch };
+  return { measurements, unmatched, skipped };
 }
 
 /** Pick the one track pair a file's measurement should be taken from.
@@ -207,7 +198,7 @@ function chooseMeasurementTracks(
   file: ExternalFile,
   includedTracks: Array<{ trackId: number; streamIndex: number }>,
   referenceTrackByVideoId: Record<string, number>,
-): Array<{ primaryTrack: number; secondaryTrack: number }> | null {
+): Array<{ primaryTrack: number; secondaryTrack: number }> {
   const secondary = includedTracks[0]?.streamIndex ?? 0;
   const explicitReference = referenceTrackByVideoId[video.id];
 
@@ -286,10 +277,6 @@ function chooseMeasurementTracks(
     .map((track, streamIndex) => ({ trackId: Number(track.id), streamIndex }))
     .filter((entry) => Number.isFinite(entry.trackId));
 
-  const externalLanguages = measurableTracks
-    .map((track) => externalLanguage(track.trackId))
-    .filter((language): language is string => Boolean(language));
-
   for (const track of measurableTracks) {
     const language = externalLanguage(track.trackId);
     if (!language) continue;
@@ -301,22 +288,12 @@ function chooseMeasurementTracks(
     }
   }
 
-  // Refuse only when the file offers nothing that could align. With several
-  // tracks there is usually a shared original language even when the dub
-  // itself has no counterpart, so the sweep below is worth running; it is a
-  // lone track in a language the video does not carry that is hopeless.
-  const videoLanguages = videoAudio
-    .map((track) => normalizeLanguage(track.language))
-    .filter((language): language is string => Boolean(language));
-  if (
-    measurableTracks.length === 1 &&
-    externalLanguages.length > 0 &&
-    videoLanguages.length > 0 &&
-    !externalLanguages.some((language) => videoLanguages.includes(language))
-  ) {
-    return null;
-  }
-
+  // No shared language tag is a reason to sweep wider, not to give up. Tags are
+  // frequently wrong or absent, a dub is usually cut from the same master as
+  // the original, and music, effects and room tone are shared across languages
+  // -- which is enough for the correlator to lock on. The confidence figure is
+  // what tells you whether it did; refusing pre-emptively just withholds an
+  // answer that is often correct.
   return ambiguousCandidates();
 }
 

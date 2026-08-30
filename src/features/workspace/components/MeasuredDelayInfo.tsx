@@ -18,6 +18,7 @@ import {
   formatConfidence,
   formatFrameOffset,
   formatPlayerDelayMs,
+  isUnconvincing,
 } from "@/features/workspace/lib/delayConversion";
 
 const CONFIDENCE_STYLES: Record<ReturnType<typeof confidenceLevel>, string> = {
@@ -28,7 +29,7 @@ const CONFIDENCE_STYLES: Record<ReturnType<typeof confidenceLevel>, string> = {
 
 interface MeasuredDelayInfoProps {
   measured: MeasuredDelay;
-  /** Offered only for a cut, where no delay was written. */
+  /** Offered whenever a delay was withheld, so the user can override. */
   onApplyAnyway?: () => void;
   /** True while this measurement is staged but not yet in the delay field. */
   pending?: boolean;
@@ -48,6 +49,12 @@ export function MeasuredDelayInfo({ measured, onApplyAnyway, pending }: Measured
   }
 
   const level = confidenceLevel(measured.confidence);
+  // The stored record carries the same fields the live result did, so the
+  // staging rule can be re-evaluated for display without keeping the result.
+  const weak = isUnconvincing({
+    confidence: measured.confidence,
+  } as Parameters<typeof isUnconvincing>[0]);
+  const withheld = implausible || measured.isLikelyCut || weak;
   const frames = formatFrameOffset(measured.appliedMs, measured.primaryFps);
 
   return (
@@ -109,6 +116,26 @@ export function MeasuredDelayInfo({ measured, onApplyAnyway, pending }: Measured
           </Tooltip>
         )}
 
+        {/* A weak correlation means no distinct peak was found, so the number
+            beside it is not a measurement of anything. Ranked below the two
+            structural problems, which explain themselves more specifically. */}
+        {!implausible && !measured.isLikelyCut && weak && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant="outline" className="gap-1 border-red-500 text-red-600 dark:text-red-400">
+                <AlertTriangle className="h-3 w-3" />
+                Weak match
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              The analysis never found a clear match, so this offset was measured
+              but not filled in. Usually it means the two files share little
+              audible material — a different encode, a heavily re-mixed dub, or
+              the wrong pairing. Check they play in sync before applying it.
+            </TooltipContent>
+          </Tooltip>
+        )}
+
         {!measured.isLikelyCut && measured.isRateMismatch && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -142,7 +169,7 @@ export function MeasuredDelayInfo({ measured, onApplyAnyway, pending }: Measured
           </Tooltip>
         )}
 
-        {(measured.isLikelyCut || implausible) && onApplyAnyway && (
+        {withheld && onApplyAnyway && (
           <Button
             type="button"
             variant="ghost"

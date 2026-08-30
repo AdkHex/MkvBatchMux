@@ -15,7 +15,6 @@ import {
 import { AlertDialogAction, AlertDialogCancel } from "@/shared/ui/alert-dialog";
 import { BaseModal } from "@/shared/components/BaseModal";
 import { EmptyState } from "@/shared/components/EmptyState";
-import { MAX_PLAUSIBLE_OFFSET_MS } from "@/shared/types/audiosync";
 import { LanguageSelect } from "@/features/workspace/components/LanguageSelect";
 import {
   ImportTrackEditDialog,
@@ -35,6 +34,7 @@ import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/shared/data/languages-iso6393";
 import { useMeasureDelays } from "@/features/workspace/hooks/useMeasureDelays";
 import { MeasuredDelayInfo } from "@/features/workspace/components/MeasuredDelayInfo";
 import { StretchToggle } from "@/features/workspace/components/StretchToggle";
+import { withheldReason } from "@/features/workspace/lib/delayConversion";
 import { ReferenceTrackPicker } from "@/features/workspace/components/ReferenceTrackPicker";
 import {
   applyMeasurement,
@@ -1452,8 +1452,7 @@ export function AudiosTab({
                             measured={file.measuredDelay}
                             pending={file.pendingDelay !== undefined}
                             onApplyAnyway={
-                              file.measuredDelay.isLikelyCut ||
-                              Math.abs(file.measuredDelay.engineDelayMs) > MAX_PLAUSIBLE_OFFSET_MS
+                              withheldReason(file.measuredDelay)
                                 ? () => applyCutDelayAnyway(file.id, null)
                                 : undefined
                             }
@@ -1484,9 +1483,7 @@ export function AudiosTab({
                               measured={override.measuredDelay!}
                               pending={override.pendingDelay !== undefined}
                               onApplyAnyway={
-                                override.measuredDelay!.isLikelyCut ||
-                                Math.abs(override.measuredDelay!.engineDelayMs) >
-                                  MAX_PLAUSIBLE_OFFSET_MS
+                                withheldReason(override.measuredDelay!)
                                   ? () => applyCutDelayAnyway(file.id, trackId)
                                   : undefined
                               }
