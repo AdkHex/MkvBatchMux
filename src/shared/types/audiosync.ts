@@ -84,37 +84,42 @@ export interface MeasurePair {
   secondaryTrack: number;
 }
 
-/** Engine tuning. These are AudioSyncMaster's `DEFAULT_SETTINGS`; they are not
- *  exposed in the UI because a different value here changes measurements. */
 /** Beyond this, a "delay" is not a delay.
  *
  *  This app measures a dub against the video it will be muxed into, so a real
  *  offset is container- and encoder-scale: milliseconds, occasionally a second
  *  or two. Ten seconds is already generous.
  *
- *  It matters because the correlator picks the best peak *within the range it
- *  is given*. Episodic TV reuses its score, so a wide search offers many
- *  plausible-looking wrong answers at multiples of a musical phrase -- and
- *  because the same wrong peak recurs in every window, the windows agree with
- *  each other and the result is reported at full confidence. Narrowing the
- *  search removes those candidates instead of trying to out-vote them.
+ *  This is a gate on *applying* a result, not on searching for one. It was
+ *  briefly both -- the engine's search was narrowed to this value to stop a
+ *  correlator locking onto a repeated musical phrase. That made the search
+ *  differ from AudioSyncMaster's and so made the two tools disagree, and it
+ *  was treating the symptom: the wrong answers came from comparing two tracks
+ *  that shared no material, which track selection now prevents. The search is
+ *  upstream's again; an implausible result is still measured, shown, and kept
+ *  out of the delay field unless the user applies it deliberately.
  */
 export const MAX_PLAUSIBLE_OFFSET_MS = 10000;
 
 export const ENGINE_DEFAULTS = {
+  // Identical to AudioSyncMaster's DEFAULT_SETTINGS (its src/lib/types.ts), on
+  // purpose: the engine is the same binary, so the only way the two tools can
+  // report different delays for the same files is by asking it different
+  // questions.
+  //
+  // windowCount is the one that bites. plan_windows() spreads the sample
+  // points with step = (last - first) / (count - 1), so changing the count
+  // moves every window; the result is the median of whatever those windows
+  // measured. Sampling ten instead of six is not a more precise version of the
+  // same measurement, it is a different one -- worth tens of milliseconds on
+  // material whose offset wanders slightly across a film.
   windowSeconds: 45,
-  // Upstream samples six windows; ten is deliberate. The engine reconciles a
-  // pair by taking the median of its usable windows and discarding those more
-  // than four median-deviations out, so every extra window makes both the
-  // median and the drift line better supported -- and makes a single window
-  // that locked onto a repeated musical phrase easier to outvote.
-  windowCount: 10,
-  // Upstream defaults to 60000, which suits its general-purpose case of
-  // aligning arbitrary rips. Here it produced a confident -26041 ms on files
-  // that were already in sync.
-  maxOffsetMs: MAX_PLAUSIBLE_OFFSET_MS,
-  // Raised alongside windowCount so the extra sampling does not show up as
-  // extra waiting.
+  windowCount: 6,
+  maxOffsetMs: 60000,
+  // The only parameter that cannot change a result: it sizes the engine's
+  // thread pool (batch.py hands it straight to ThreadPoolExecutor) and each
+  // pair is analysed independently. Kept higher than upstream's 3 purely for
+  // throughput on a batch.
   maxWorkers: 4,
 } as const;
 

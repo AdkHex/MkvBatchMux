@@ -261,29 +261,3 @@ describe("stretchRatioFor", () => {
     expect(stretchRatioFor(0, null, null)).toBeNull();
   });
 });
-
-describe("candidate ranking", () => {
-  // Mirrors the score in useMeasureDelays: usability tier, then confidence.
-  const score = (r: Parameters<typeof isAutoFillable>[0]) =>
-    (r.confidence ?? 0) + (isAutoFillable(r) ? 1 : 0);
-
-  it("prefers a usable result over a confident unusable one", () => {
-    // The real case: a candidate correlates at 97% against the wrong track and
-    // reports an impossible -26041 ms, while the right track lands at 62%.
-    const wrong = makeResult({ delayMs: -26041, confidence: 0.97 });
-    const right = makeResult({ delayMs: 120, confidence: 0.62 });
-    expect(score(right)).toBeGreaterThan(score(wrong));
-  });
-
-  it("prefers the sharper correlation between two usable results", () => {
-    const weaker = makeResult({ delayMs: 120, confidence: 0.62 });
-    const sharper = makeResult({ delayMs: 118, confidence: 0.91 });
-    expect(score(sharper)).toBeGreaterThan(score(weaker));
-  });
-
-  it("still ranks among unusable results rather than treating them as equal", () => {
-    const cut = makeResult({ delayMs: 120, confidence: 0.2 });
-    const better = makeResult({ delayMs: 120, confidence: 0.45 });
-    expect(score(better)).toBeGreaterThan(score(cut));
-  });
-});

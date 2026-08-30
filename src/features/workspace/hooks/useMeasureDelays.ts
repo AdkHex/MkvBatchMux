@@ -19,7 +19,6 @@ import {
   measureDelaysStart,
 } from "@/shared/lib/backend";
 import { applyMeasurement } from "@/features/workspace/lib/applyMeasurement";
-import { isAutoFillable } from "@/features/workspace/lib/delayConversion";
 import {
   buildMeasurementPlan,
   parseMeasurementKey,
@@ -61,11 +60,6 @@ export function useMeasureDelays({
   const runIdRef = useRef<string | null>(null);
   const planRef = useRef<Map<string, PlannedMeasurement>>(new Map());
   const forcedRef = useRef(false);
-  // Best score seen per file this run (usability tier + confidence). When a video's audio tracks give
-  // no clue which one matches the dub, several are measured and the sharpest
-  // correlation wins -- so a later, worse result must not overwrite a better
-  // one that already arrived.
-  const bestConfidenceRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -94,21 +88,6 @@ export function useMeasureDelays({
     if (!planned) return;
 
     const { audioFileId, trackId } = parseMeasurementKey(key);
-
-    // Results arrive in whatever order the workers finish, so compare against
-    // the best so far rather than assuming the first one is authoritative.
-    //
-    // Usability outranks confidence. A candidate that correlated beautifully
-    // against the wrong track still reports a cut, or an offset too large to
-    // be real, and letting it win on score alone would discard the usable
-    // answer sitting behind it -- which is exactly the pairing the user wants.
-    // Within a tier the sharper correlation wins as before.
-    const usable = isAutoFillable(result);
-    const score = (result.confidence ?? 0) + (usable ? 1 : 0);
-    const scope = `${audioFileId}::${trackId ?? "file"}`;
-    const best = bestConfidenceRef.current.get(scope);
-    if (best !== undefined && score <= best) return;
-    bestConfidenceRef.current.set(scope, score);
 
     const measuredAt = new Date().toISOString();
 
@@ -220,8 +199,7 @@ export function useMeasureDelays({
       forcedRef.current = Boolean(options.force);
       planRef.current = new Map(plan.measurements.map((m) => [m.pair.key, m]));
 
-      bestConfidenceRef.current = new Map();
-      setIsMeasuring(true);
+        setIsMeasuring(true);
       setProgress({ processed: 0, total: plan.measurements.length, current: null });
 
       try {

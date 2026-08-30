@@ -174,10 +174,10 @@ describe("buildMeasurementPlan", () => {
     // Every result writes back to the file itself, never to a per-track
     // override -- one delay covers the whole container.
     expect(plan.measurements.every((m) => m.trackId === null)).toBe(true);
-    // Nothing here says which track pairs with which, so every audio track is
-    // a candidate and confidence decides -- including track 1, which is
-    // excluded from the mux but still measures the file's offset.
-    expect(plan.measurements.map((m) => m.pair.secondaryTrack)).toEqual([0, 1, 2]);
+    expect(plan.measurements).toHaveLength(1);
+    // The first muxed track. Track 1 is excluded from the mux, so it is not a
+    // candidate: it is not the track the delay will be applied to.
+    expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
   });
 
   it("uses the video's default audio track as the reference", () => {
@@ -438,11 +438,12 @@ describe("when nothing identifies which video track matches the dub", () => {
     language,
   });
 
-  it("measures every candidate so the best correlation can win", () => {
-    // Regression: MkvBatchMux and AudioSyncMaster disagreed on ten of sixteen
-    // episodes because each guessed a different video track -- the default
-    // track here, track 0 there. Neither guess is knowable in advance, so try
-    // both and let the engine's confidence decide.
+  it("picks one pairing deterministically when nothing identifies a track", () => {
+    // This used to measure every combination and let confidence pick a winner.
+    // That made the answer depend on which pairing happened to correlate best
+    // -- a different video track per file, so a batch came back internally
+    // inconsistent and disagreed with AudioSyncMaster, which simply uses the
+    // default track. One pairing, chosen the same way every time.
     const video = makeVideo("v1", "Ep01.mkv", [
       { id: "1", type: "audio" },
       { id: "2", type: "audio", isDefault: true },
@@ -455,11 +456,9 @@ describe("when nothing identifies which video track matches the dub", () => {
 
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
-    expect(plan.measurements).toHaveLength(2);
-    // The default track is tried first, since it is the better prior.
-    expect(plan.measurements.map((m) => m.pair.primaryTrack)).toEqual([1, 0]);
-    // Every result writes back to the same file.
-    expect(plan.measurements.every((m) => m.trackId === null)).toBe(true);
+    expect(plan.measurements).toHaveLength(1);
+    expect(plan.measurements[0].pair.primaryTrack).toBe(1);
+    expect(plan.measurements[0].trackId).toBeNull();
   });
 
   it("keys candidates apart but resolves them to the same file", () => {
@@ -524,47 +523,26 @@ describe("bounding how much extra work an ambiguous pair can cause", () => {
   });
 });
 
-describe("a dub whose file also carries the video's language", () => {
-  const langTrack = (id: string, language: string): Track => ({
+describe("which external track is measured", () => {
+  const langTrack = (id: string, language?: string) => ({
     id,
-    type: "audio",
+    type: "audio" as const,
     language,
   });
 
-  it("measures against the shared track even when only the dub is muxed", () => {
-    // Regression: an English film plus a [Hindi + English] dub file was
-    // refused as a language mismatch. Syncing a dub normally works by
-    // aligning the original-language track both files share -- the English
-    // track here -- and applying that offset to the whole container. The
-    // guard only looked at tracks being muxed, so it never saw it.
-    const video = makeVideo("v1", "Underworld.mkv", [langTrack("1", "eng")]);
-    const audio = makeAudio("a1", "Underworld.dub.mkv", {
-      matchedVideoId: "v1",
-      language: "hin",
-      tracks: [langTrack("0", "hin"), langTrack("1", "eng")],
-      // Only the Hindi track is being muxed.
-      includedTrackIds: [0],
-    });
-
-    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
-
-    expect(plan.measurements).toHaveLength(1);
-    // English against English: stream index 1 on both sides.
-    expect(plan.measurements[0].pair).toMatchObject({
-      primaryTrack: 0,
-      secondaryTrack: 1,
-    });
-  });
-
-  it("honours an explicit reference against a track that is not being muxed", () => {
-    // Underworld Evolution: a DTS-HD English video, a [Hindi + English Atmos]
-    // dub, English chosen as the reference, only the Hindi track muxed. The
-    // confirming match was searched among the muxed tracks only, so the
-    // English-to-English pairing was invisible and it fell through to a blind
-    // sweep -- 48% and a wrong offset where the direct pairing gives 100%.
+  it("measures the muxed track against an explicit reference, not a shared one", () => {
+    // Underworld Evolution: an English DTS-HD video, a [Hindi + English Atmos]
+    // dub, English chosen as the reference, only Hindi muxed. AudioSyncMaster
+    // measures the muxed Hindi track against the video and reports -1849.8 ms
+    // at 100%; we reported +1064.5 ms at 48%.
+    //
+    // Two bugs stacked. The English reference was only honoured if a *muxed*
+    // track shared its language, which none did, so it fell through to a sweep
+    // of every combination. The sweep then preferred the file's English track
+    // because it correlated best -- but English is not the track being muxed,
+    // and the delay is applied to the Hindi one.
     const video = makeVideo("v1", "Underworld.Evolution.Remux.mkv", [
       langTrack("1", "eng"),
-      langTrack("2", "hin"),
     ]);
     const audio = makeAudio("a1", "Underworld.Evolution.2160p.mkv", {
       matchedVideoId: "v1",
@@ -575,43 +553,61 @@ describe("a dub whose file also carries the video's language", () => {
     const plan = buildMeasurementPlan({
       videoFiles: [video],
       audioFiles: [audio],
-      // The user picked the video's English track.
       referenceTrackByVideoId: { v1: 0 },
     });
 
-    // One unambiguous pairing, not a sweep.
     expect(plan.measurements).toHaveLength(1);
     expect(plan.measurements[0].pair).toMatchObject({
       primaryTrack: 0,
-      secondaryTrack: 1,
+      // Hindi: the track being muxed, not the better-correlating English one.
+      secondaryTrack: 0,
     });
   });
 
-  it("does not spread a file-level language across several tracks", () => {
-    // file.language describes one track, so it must not stand in for all of
-    // them -- that would invent a match and skip the sweep that finds the
-    // real one.
-    const video = makeVideo("v1", "Ep01.mkv", [langTrack("1", "eng")]);
-    const audio = makeAudio("a1", "Ep01.dual.mkv", {
+  it("never measures a track that is not being muxed", () => {
+    // Same shape without an explicit reference. The English track would
+    // correlate more sharply, which is exactly the temptation: its offset is
+    // not necessarily the Hindi track's once their codec delays differ, and
+    // the Hindi track is the one receiving the delay.
+    const video = makeVideo("v1", "Underworld.mkv", [langTrack("1", "eng")]);
+    const audio = makeAudio("a1", "Underworld.dub.mkv", {
       matchedVideoId: "v1",
-      language: "eng",
-      // Neither track carries its own language tag.
-      tracks: [
-        { id: "0", type: "audio" },
-        { id: "1", type: "audio" },
-      ],
+      tracks: [langTrack("0", "hin"), langTrack("1", "eng")],
       includedTrackIds: [0],
     });
 
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
-    expect(plan.measurements.length).toBeGreaterThan(1);
+    expect(plan.measurements).toHaveLength(1);
+    expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
   });
 
-  it("sweeps candidates for a lone track with no shared language", () => {
-    // The .ec3 case. Nothing identifies which video track to measure against,
-    // so every candidate is tried and the sharpest correlation wins.
-    const video = makeVideo("v1", "Ep01.mkv", [langTrack("1", "kor"), langTrack("2", "jpn")]);
+  it("prefers a shared language among the tracks that are muxed", () => {
+    // Both tracks are muxed, so one delay covers both and either may be
+    // measured -- take the pairing that correlates best.
+    const video = makeVideo("v1", "Ep01.mkv", [
+      langTrack("1", "jpn"),
+      langTrack("2", "eng"),
+    ]);
+    const audio = makeAudio("a1", "Ep01.mkv", {
+      matchedVideoId: "v1",
+      tracks: [langTrack("0", "hin"), langTrack("1", "eng")],
+      includedTrackIds: [0, 1],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements[0].pair).toMatchObject({
+      primaryTrack: 1,
+      secondaryTrack: 1,
+    });
+  });
+
+  it("measures a lone track even when no language matches", () => {
+    // A Hindi .ec3 against an English-only video. Refusing this was wrong: the
+    // dub shares music, effects and room tone with the original, and the
+    // confidence figure reports whether it locked on.
+    const video = makeVideo("v1", "Ep01.mkv", [langTrack("1", "eng")]);
     const audio = makeAudio("a1", "Ep01.hin.ec3", {
       matchedVideoId: "v1",
       language: "hin",
@@ -621,6 +617,33 @@ describe("a dub whose file also carries the video's language", () => {
 
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
-    expect(plan.measurements.length).toBeGreaterThan(1);
+    expect(plan.measurements).toHaveLength(1);
+    expect(plan.measurements[0].pair).toMatchObject({
+      primaryTrack: 0,
+      secondaryTrack: 0,
+    });
+  });
+
+  it("does not spread a file-level language across several tracks", () => {
+    // file.language describes one track, so it must not stand in for all of
+    // them and invent a match that decides the reference.
+    const video = makeVideo("v1", "Ep01.mkv", [
+      langTrack("1", "jpn"),
+      langTrack("2", "eng"),
+    ]);
+    const audio = makeAudio("a1", "Ep01.dual.mkv", {
+      matchedVideoId: "v1",
+      language: "eng",
+      tracks: [
+        { id: "0", type: "audio" as const },
+        { id: "1", type: "audio" as const },
+      ],
+      includedTrackIds: [0, 1],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    // Falls back to the video's default track rather than matching on eng.
+    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
   });
 });
