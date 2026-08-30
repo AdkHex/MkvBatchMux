@@ -46,6 +46,10 @@ export function measurementKey(audioFileId: string, trackId: number | null): str
 }
 
 export function parseMeasurementKey(key: string): { audioFileId: string; trackId: number | null } {
+  // Strip the candidate suffix: which of several tried tracks a result came
+  // from does not change where it is written back to.
+  const candidate = key.lastIndexOf("##");
+  if (candidate !== -1) key = key.slice(0, candidate);
   const separator = key.lastIndexOf("::");
   if (separator === -1) return { audioFileId: key, trackId: null };
   const trackId = Number(key.slice(separator + 2));
@@ -146,21 +150,29 @@ export function buildMeasurementPlan({
       return;
     }
 
-    measurements.push({
-      pair: {
-        primaryPath: video.path,
-        secondaryPath: file.path,
-        key: measurementKey(file.id, null),
-        method: "mkvbatchmux",
-        score: 1,
-        primaryTrack: chosen.primaryTrack,
-        secondaryTrack: chosen.secondaryTrack,
-      },
-      audioFileId: file.id,
-      trackId: null,
-      videoId: video.id,
-      videoName: video.name,
-      audioName: file.name,
+    // More than one candidate means nothing identified the right video track,
+    // so each is measured and the best-correlating result wins. The key
+    // carries the candidate index so results can be told apart.
+    chosen.forEach((candidate, index) => {
+      measurements.push({
+        pair: {
+          primaryPath: video.path,
+          secondaryPath: file.path,
+          key:
+            chosen.length === 1
+              ? measurementKey(file.id, null)
+              : `${measurementKey(file.id, null)}##${index}`,
+          method: "mkvbatchmux",
+          score: 1,
+          primaryTrack: candidate.primaryTrack,
+          secondaryTrack: candidate.secondaryTrack,
+        },
+        audioFileId: file.id,
+        trackId: null,
+        videoId: video.id,
+        videoName: video.name,
+        audioName: file.name,
+      });
     });
   });
 
@@ -185,10 +197,22 @@ function chooseMeasurementTracks(
   file: ExternalFile,
   includedTracks: Array<{ trackId: number; streamIndex: number }>,
   referenceTrackByVideoId: Record<string, number>,
-): { primaryTrack: number; secondaryTrack: number } | null {
-  const fallback = {
-    primaryTrack: referenceTrackByVideoId[video.id] ?? defaultReferenceTrack(video),
-    secondaryTrack: includedTracks[0]?.streamIndex ?? 0,
+): Array<{ primaryTrack: number; secondaryTrack: number }> | null {
+  const secondary = includedTracks[0]?.streamIndex ?? 0;
+  const explicitReference = referenceTrackByVideoId[video.id];
+
+  // When nothing identifies the right video track, every audio track is a
+  // candidate and the engine's confidence decides. Guessing one produced a
+  // confident answer from the wrong pair, which is indistinguishable from a
+  // right one until you compare against another tool.
+  const ambiguousCandidates = (): Array<{ primaryTrack: number; secondaryTrack: number }> => {
+    const audioCount = (video.tracks ?? []).filter((t) => t.type === "audio").length;
+    const preferred = explicitReference ?? defaultReferenceTrack(video);
+    const order = [preferred, ...Array.from({ length: audioCount }, (_, i) => i)];
+    const seen = new Set<number>();
+    return order
+      .filter((index) => index < Math.max(audioCount, 1) && !seen.has(index) && seen.add(index))
+      .map((primaryTrack) => ({ primaryTrack, secondaryTrack: secondary }));
   };
 
   const videoAudio = (video.tracks ?? []).filter((track) => track.type === "audio");
@@ -203,16 +227,16 @@ function chooseMeasurementTracks(
         (includedTracks.length === 1 ? file.language : undefined),
     );
 
-  const explicit = referenceTrackByVideoId[video.id];
-  if (explicit !== undefined) {
-    const wanted = normalizeLanguage(videoAudio[explicit]?.language);
+  if (explicitReference !== undefined) {
+    const wanted = normalizeLanguage(videoAudio[explicitReference]?.language);
     if (wanted) {
       const match = includedTracks.find((track) => externalLanguage(track.trackId) === wanted);
       if (match) {
-        return { primaryTrack: explicit, secondaryTrack: match.streamIndex };
+        // An explicit choice plus a language that confirms it: no ambiguity.
+        return [{ primaryTrack: explicitReference, secondaryTrack: match.streamIndex }];
       }
     }
-    return fallback;
+    return ambiguousCandidates();
   }
 
   const externalLanguages = includedTracks
@@ -226,7 +250,7 @@ function chooseMeasurementTracks(
       (candidate) => normalizeLanguage(candidate.language) === language,
     );
     if (index >= 0) {
-      return { primaryTrack: index, secondaryTrack: track.streamIndex };
+      return [{ primaryTrack: index, secondaryTrack: track.streamIndex }];
     }
   }
 
@@ -246,7 +270,7 @@ function chooseMeasurementTracks(
     return null;
   }
 
-  return fallback;
+  return ambiguousCandidates();
 }
 
 /** Language codes vary in case and in the 2- vs 3-letter form between tools. */

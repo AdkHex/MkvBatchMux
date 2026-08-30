@@ -431,3 +431,72 @@ describe("when the video carries no audio in the file's language", () => {
     expect(plan.measurements).toHaveLength(1);
   });
 });
+
+describe("when nothing identifies which video track matches the dub", () => {
+  const langTrack = (id: string, language: string): Track => ({
+    id,
+    type: "audio",
+    language,
+  });
+
+  it("measures every candidate so the best correlation can win", () => {
+    // Regression: MkvBatchMux and AudioSyncMaster disagreed on ten of sixteen
+    // episodes because each guessed a different video track -- the default
+    // track here, track 0 there. Neither guess is knowable in advance, so try
+    // both and let the engine's confidence decide.
+    const video = makeVideo("v1", "Ep01.mkv", [
+      { id: "1", type: "audio" },
+      { id: "2", type: "audio", isDefault: true },
+    ]);
+    const audio = makeAudio("a1", "Ep01.mkv", {
+      matchedVideoId: "v1",
+      tracks: [{ id: "0", type: "audio" }],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements).toHaveLength(2);
+    // The default track is tried first, since it is the better prior.
+    expect(plan.measurements.map((m) => m.pair.primaryTrack)).toEqual([1, 0]);
+    // Every result writes back to the same file.
+    expect(plan.measurements.every((m) => m.trackId === null)).toBe(true);
+  });
+
+  it("keys candidates apart but resolves them to the same file", () => {
+    const video = makeVideo("v1", "Ep01.mkv", [
+      { id: "1", type: "audio" },
+      { id: "2", type: "audio" },
+    ]);
+    const audio = makeAudio("a1", "Ep01.mkv", {
+      matchedVideoId: "v1",
+      tracks: [{ id: "0", type: "audio" }],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+    const keys = plan.measurements.map((m) => m.pair.key);
+
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const key of keys) {
+      expect(parseMeasurementKey(key)).toEqual({ audioFileId: "a1", trackId: null });
+    }
+  });
+
+  it("does not multiply work when the languages already agree", () => {
+    const video = makeVideo("v1", "Ep01.mkv", [
+      langTrack("1", "kor"),
+      langTrack("2", "hin"),
+    ]);
+    const audio = makeAudio("a1", "Ep01.mkv", {
+      matchedVideoId: "v1",
+      tracks: [langTrack("0", "hin")],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements).toHaveLength(1);
+    expect(plan.measurements[0].pair.primaryTrack).toBe(1);
+  });
+});

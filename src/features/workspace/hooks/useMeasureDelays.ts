@@ -60,6 +60,11 @@ export function useMeasureDelays({
   const runIdRef = useRef<string | null>(null);
   const planRef = useRef<Map<string, PlannedMeasurement>>(new Map());
   const forcedRef = useRef(false);
+  // Best confidence seen per file this run. When a video's audio tracks give
+  // no clue which one matches the dub, several are measured and the sharpest
+  // correlation wins -- so a later, worse result must not overwrite a better
+  // one that already arrived.
+  const bestConfidenceRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -88,6 +93,15 @@ export function useMeasureDelays({
     if (!planned) return;
 
     const { audioFileId, trackId } = parseMeasurementKey(key);
+
+    // Results arrive in whatever order the workers finish, so compare against
+    // the best so far rather than assuming the first one is authoritative.
+    const confidence = result.confidence ?? 0;
+    const scope = `${audioFileId}::${trackId ?? "file"}`;
+    const best = bestConfidenceRef.current.get(scope);
+    if (best !== undefined && confidence <= best) return;
+    bestConfidenceRef.current.set(scope, confidence);
+
     const measuredAt = new Date().toISOString();
 
     const next = audioFilesRef.current.map((file) =>
@@ -219,6 +233,7 @@ export function useMeasureDelays({
       forcedRef.current = Boolean(options.force);
       planRef.current = new Map(plan.measurements.map((m) => [m.pair.key, m]));
 
+      bestConfidenceRef.current = new Map();
       setIsMeasuring(true);
       setProgress({ processed: 0, total: plan.measurements.length, current: null });
 
