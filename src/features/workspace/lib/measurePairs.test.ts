@@ -373,3 +373,61 @@ describe("re-running a bulk measurement", () => {
     expect(plan.measurements).toHaveLength(1);
   });
 });
+
+describe("when the video carries no audio in the file's language", () => {
+  const langTrack = (id: string, language: string): Track => ({
+    id,
+    type: "audio",
+    language,
+  });
+
+  it("refuses to measure rather than comparing two languages", () => {
+    // Regression: a Hindi .ec3 against an x264 rip carrying only Korean fell
+    // back to the video's first track, so every episode came back with a
+    // confident, wrong delay -- clustered around +15840 ms because the
+    // correlator kept locking onto the same repeated passage.
+    const video = makeVideo("v1", "Ep01.mkv", [langTrack("1", "kor")]);
+    const audio = makeAudio("a1", "Ep01.hin.ec3", {
+      matchedVideoId: "v1",
+      language: "hin",
+      tracks: [langTrack("0", "hin")],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements).toHaveLength(0);
+    expect(plan.languageMismatch.map((file) => file.id)).toEqual(["a1"]);
+  });
+
+  it("still measures when the languages agree", () => {
+    const video = makeVideo("v1", "Ep01.mkv", [langTrack("1", "hin")]);
+    const audio = makeAudio("a1", "Ep01.hin.ec3", {
+      matchedVideoId: "v1",
+      language: "hin",
+      tracks: [langTrack("0", "hin")],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements).toHaveLength(1);
+    expect(plan.languageMismatch).toHaveLength(0);
+  });
+
+  it("measures when either side's language is unknown", () => {
+    // Refusing needs evidence. Without a language on one side there is no
+    // mismatch to prove, and first-against-first is the reasonable guess.
+    const video = makeVideo("v1", "Ep01.mkv", [{ id: "1", type: "audio" }]);
+    const audio = makeAudio("a1", "Ep01.hin.ec3", {
+      matchedVideoId: "v1",
+      language: "hin",
+      tracks: [langTrack("0", "hin")],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements).toHaveLength(1);
+  });
+});

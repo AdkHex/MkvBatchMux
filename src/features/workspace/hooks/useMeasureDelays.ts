@@ -176,6 +176,18 @@ export function useMeasureDelays({
       });
 
       if (plan.measurements.length === 0) {
+        // Ordered by how actionable each reason is.
+        if (plan.languageMismatch.length > 0) {
+          toast({
+            title: "Nothing to measure against",
+            description:
+              `The video has no audio in the same language as ${plan.languageMismatch.length === 1 ? "this file" : "these files"}. ` +
+              "Measuring compares waveforms, so a dub can only be matched against the same language. " +
+              "Set the track language to one the video carries, or type the delay by hand.",
+            variant: "destructive",
+          });
+          return;
+        }
         const reason =
           plan.unmatched.length > 0
             ? `${plan.unmatched.length} audio file(s) match no video, so there is nothing to measure against.`
@@ -184,6 +196,15 @@ export function useMeasureDelays({
               : "Add audio files first.";
         toast({ title: "Nothing to measure", description: reason });
         return;
+      }
+
+      if (plan.languageMismatch.length > 0) {
+        toast({
+          title: `Skipping ${plan.languageMismatch.length} file(s)`,
+          description:
+            "The video carries no audio in their language, and comparing two " +
+            "different languages produces a confident wrong answer rather than a failure.",
+        });
       }
 
       if (plan.unmatched.length > 0) {

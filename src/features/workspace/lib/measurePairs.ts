@@ -33,6 +33,10 @@ export interface MeasurementPlan {
   unmatched: ExternalFile[];
   /** Files skipped because their delay was typed by hand or already measured. */
   skipped: ExternalFile[];
+  /** Files whose language exists in neither of the video's audio tracks.
+   *  Measuring these compares two different languages, which shares no
+   *  waveform and produces a confident wrong number rather than a failure. */
+  languageMismatch: ExternalFile[];
 }
 
 /** The key encodes what to write back to, so the result never has to be
@@ -103,6 +107,7 @@ export function buildMeasurementPlan({
   const measurements: PlannedMeasurement[] = [];
   const unmatched: ExternalFile[] = [];
   const skipped: ExternalFile[] = [];
+  const languageMismatch: ExternalFile[] = [];
 
   const candidates = onlyAudioFileIds
     ? audioFiles.filter((file) => onlyAudioFileIds.includes(file.id))
@@ -136,6 +141,10 @@ export function buildMeasurementPlan({
     // peak" or a confident wrong answer, while the easy Hindi-against-Hindi
     // comparison that answers the question was never surfaced.
     const chosen = chooseMeasurementTracks(video, file, includedTracks, referenceTrackByVideoId);
+    if (!chosen) {
+      languageMismatch.push(file);
+      return;
+    }
 
     measurements.push({
       pair: {
@@ -155,7 +164,7 @@ export function buildMeasurementPlan({
     });
   });
 
-  return { measurements, unmatched, skipped };
+  return { measurements, unmatched, skipped, languageMismatch };
 }
 
 /** Pick the one track pair a file's measurement should be taken from.
@@ -176,7 +185,7 @@ function chooseMeasurementTracks(
   file: ExternalFile,
   includedTracks: Array<{ trackId: number; streamIndex: number }>,
   referenceTrackByVideoId: Record<string, number>,
-): { primaryTrack: number; secondaryTrack: number } {
+): { primaryTrack: number; secondaryTrack: number } | null {
   const fallback = {
     primaryTrack: referenceTrackByVideoId[video.id] ?? defaultReferenceTrack(video),
     secondaryTrack: includedTracks[0]?.streamIndex ?? 0,
@@ -206,6 +215,10 @@ function chooseMeasurementTracks(
     return fallback;
   }
 
+  const externalLanguages = includedTracks
+    .map((track) => externalLanguage(track.trackId))
+    .filter((language): language is string => Boolean(language));
+
   for (const track of includedTracks) {
     const language = externalLanguage(track.trackId);
     if (!language) continue;
@@ -215,6 +228,22 @@ function chooseMeasurementTracks(
     if (index >= 0) {
       return { primaryTrack: index, secondaryTrack: track.streamIndex };
     }
+  }
+
+  // Both sides declare a language and they have none in common. Falling back
+  // here would compare, say, a Hindi dub against the video's Korean -- two
+  // recordings that share no waveform, so the correlator finds no true peak
+  // and returns whatever fit best. That reads as a confident delay rather
+  // than as the failure it is, so refuse instead and say why.
+  const videoLanguages = videoAudio
+    .map((track) => normalizeLanguage(track.language))
+    .filter((language): language is string => Boolean(language));
+  if (
+    externalLanguages.length > 0 &&
+    videoLanguages.length > 0 &&
+    !externalLanguages.some((language) => videoLanguages.includes(language))
+  ) {
+    return null;
   }
 
   return fallback;
