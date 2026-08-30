@@ -103,12 +103,19 @@ export const MAX_PLAUSIBLE_OFFSET_MS = 10000;
 
 export const ENGINE_DEFAULTS = {
   windowSeconds: 45,
-  windowCount: 6,
+  // Upstream samples six windows; ten is deliberate. The engine reconciles a
+  // pair by taking the median of its usable windows and discarding those more
+  // than four median-deviations out, so every extra window makes both the
+  // median and the drift line better supported -- and makes a single window
+  // that locked onto a repeated musical phrase easier to outvote.
+  windowCount: 10,
   // Upstream defaults to 60000, which suits its general-purpose case of
   // aligning arbitrary rips. Here it produced a confident -26041 ms on files
   // that were already in sync.
   maxOffsetMs: MAX_PLAUSIBLE_OFFSET_MS,
-  maxWorkers: 3,
+  // Raised alongside windowCount so the extra sampling does not show up as
+  // extra waiting.
+  maxWorkers: 4,
 } as const;
 
 export interface MeasureStartRequest {

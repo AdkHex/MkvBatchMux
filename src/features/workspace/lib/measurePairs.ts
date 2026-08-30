@@ -72,6 +72,16 @@ export interface BuildMeasurementPlanInput {
   onlyAudioFileIds?: string[];
 }
 
+/** How many track pairings a single file may be measured against.
+ *
+ *  Each costs a full window pass, so this trades a bounded amount of extra
+ *  analysis for not having to guess which track carries the dub. Six covers
+ *  every realistic layout -- a dual-audio release against a dual-audio dub is
+ *  four -- while keeping a pathological REMUX from turning one episode into
+ *  half an hour of work.
+ */
+const MAX_TRACK_CANDIDATES = 6;
+
 /** The audio stream index to measure the video against.
  *
  *  Index is *among the video's audio tracks*, not among all its tracks: the
@@ -208,11 +218,39 @@ function chooseMeasurementTracks(
   const ambiguousCandidates = (): Array<{ primaryTrack: number; secondaryTrack: number }> => {
     const audioCount = (video.tracks ?? []).filter((t) => t.type === "audio").length;
     const preferred = explicitReference ?? defaultReferenceTrack(video);
-    const order = [preferred, ...Array.from({ length: audioCount }, (_, i) => i)];
-    const seen = new Set<number>();
-    return order
-      .filter((index) => index < Math.max(audioCount, 1) && !seen.has(index) && seen.add(index))
-      .map((primaryTrack) => ({ primaryTrack, secondaryTrack: secondary }));
+
+    // Deduplicated, best prior first.
+    const ordered = (first: number, count: number) => {
+      const seen = new Set<number>();
+      return [first, ...Array.from({ length: count }, (_, i) => i)].filter(
+        (index) => index < Math.max(count, 1) && !seen.has(index) && seen.add(index),
+      );
+    };
+
+    const primaries = ordered(preferred, audioCount);
+    // The external side is swept too. Its first included track is usually the
+    // dub, but "usually" is what produced a confident wrong answer before --
+    // and a user who excludes that track leaves the wrong one in first place.
+    const secondaries = ordered(
+      secondary,
+      includedTracks.length > 0 ? includedTracks.length : 1,
+    ).map((index) => includedTracks[index]?.streamIndex ?? secondary);
+
+    const pairs: Array<{ primaryTrack: number; secondaryTrack: number }> = [];
+    const seenPairs = new Set<string>();
+    for (const primaryTrack of primaries) {
+      for (const secondaryTrack of secondaries) {
+        const key = `${primaryTrack}:${secondaryTrack}`;
+        if (seenPairs.has(key)) continue;
+        seenPairs.add(key);
+        pairs.push({ primaryTrack, secondaryTrack });
+      }
+    }
+    // Candidates multiply, and each one is a full window pass: a six-track
+    // REMUX against a six-track dub would be thirty-six analyses for a single
+    // episode. The list is already ordered best-prior-first, and the right
+    // pair is realistically within the first few, so cap it.
+    return pairs.slice(0, MAX_TRACK_CANDIDATES);
   };
 
   const videoAudio = (video.tracks ?? []).filter((track) => track.type === "audio");

@@ -171,12 +171,12 @@ describe("buildMeasurementPlan", () => {
 
     const plan = buildMeasurementPlan({ videoFiles: videos, audioFiles: audios });
 
-    expect(plan.measurements).toHaveLength(1);
-    // Written to the file, not to a per-track override.
-    expect(plan.measurements[0].trackId).toBeNull();
-    // secondaryTrack counts audio streams from zero, which is what the engine
-    // expects -- not this app's track id.
-    expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
+    // Every result writes back to the file itself, never to a per-track
+    // override -- one delay covers the whole container.
+    expect(plan.measurements.every((m) => m.trackId === null)).toBe(true);
+    // Nothing here says which track pairs with which, so the included tracks
+    // are candidates rather than a single guess; confidence decides.
+    expect(plan.measurements.map((m) => m.pair.secondaryTrack)).toEqual([0, 2]);
   });
 
   it("uses the video's default audio track as the reference", () => {
@@ -498,5 +498,29 @@ describe("when nothing identifies which video track matches the dub", () => {
 
     expect(plan.measurements).toHaveLength(1);
     expect(plan.measurements[0].pair.primaryTrack).toBe(1);
+  });
+});
+
+describe("bounding how much extra work an ambiguous pair can cause", () => {
+  it("caps the candidate sweep", () => {
+    // Candidates multiply across both sides, so a six-track REMUX against a
+    // six-track dub would otherwise be thirty-six full window passes for one
+    // episode. The list is ordered best-prior-first, so truncating keeps the
+    // likely answers and drops the implausible tail.
+    const audioTracks = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ id: String(i), type: "audio" as const }));
+
+    const video = makeVideo("v1", "Ep01.mkv", audioTracks(6));
+    const audio = makeAudio("a1", "Ep01.mkv", {
+      matchedVideoId: "v1",
+      tracks: audioTracks(6),
+      includedTrackIds: [0, 1, 2, 3, 4, 5],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements.length).toBeLessThanOrEqual(6);
+    // The best prior is still measured first.
+    expect(plan.measurements[0].pair).toMatchObject({ primaryTrack: 0, secondaryTrack: 0 });
   });
 });
