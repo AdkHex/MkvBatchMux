@@ -556,6 +556,58 @@ describe("a dub whose file also carries the video's language", () => {
     });
   });
 
+  it("honours an explicit reference against a track that is not being muxed", () => {
+    // Underworld Evolution: a DTS-HD English video, a [Hindi + English Atmos]
+    // dub, English chosen as the reference, only the Hindi track muxed. The
+    // confirming match was searched among the muxed tracks only, so the
+    // English-to-English pairing was invisible and it fell through to a blind
+    // sweep -- 48% and a wrong offset where the direct pairing gives 100%.
+    const video = makeVideo("v1", "Underworld.Evolution.Remux.mkv", [
+      langTrack("1", "eng"),
+      langTrack("2", "hin"),
+    ]);
+    const audio = makeAudio("a1", "Underworld.Evolution.2160p.mkv", {
+      matchedVideoId: "v1",
+      tracks: [langTrack("0", "hin"), langTrack("1", "eng")],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({
+      videoFiles: [video],
+      audioFiles: [audio],
+      // The user picked the video's English track.
+      referenceTrackByVideoId: { v1: 0 },
+    });
+
+    // One unambiguous pairing, not a sweep.
+    expect(plan.measurements).toHaveLength(1);
+    expect(plan.measurements[0].pair).toMatchObject({
+      primaryTrack: 0,
+      secondaryTrack: 1,
+    });
+  });
+
+  it("does not spread a file-level language across several tracks", () => {
+    // file.language describes one track, so it must not stand in for all of
+    // them -- that would invent a match and skip the sweep that finds the
+    // real one.
+    const video = makeVideo("v1", "Ep01.mkv", [langTrack("1", "eng")]);
+    const audio = makeAudio("a1", "Ep01.dual.mkv", {
+      matchedVideoId: "v1",
+      language: "eng",
+      // Neither track carries its own language tag.
+      tracks: [
+        { id: "0", type: "audio" },
+        { id: "1", type: "audio" },
+      ],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements.length).toBeGreaterThan(1);
+  });
+
   it("sweeps candidates for a lone track with no shared language", () => {
     // The .ec3 case. Nothing identifies which video track to measure against,
     // so every candidate is tried and the sharpest correlation wins.

@@ -202,6 +202,17 @@ function chooseMeasurementTracks(
   const secondary = includedTracks[0]?.streamIndex ?? 0;
   const explicitReference = referenceTrackByVideoId[video.id];
 
+  // Every audio track in the file is a candidate to measure *against*, not
+  // just the ones being muxed. Syncing a dub normally works by aligning the
+  // original-language track both files share -- an English track you are not
+  // keeping still tells you exactly how far the file sits from the video, and
+  // that offset applies to the whole container.
+  const measurableTracks = (file.tracks ?? [])
+    .filter((track) => track.type === "audio")
+    .map((track, streamIndex) => ({ trackId: Number(track.id), streamIndex }))
+    .filter((entry) => Number.isFinite(entry.trackId));
+
+
   // When nothing identifies the right video track, every audio track is a
   // candidate and the engine's confidence decides. Guessing one produced a
   // confident answer from the wrong pair, which is indistinguishable from a
@@ -252,13 +263,22 @@ function chooseMeasurementTracks(
           (track) => track.type === "audio" && Number(track.id) === trackId,
         )?.language ??
         // A single-track file often carries the language on the file itself.
-        (includedTracks.length === 1 ? file.language : undefined),
+        // Keyed on the file having one track rather than one *included* track:
+        // with several tracks the file-level language describes only one of
+        // them, so applying it to all of them would invent matches.
+        (measurableTracks.length === 1 ? file.language : undefined),
     );
 
   if (explicitReference !== undefined) {
     const wanted = normalizeLanguage(videoAudio[explicitReference]?.language);
     if (wanted) {
-      const match = includedTracks.find((track) => externalLanguage(track.trackId) === wanted);
+      // Searched across every audio track, not just the muxed ones. Picking
+      // English as the reference while muxing only the Hindi dub is the normal
+      // way to sync one: the English track both files share is what aligns,
+      // and the offset it measures applies to the whole container. Looking
+      // only at included tracks hid that pairing and fell through to a blind
+      // sweep, which measured Hindi against English and reported noise.
+      const match = measurableTracks.find((track) => externalLanguage(track.trackId) === wanted);
       if (match) {
         // An explicit choice plus a language that confirms it: no ambiguity.
         return [{ primaryTrack: explicitReference, secondaryTrack: match.streamIndex }];
@@ -266,16 +286,6 @@ function chooseMeasurementTracks(
     }
     return ambiguousCandidates();
   }
-
-  // Every audio track in the file is a candidate to measure *against*, not
-  // just the ones being muxed. Syncing a dub normally works by aligning the
-  // original-language track both files share -- an English track you are not
-  // keeping still tells you exactly how far the file sits from the video, and
-  // that offset applies to the whole container.
-  const measurableTracks = (file.tracks ?? [])
-    .filter((track) => track.type === "audio")
-    .map((track, streamIndex) => ({ trackId: Number(track.id), streamIndex }))
-    .filter((entry) => Number.isFinite(entry.trackId));
 
   for (const track of measurableTracks) {
     const language = externalLanguage(track.trackId);
