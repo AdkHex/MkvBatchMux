@@ -228,13 +228,12 @@ function chooseMeasurementTracks(
     };
 
     const primaries = ordered(preferred, audioCount);
-    // The external side is swept too. Its first included track is usually the
-    // dub, but "usually" is what produced a confident wrong answer before --
-    // and a user who excludes that track leaves the wrong one in first place.
-    const secondaries = ordered(
-      secondary,
-      includedTracks.length > 0 ? includedTracks.length : 1,
-    ).map((index) => includedTracks[index]?.streamIndex ?? secondary);
+    // The external side is swept too, across every audio track it has rather
+    // than only the ones being muxed: a track excluded from the output still
+    // measures the file's offset perfectly well, and is often the only one
+    // sharing a language with the video.
+    const externalCount = (file.tracks ?? []).filter((t) => t.type === "audio").length;
+    const secondaries = ordered(secondary, externalCount > 0 ? externalCount : 1);
 
     const pairs: Array<{ primaryTrack: number; secondaryTrack: number }> = [];
     const seenPairs = new Set<string>();
@@ -277,11 +276,21 @@ function chooseMeasurementTracks(
     return ambiguousCandidates();
   }
 
-  const externalLanguages = includedTracks
+  // Every audio track in the file is a candidate to measure *against*, not
+  // just the ones being muxed. Syncing a dub normally works by aligning the
+  // original-language track both files share -- an English track you are not
+  // keeping still tells you exactly how far the file sits from the video, and
+  // that offset applies to the whole container.
+  const measurableTracks = (file.tracks ?? [])
+    .filter((track) => track.type === "audio")
+    .map((track, streamIndex) => ({ trackId: Number(track.id), streamIndex }))
+    .filter((entry) => Number.isFinite(entry.trackId));
+
+  const externalLanguages = measurableTracks
     .map((track) => externalLanguage(track.trackId))
     .filter((language): language is string => Boolean(language));
 
-  for (const track of includedTracks) {
+  for (const track of measurableTracks) {
     const language = externalLanguage(track.trackId);
     if (!language) continue;
     const index = videoAudio.findIndex(
@@ -292,15 +301,15 @@ function chooseMeasurementTracks(
     }
   }
 
-  // Both sides declare a language and they have none in common. Falling back
-  // here would compare, say, a Hindi dub against the video's Korean -- two
-  // recordings that share no waveform, so the correlator finds no true peak
-  // and returns whatever fit best. That reads as a confident delay rather
-  // than as the failure it is, so refuse instead and say why.
+  // Refuse only when the file offers nothing that could align. With several
+  // tracks there is usually a shared original language even when the dub
+  // itself has no counterpart, so the sweep below is worth running; it is a
+  // lone track in a language the video does not carry that is hopeless.
   const videoLanguages = videoAudio
     .map((track) => normalizeLanguage(track.language))
     .filter((language): language is string => Boolean(language));
   if (
+    measurableTracks.length === 1 &&
     externalLanguages.length > 0 &&
     videoLanguages.length > 0 &&
     !externalLanguages.some((language) => videoLanguages.includes(language))

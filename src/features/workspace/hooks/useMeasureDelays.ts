@@ -193,11 +193,13 @@ export function useMeasureDelays({
         // Ordered by how actionable each reason is.
         if (plan.languageMismatch.length > 0) {
           toast({
-            title: "Nothing to measure against",
+            title: "No matching audio to measure against",
             description:
-              `The video has no audio in the same language as ${plan.languageMismatch.length === 1 ? "this file" : "these files"}. ` +
-              "Measuring compares waveforms, so a dub can only be matched against the same language. " +
-              "Set the track language to one the video carries, or type the delay by hand.",
+              "Delays are found by comparing sound, so both files need a track " +
+              "in the same language. " +
+              `${plan.languageMismatch.length === 1 ? "This file has" : "These files have"} only one audio track, ` +
+              "and the video carries nothing in that language. Use a version that " +
+              "also has the video's original audio, or type the delay by hand.",
             variant: "destructive",
           });
           return;

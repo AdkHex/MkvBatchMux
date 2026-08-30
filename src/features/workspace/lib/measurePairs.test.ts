@@ -174,9 +174,10 @@ describe("buildMeasurementPlan", () => {
     // Every result writes back to the file itself, never to a per-track
     // override -- one delay covers the whole container.
     expect(plan.measurements.every((m) => m.trackId === null)).toBe(true);
-    // Nothing here says which track pairs with which, so the included tracks
-    // are candidates rather than a single guess; confidence decides.
-    expect(plan.measurements.map((m) => m.pair.secondaryTrack)).toEqual([0, 2]);
+    // Nothing here says which track pairs with which, so every audio track is
+    // a candidate and confidence decides -- including track 1, which is
+    // excluded from the mux but still measures the file's offset.
+    expect(plan.measurements.map((m) => m.pair.secondaryTrack)).toEqual([0, 1, 2]);
   });
 
   it("uses the video's default audio track as the reference", () => {
@@ -522,5 +523,55 @@ describe("bounding how much extra work an ambiguous pair can cause", () => {
     expect(plan.measurements.length).toBeLessThanOrEqual(6);
     // The best prior is still measured first.
     expect(plan.measurements[0].pair).toMatchObject({ primaryTrack: 0, secondaryTrack: 0 });
+  });
+});
+
+describe("a dub whose file also carries the video's language", () => {
+  const langTrack = (id: string, language: string): Track => ({
+    id,
+    type: "audio",
+    language,
+  });
+
+  it("measures against the shared track even when only the dub is muxed", () => {
+    // Regression: an English film plus a [Hindi + English] dub file was
+    // refused as a language mismatch. Syncing a dub normally works by
+    // aligning the original-language track both files share -- the English
+    // track here -- and applying that offset to the whole container. The
+    // guard only looked at tracks being muxed, so it never saw it.
+    const video = makeVideo("v1", "Underworld.mkv", [langTrack("1", "eng")]);
+    const audio = makeAudio("a1", "Underworld.dub.mkv", {
+      matchedVideoId: "v1",
+      language: "hin",
+      tracks: [langTrack("0", "hin"), langTrack("1", "eng")],
+      // Only the Hindi track is being muxed.
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.languageMismatch).toHaveLength(0);
+    expect(plan.measurements).toHaveLength(1);
+    // English against English: stream index 1 on both sides.
+    expect(plan.measurements[0].pair).toMatchObject({
+      primaryTrack: 0,
+      secondaryTrack: 1,
+    });
+  });
+
+  it("still refuses a lone track in a language the video does not carry", () => {
+    // The .ec3 case: one Hindi stream, a Korean-only video, nothing to align.
+    const video = makeVideo("v1", "Ep01.mkv", [langTrack("1", "kor")]);
+    const audio = makeAudio("a1", "Ep01.hin.ec3", {
+      matchedVideoId: "v1",
+      language: "hin",
+      tracks: [langTrack("0", "hin")],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
+    expect(plan.measurements).toHaveLength(0);
+    expect(plan.languageMismatch.map((f) => f.id)).toEqual(["a1"]);
   });
 });
