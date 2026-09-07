@@ -108,6 +108,15 @@ export function useMeasureDelays({
 
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
+    // Registration is async, so cleanup can run before any of the handles
+    // arrive. Without this the cleanup would iterate an empty array and the
+    // listeners it was meant to remove would attach a moment later and stay --
+    // one extra copy of every handler per remount, each firing its own toast.
+    let disposed = false;
+    const collect = (un: () => void) => {
+      if (disposed) un();
+      else unlisteners.push(un);
+    };
 
     listenMeasureDelaysProgress((payload) => {
       if (payload.runId !== runIdRef.current) return;
@@ -116,12 +125,12 @@ export function useMeasureDelays({
         total: payload.total,
         current: payload.current,
       });
-    }).then((un) => unlisteners.push(un));
+    }).then(collect);
 
     listenMeasureDelaysResult((payload) => {
       if (payload.runId !== runIdRef.current) return;
       applyResult(payload.key, payload.result);
-    }).then((un) => unlisteners.push(un));
+    }).then(collect);
 
     listenMeasureDelaysDone((payload) => {
       if (payload.runId !== runIdRef.current) return;
@@ -148,9 +157,10 @@ export function useMeasureDelays({
           description: "Review the results, then Apply to fill in the delays.",
         });
       }
-    }).then((un) => unlisteners.push(un));
+    }).then(collect);
 
     return () => {
+      disposed = true;
       unlisteners.forEach((un) => un());
     };
   }, [applyResult]);

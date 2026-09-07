@@ -28,6 +28,15 @@ export function applyTrackRowsToVideo(
   const tracks = file.tracks || [];
   const typeTracks = tracks.filter((track) => track.type === type);
 
+  // Which source tracks survived as rows. A row removed in the dialog simply
+  // stops appearing here, so anything missing from this set was deleted by the
+  // user and has to be marked "remove" rather than quietly falling through as
+  // "keep" (mkvmerge drops a track only when it is present with that action).
+  const keptPositions = new Set<number>();
+  rows.forEach((row) => {
+    if (typeTracks[row.sourceTrackPosition]) keptPositions.add(row.sourceTrackPosition);
+  });
+
   const reorderedTypeTracks = rows
     .map((row) => {
       const track = typeTracks[row.sourceTrackPosition];
@@ -83,9 +92,26 @@ export function applyTrackRowsToVideo(
     })
     .filter(Boolean) as Track[];
 
+  // Tracks the user deleted, kept in the list so the backend can exclude them.
+  const removedTypeTracks = typeTracks
+    .filter((_, position) => !keptPositions.has(position))
+    .map((track) => ({
+      ...track,
+      action: "remove" as const,
+      originalName: track.originalName ?? track.name ?? track.codec ?? "",
+      originalLanguage: track.originalLanguage ?? track.language ?? "",
+      originalDefault: track.originalDefault !== undefined ? track.originalDefault : track.isDefault,
+      originalForced: track.originalForced !== undefined ? track.originalForced : track.isForced,
+    }));
+
+  // Kept tracks in their new order, then the deleted ones. This is exactly as
+  // long as typeTracks, so the slots below line up one-for-one and an edit can
+  // never land on a neighbouring track.
+  const finalTypeTracks = [...reorderedTypeTracks, ...removedTypeTracks];
+
   let typeIndex = 0;
   const merged = tracks.map((track) =>
-    track.type === type ? reorderedTypeTracks[typeIndex++] || track : track,
+    track.type === type ? finalTypeTracks[typeIndex++] || track : track,
   );
 
   return { ...file, tracks: merged };

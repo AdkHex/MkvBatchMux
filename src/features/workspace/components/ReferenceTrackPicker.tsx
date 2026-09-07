@@ -119,7 +119,15 @@ export function ReferenceTrackPicker({
       >
         {withChoice.map((video) => {
           const audioTracks = (video.tracks ?? []).filter((track) => track.type === "audio");
-          const selected = value[video.id] ?? defaultReferenceTrack(video);
+          // A stored choice can outlive the track it pointed at: rescanning a
+          // video keeps its id but can leave it with fewer tracks. An index past
+          // the end matches no item and renders the control blank, so fall back
+          // to the default the measurement itself would use.
+          const stored = value[video.id];
+          const selected =
+            stored !== undefined && stored >= 0 && stored < audioTracks.length
+              ? stored
+              : defaultReferenceTrack(video);
           return (
             <div key={video.id} className="flex items-center gap-2">
               <span className="flex-1 truncate text-xs" title={video.name}>

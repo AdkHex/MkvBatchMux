@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X, RefreshCw, FolderOpen, Plus, Trash2, Paperclip } from "lucide-react";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
@@ -14,6 +14,7 @@ import { cn } from "@/shared/lib/utils";
 import type { ExternalFile, MuxSettings, Preset } from "@/shared/types";
 import { pickDirectory, pickFiles, scanMedia } from "@/shared/lib/backend";
 import { useTabState } from "@/features/workspace/store/useTabState";
+import { toast } from "@/shared/hooks/use-toast";
 import { ATTACHMENT_EXTENSIONS } from "@/shared/lib/extensions";
 
 interface AttachmentsTabProps {
@@ -51,11 +52,35 @@ export function AttachmentsTab({
   }));
 
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  /** See ChaptersTab: the highlight follows the file, not the row number, so a
+   *  rescan cannot leave Remove pointed at a different attachment. */
+  const selectedAttachmentIdRef = useRef<string | null>(null);
+
+  const selectAttachmentIndex = (index: number | null) => {
+    selectedAttachmentIdRef.current =
+      index === null ? null : (attachmentFiles[index]?.id ?? null);
+    setSelectedIndex(index);
+  };
+
+  useEffect(() => {
+    const selectedId = selectedAttachmentIdRef.current;
+    if (selectedId === null) return;
+    const nextIndex = attachmentFiles.findIndex((file) => file.id === selectedId);
+    if (nextIndex < 0) selectedAttachmentIdRef.current = null;
+    setSelectedIndex(nextIndex >= 0 ? nextIndex : null);
+  }, [attachmentFiles]);
+
+  // See ChaptersTab: keyed on the folder value, not the preset object, so
+  // saving an unrelated option does not discard a folder the user just typed.
+  const appliedPresetFolderRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!preset) return;
+    const presetFolder = preset.Default_Attachment_Directory || "";
+    if (appliedPresetFolderRef.current === presetFolder) return;
+    appliedPresetFolderRef.current = presetFolder;
     updateAttachmentTabState({
-      sourceFolder: preset.Default_Attachment_Directory || "",
+      sourceFolder: presetFolder,
     });
   }, [preset, updateAttachmentTabState]);
 
@@ -78,25 +103,45 @@ export function AttachmentsTab({
       return attachmentFiles.indexOf(a) - attachmentFiles.indexOf(b);
     });
 
+  /** Identifies the newest scan, so stale replies can be dropped. */
+  const scanRequestRef = useRef(0);
+
   const scanAttachments = async (folderPath: string) => {
+    // Scans of two folders can be in flight at once, and the slower one is not
+    // always the older one. Only the newest request is allowed to publish, so a
+    // late reply for a folder the user has already moved on from is discarded.
+    const requestId = ++scanRequestRef.current;
     if (!folderPath) {
       onAttachmentFilesChange([]);
       return;
     }
-    const extensions = extension === "all" ? [] : [extension];
-    const results = await scanMedia({
-      folder: folderPath,
-      extensions,
-      recursive: false,
-      type: "attachment",
-      include_tracks: false,
-    });
-    const normalized = (results as ExternalFile[]).map((file) => ({
-      ...file,
-      type: "attachment" as const,
-      matchedVideoId: undefined,
-    }));
-    onAttachmentFilesChange(normalized);
+    try {
+      const extensions = extension === "all" ? [] : [extension];
+      const results = await scanMedia({
+        folder: folderPath,
+        extensions,
+        recursive: false,
+        type: "attachment",
+        include_tracks: false,
+      });
+      if (requestId !== scanRequestRef.current) return;
+      const normalized = ((results as ExternalFile[]) || []).map((file) => ({
+        ...file,
+        type: "attachment" as const,
+        matchedVideoId: undefined,
+      }));
+      onAttachmentFilesChange(normalized);
+    } catch (error) {
+      if (requestId !== scanRequestRef.current) return;
+      // Leaving the previous folder's listing on screen with no explanation
+      // reads as "this folder has those files in it".
+      onAttachmentFilesChange([]);
+      toast({
+        title: "Could not scan attachments",
+        description: String(error),
+        variant: "destructive",
+      });
+    }
   };
 
   const handleAddFiles = async () => {
@@ -122,7 +167,7 @@ export function AttachmentsTab({
     if (selectedIndex === null) return;
     const updated = attachmentFiles.filter((_, i) => i !== selectedIndex);
     onAttachmentFilesChange(updated);
-    setSelectedIndex(null);
+    selectAttachmentIndex(null);
   };
 
   return (

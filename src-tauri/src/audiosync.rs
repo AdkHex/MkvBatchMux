@@ -22,6 +22,12 @@ use tauri::{AppHandle, Manager};
 
 use crate::hidden_command;
 
+/// How long a shutdown waits for the engine to exit on its own before it is
+/// killed. Long enough for it to stop its ffmpeg children, short enough that
+/// quitting the app still feels immediate.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_millis(2000);
+const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
 static FFMPEG_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static FFMPEG_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
@@ -135,10 +141,17 @@ struct MeasureDoneEvent {
     error: Option<String>,
 }
 
+/// Engine stdin, shareable so a cancel can be written while a batch is running.
+///
+/// Held apart from the engine itself because a batch keeps the engine locked
+/// for its whole duration; a cancel that had to wait for that lock could only
+/// ever arrive after the run it was meant to stop.
+type SharedStdin = Arc<Mutex<ChildStdin>>;
+
 /// A running engine process plus the channel its stdout reader publishes to.
 pub struct Engine {
     child: Child,
-    stdin: ChildStdin,
+    stdin: SharedStdin,
     events: Receiver<Value>,
     path: String,
     /// Whether the one-time `ready` event has been consumed. See `drain_ready`.
@@ -160,10 +173,12 @@ impl Engine {
             .spawn()
             .map_err(|err| format!("Could not start the analysis engine: {err}"))?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Could not open the engine's input stream".to_string())?;
+        let stdin: SharedStdin = Arc::new(Mutex::new(
+            child
+                .stdin
+                .take()
+                .ok_or_else(|| "Could not open the engine's input stream".to_string())?,
+        ));
         let stdout = child
             .stdout
             .take()
@@ -222,17 +237,13 @@ impl Engine {
         })
     }
 
-    pub fn send(&mut self, payload: &Value) -> Result<(), String> {
-        let line = format!(
-            "{}\n",
-            serde_json::to_string(payload).map_err(|e| e.to_string())?
-        );
-        self.stdin
-            .write_all(line.as_bytes())
-            .map_err(|err| format!("Lost connection to the analysis engine: {err}"))?;
-        self.stdin
-            .flush()
-            .map_err(|err| format!("Lost connection to the analysis engine: {err}"))
+    pub fn send(&self, payload: &Value) -> Result<(), String> {
+        write_line(&self.stdin, payload)
+    }
+
+    /// A clone of the stdin handle, for writing outside the engine lock.
+    fn stdin_handle(&self) -> SharedStdin {
+        Arc::clone(&self.stdin)
     }
 
     pub fn events(&self) -> &Receiver<Value> {
@@ -241,15 +252,46 @@ impl Engine {
 
     pub fn shutdown(&mut self) {
         let _ = self.send(&serde_json::json!({ "command": "shutdown" }));
-        let _ = self.stdin.flush();
-        match self.child.try_wait() {
-            Ok(Some(_)) => {}
-            _ => {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
+
+        // The engine needs a moment to read that line, stop its ffmpeg
+        // children and exit. Checking immediately always found it still alive
+        // and killed it, which is exactly what orphans those children -- the
+        // thing the graceful path exists to avoid.
+        let deadline = std::time::Instant::now() + SHUTDOWN_GRACE;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    thread::sleep(SHUTDOWN_POLL);
+                }
+                Err(_) => break,
             }
         }
+
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
+}
+
+/// Serialise a payload and write it as one line. The lock is held only for the
+/// write itself, so this never blocks on anything but another in-flight write.
+fn write_line(stdin: &SharedStdin, payload: &Value) -> Result<(), String> {
+    let line = format!(
+        "{}\n",
+        serde_json::to_string(payload).map_err(|e| e.to_string())?
+    );
+    let mut stdin = stdin
+        .lock()
+        .map_err(|_| "Engine input lock poisoned".to_string())?;
+    stdin
+        .write_all(line.as_bytes())
+        .map_err(|err| format!("Lost connection to the analysis engine: {err}"))?;
+    stdin
+        .flush()
+        .map_err(|err| format!("Lost connection to the analysis engine: {err}"))
 }
 
 impl Drop for Engine {
@@ -259,8 +301,16 @@ impl Drop for Engine {
 }
 
 /// Shared handle so commands from different invocations reach the same process.
+///
+/// The engine and its stdin are guarded separately on purpose. `with` holds the
+/// engine lock for a whole batch, so anything that has to reach a *running*
+/// engine -- cancellation above all -- goes through `stdin` instead and never
+/// waits on that lock.
 #[derive(Clone, Default)]
-pub struct EngineHandle(Arc<Mutex<Option<Engine>>>);
+pub struct EngineHandle {
+    engine: Arc<Mutex<Option<Engine>>>,
+    stdin: Arc<Mutex<Option<SharedStdin>>>,
+}
 
 impl EngineHandle {
     /// Run `action` against a live engine, starting one if necessary.
@@ -270,11 +320,13 @@ impl EngineHandle {
         action: impl FnOnce(&mut Engine) -> Result<T, String>,
     ) -> Result<T, String> {
         let mut guard = self
-            .0
+            .engine
             .lock()
             .map_err(|_| "Engine lock poisoned".to_string())?;
         if guard.is_none() {
-            *guard = Some(Engine::spawn(app)?);
+            let engine = Engine::spawn(app)?;
+            self.publish_stdin(Some(engine.stdin_handle()));
+            *guard = Some(engine);
         }
         let engine = guard.as_mut().expect("engine present");
         match action(engine) {
@@ -284,37 +336,51 @@ impl EngineHandle {
                 // the next call starts a healthy one rather than reusing a
                 // half-broken pipe.
                 *guard = None;
+                self.publish_stdin(None);
                 Err(err)
             }
+        }
+    }
+
+    /// Record (or clear) the stdin of the live engine.
+    fn publish_stdin(&self, value: Option<SharedStdin>) {
+        if let Ok(mut slot) = self.stdin.lock() {
+            *slot = value;
         }
     }
 
     /// Send without waiting for a reply. Used for cancellation, which must not
     /// queue behind the run it is trying to stop.
     pub fn send_now(&self, payload: &Value) -> Result<(), String> {
-        let mut guard = self
-            .0
-            .lock()
-            .map_err(|_| "Engine lock poisoned".to_string())?;
-        match guard.as_mut() {
-            Some(engine) => engine.send(payload),
+        // Cloned out under a lock held for no longer than the clone, so a batch
+        // holding the engine lock cannot delay this write.
+        let stdin = {
+            let guard = self
+                .stdin
+                .lock()
+                .map_err(|_| "Engine input lock poisoned".to_string())?;
+            guard.clone()
+        };
+        match stdin {
+            Some(stdin) => write_line(&stdin, payload),
             None => Err("The analysis engine is not running".to_string()),
         }
     }
 
     pub fn path(&self) -> Option<String> {
-        self.0
+        self.engine
             .lock()
             .ok()
             .and_then(|guard| guard.as_ref().map(|engine| engine.path.clone()))
     }
 
     pub fn shutdown(&self) {
-        if let Ok(mut guard) = self.0.lock() {
+        if let Ok(mut guard) = self.engine.lock() {
             if let Some(mut engine) = guard.take() {
                 engine.shutdown();
             }
         }
+        self.publish_stdin(None);
     }
 }
 
@@ -782,6 +848,11 @@ pub fn measure_delays_start(
 /// reads stdin on its own thread. Until then the UI reports cancellation as
 /// requested rather than as done, so the button never claims more than it can
 /// deliver. Fixing it belongs in AudioSyncMaster, which owns that file.
+///
+/// What *is* fixed here: this used to take the same lock a running batch holds
+/// for its whole duration, so the line could not even be written until the
+/// batch had finished. Engine stdin is now guarded separately, so the cancel
+/// reaches the pipe immediately and only the upstream read loop delays it.
 #[tauri::command]
 pub fn measure_delays_cancel(engine: tauri::State<'_, EngineHandle>) -> Result<(), String> {
     engine.send_now(&serde_json::json!({ "command": "cancel" }))

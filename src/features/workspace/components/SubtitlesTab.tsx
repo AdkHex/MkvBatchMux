@@ -596,6 +596,12 @@ export function SubtitlesTab({
 
   const applyTrackEdit = () => {
     if (!trackEditTarget) return;
+    // Committed here rather than per keystroke, so Cancel really does cancel.
+    updateTrackOverride({
+      language: trackEditForm.language,
+      delay: trackEditForm.delay,
+      trackName: trackEditForm.trackName,
+    });
     setTrackEditOpen(false);
     setTrackEditTarget(null);
   };
@@ -1622,7 +1628,6 @@ export function SubtitlesTab({
               value={trackEditForm.language}
               onChange={(value) => {
                 setTrackEditForm((prev) => ({ ...prev, language: value }));
-                updateTrackOverride({ language: value });
               }}
               className="h-[30px]"
             />

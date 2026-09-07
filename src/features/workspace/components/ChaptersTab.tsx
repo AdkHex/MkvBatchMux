@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { X, RefreshCw, FolderOpen, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown, BookOpen, Pencil } from "lucide-react";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
@@ -52,6 +52,19 @@ export function ChaptersTab({
 
   const [selectedVideoIndex, setSelectedVideoIndex] = useState<number | null>(null);
   const [selectedChapterIndex, setSelectedChapterIndex] = useState<number | null>(null);
+  /** The selected chapter's id, so the highlight can follow it when the list is
+   *  reordered and be dropped when a rescan replaces it. Selecting by position
+   *  alone meant Remove could act on whatever file later took that slot. */
+  const selectedChapterIdRef = useRef<string | null>(null);
+
+  const selectChapterIndex = useCallback(
+    (index: number | null) => {
+      selectedChapterIdRef.current =
+        index === null ? null : (chapterFiles[index]?.id ?? null);
+      setSelectedChapterIndex(index);
+    },
+    [chapterFiles],
+  );
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingFileId, setEditingFileId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({
@@ -59,10 +72,18 @@ export function ChaptersTab({
     applyDelayToAll: false,
   });
 
+  // Applied when the preset's chapter folder actually changes, not whenever the
+  // preset object is replaced. Saving any unrelated option rebuilds that object,
+  // and reacting to its identity would wipe a folder the user had just typed.
+  const appliedPresetFolderRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!preset) return;
+    const presetFolder = preset.Default_Chapter_Directory || "";
+    if (appliedPresetFolderRef.current === presetFolder) return;
+    appliedPresetFolderRef.current = presetFolder;
     updateChapterTabState({
-      sourceFolder: preset.Default_Chapter_Directory || "",
+      sourceFolder: presetFolder,
       extension: "all",
     });
   }, [preset, updateChapterTabState]);
@@ -90,7 +111,12 @@ export function ChaptersTab({
   const visibleVideos = filterAndSort(videoFiles);
   const visibleChapters = filterAndSort(chapterFiles);
 
+  /** Identifies the newest scan, so stale replies can be dropped. */
+  const scanRequestRef = useRef(0);
+
   const scanChapters = async (folderPath: string) => {
+    // See AttachmentsTab: only the newest scan may publish its results.
+    const requestId = ++scanRequestRef.current;
     if (!folderPath) {
       onChapterFilesChange([]);
       return;
@@ -104,6 +130,7 @@ export function ChaptersTab({
         type: "chapter",
         include_tracks: false,
       });
+      if (requestId !== scanRequestRef.current) return;
       if (!results || !Array.isArray(results)) {
         onChapterFilesChange([]);
         return;
@@ -119,26 +146,56 @@ export function ChaptersTab({
         }));
       onChapterFilesChange(normalized);
     } catch {
+      if (requestId !== scanRequestRef.current) return;
       onChapterFilesChange([]);
     }
   };
 
-  const syncChapterLinks = useCallback(
-    (files: ExternalFile[]) =>
-      files.map((file, index) => ({
-        ...file,
-        matchedVideoId: videoFiles[index]?.id,
-      })),
+  // Pairing chapter files to videos by position is the default, not a rule.
+  // A file the user linked by hand keeps that link, otherwise linking would
+  // undo itself: the link changes chapterFiles, which re-runs the sync below.
+  // A hand-made link whose video has since disappeared falls back to the
+  // positional default rather than pointing at nothing.
+  const resolveChapterLink = useCallback(
+    (file: ExternalFile, index: number): ExternalFile => {
+      if (file.isManuallyLinked && videoFiles.some((video) => video.id === file.matchedVideoId)) {
+        return file;
+      }
+      const positional = videoFiles[index]?.id;
+      if (file.matchedVideoId === positional && !file.isManuallyLinked) return file;
+      return { ...file, matchedVideoId: positional, isManuallyLinked: false };
+    },
     [videoFiles],
+  );
+
+  const syncChapterLinks = useCallback(
+    (files: ExternalFile[]) => files.map(resolveChapterLink),
+    [resolveChapterLink],
   );
 
   useEffect(() => {
     if (chapterFiles.length === 0) return;
-    const isSynced = chapterFiles.every((file, index) => file.matchedVideoId === videoFiles[index]?.id);
+    const isSynced = chapterFiles.every((file, index) => resolveChapterLink(file, index) === file);
     if (!isSynced) {
       onChapterFilesChange(syncChapterLinks(chapterFiles));
     }
-  }, [chapterFiles, onChapterFilesChange, syncChapterLinks, videoFiles]);
+  }, [chapterFiles, onChapterFilesChange, resolveChapterLink, syncChapterLinks, videoFiles]);
+
+  useEffect(() => {
+    const selectedId = selectedChapterIdRef.current;
+    if (selectedId === null) return;
+    const nextIndex = chapterFiles.findIndex((file) => file.id === selectedId);
+    if (nextIndex < 0) selectedChapterIdRef.current = null;
+    setSelectedChapterIndex(nextIndex >= 0 ? nextIndex : null);
+  }, [chapterFiles]);
+
+  // The video list is only ever selected by position, so it just needs to stay
+  // inside the list.
+  useEffect(() => {
+    setSelectedVideoIndex((prev) =>
+      prev !== null && prev >= videoFiles.length ? null : prev,
+    );
+  }, [videoFiles.length]);
 
   const reorderChapterFile = (fromIndex: number, toIndex: number) => {
     if (toIndex < 0 || toIndex >= chapterFiles.length) return;
@@ -146,7 +203,7 @@ export function ChaptersTab({
     const [moved] = updated.splice(fromIndex, 1);
     updated.splice(toIndex, 0, moved);
     onChapterFilesChange(updated);
-    setSelectedChapterIndex(toIndex);
+    selectChapterIndex(toIndex);
   };
 
   const linkChapterToVideo = () => {
@@ -154,7 +211,9 @@ export function ChaptersTab({
     const targetVideo = videoFiles[selectedVideoIndex];
     if (!targetVideo) return;
     const updated = chapterFiles.map((file, index) =>
-      index === selectedChapterIndex ? { ...file, matchedVideoId: targetVideo.id } : file,
+      index === selectedChapterIndex
+        ? { ...file, matchedVideoId: targetVideo.id, isManuallyLinked: true }
+        : file,
     );
     onChapterFilesChange(updated);
   };
@@ -455,7 +514,7 @@ export function ChaptersTab({
                 return (
                 <div
                   key={file.id}
-                  onClick={() => setSelectedChapterIndex(index)}
+                  onClick={() => selectChapterIndex(index)}
                   onDoubleClick={() => openEditDialog(file.id)}
                   className={cn("file-item-audio", selectedChapterIndex === index && "selected")}
                 >

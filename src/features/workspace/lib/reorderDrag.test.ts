@@ -35,3 +35,19 @@ describe("reorderDrag helpers", () => {
     ).toBeLessThan(0);
   });
 });
+
+describe("getAutoScrollDelta", () => {
+  const containerRect = { top: 100, bottom: 500 };
+
+  it("never scrolls faster than maxSpeed however far past the edge the pointer goes", () => {
+    const farBelow = getAutoScrollDelta({ containerRect, pointerY: 5000, maxSpeed: 18 });
+    const farAbove = getAutoScrollDelta({ containerRect, pointerY: -5000, maxSpeed: 18 });
+
+    expect(farBelow).toBeLessThanOrEqual(18);
+    expect(farAbove).toBeGreaterThanOrEqual(-18);
+  });
+
+  it("does not scroll while the pointer is inside the container", () => {
+    expect(getAutoScrollDelta({ containerRect, pointerY: 300 })).toBe(0);
+  });
+});

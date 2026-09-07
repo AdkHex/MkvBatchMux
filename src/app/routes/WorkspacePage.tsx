@@ -63,6 +63,20 @@ import { getUnlinkedExternalFiles } from "@/shared/lib/matchUtils";
 type TabId = "videos" | "subtitles" | "audios" | "chapters" | "attachments" | "mux-setting";
 const MAX_PARALLEL_JOBS = 16;
 
+/** Drop entries for tracks that no longer exist, keeping the same object when
+ *  there is nothing to drop so the state update is a no-op. */
+function pruneFilesByTrack(
+  filesByTrack: Record<string, ExternalFile[]>,
+  tracks: string[],
+): Record<string, ExternalFile[]> {
+  const live = new Set(tracks);
+  const stale = Object.keys(filesByTrack).filter((trackId) => !live.has(trackId));
+  if (stale.length === 0) return filesByTrack;
+  const next = { ...filesByTrack };
+  stale.forEach((trackId) => delete next[trackId]);
+  return next;
+}
+
 const navItems: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "videos", label: "Videos", icon: Video },
   { id: "subtitles", label: "Subtitles", icon: Subtitles },
@@ -106,6 +120,8 @@ const WorkspacePage = () => {
   const [videoSourceFolder, setVideoSourceFolder] = useState("");
   const activeAudioTrack = useTabState((state) => state.activeAudioTrack);
   const activeSubtitleTrack = useTabState((state) => state.activeSubtitleTrack);
+  const audioTracks = useTabState((state) => state.audioTracks);
+  const subtitleTracks = useTabState((state) => state.subtitleTracks);
   const createExternalId = () =>
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -155,6 +171,19 @@ const WorkspacePage = () => {
       prev[activeSubtitleTrack] ? prev : { ...prev, [activeSubtitleTrack]: [] },
     );
   }, [activeSubtitleTrack]);
+
+  // Deleting a track has to take its files with it. These maps are keyed by
+  // track, and the mux reads every key, so a track removed from the tab strip
+  // while its files stayed behind would keep muxing files nobody can see.
+  // Pruning here rather than in the delete handler covers every way a track can
+  // disappear, not just the delete button.
+  useEffect(() => {
+    setAudioFilesByTrack((prev) => pruneFilesByTrack(prev, audioTracks));
+  }, [audioTracks]);
+
+  useEffect(() => {
+    setSubtitleFilesByTrack((prev) => pruneFilesByTrack(prev, subtitleTracks));
+  }, [subtitleTracks]);
 
   const [outputSettings, setOutputSettings] = useState<OutputSettings>({
     directory: "",
@@ -618,6 +647,11 @@ const WorkspacePage = () => {
     }
   }, [fastMuxAvailable, muxSettings.useMkvpropedit]);
 
+  /** Set while a start request is in flight, so a second click cannot issue one. */
+  const muxStartPendingRef = useRef(false);
+  /** Same, for validation: two overlapping previews would race to set results. */
+  const previewPendingRef = useRef(false);
+
   const buildEffectiveMuxSettings = useCallback(
     (jobCount: number) => {
       const autoParallelJobs = Math.max(1, Math.min(jobCount || 1, MAX_PARALLEL_JOBS));
@@ -634,6 +668,11 @@ const WorkspacePage = () => {
   );
 
   const handleStartMuxing = useCallback(() => {
+    // The button only disables once a job reports "processing", which is a
+    // round trip away, so a second click can land before that. The backend
+    // refuses the duplicate, but its rejection would otherwise be read as "the
+    // batch failed to start" and mark the running batch's jobs as errored.
+    if (muxStartPendingRef.current) return;
     if (externalLinkIssues.length > 0) {
       toast({
         title: "Link external files first",
@@ -644,18 +683,35 @@ const WorkspacePage = () => {
     }
     const jobsRequest = buildJobRequests();
     const settings = buildEffectiveMuxSettings(jobsRequest.length);
-    startMuxing({ settings, jobs: jobsRequest }).catch(() => {
-      setJobs((prev) =>
-        prev.map((job) => ({
-          ...job,
-          status: job.status === "queued" ? "error" : job.status,
-          errorMessage: "Failed to start muxing. Check logs.",
-        })),
-      );
-    });
+    muxStartPendingRef.current = true;
+    startMuxing({ settings, jobs: jobsRequest })
+      .catch((error) => {
+        // A batch that is already running is not a failed start: leave its jobs
+        // alone rather than reporting the run the user is watching as broken.
+        if (String(error).toLowerCase().includes("already running")) {
+          toast({
+            title: "Already muxing",
+            description: "A batch is already running.",
+          });
+          return;
+        }
+        setJobs((prev) =>
+          prev.map((job) => ({
+            ...job,
+            status: job.status === "queued" ? "error" : job.status,
+            errorMessage: "Failed to start muxing. Check logs.",
+          })),
+        );
+      })
+      .finally(() => {
+        muxStartPendingRef.current = false;
+      });
   }, [buildEffectiveMuxSettings, buildJobRequests, externalLinkIssues]);
 
   const handlePreviewQueue = useCallback(async () => {
+    // previewLoading only disables the button on the next render, so two quick
+    // clicks can both get through and the slower reply would win.
+    if (previewPendingRef.current) return;
     if (externalLinkIssues.length > 0) {
       toast({
         title: "Validation blocked",
@@ -672,6 +728,7 @@ const WorkspacePage = () => {
       });
       return;
     }
+    previewPendingRef.current = true;
     setPreviewLoading(true);
     try {
       const settings = buildEffectiveMuxSettings(jobsRequest.length);
@@ -701,35 +758,55 @@ const WorkspacePage = () => {
         variant: "destructive",
       });
     } finally {
+      previewPendingRef.current = false;
       setPreviewLoading(false);
     }
   }, [buildEffectiveMuxSettings, buildJobRequests, externalLinkIssues]);
 
-  const handlePauseMuxing = useCallback(() => {
-    pauseMuxing();
-    // Pause stops the queue from starting new jobs; anything already handed to
-    // mkvmerge finishes first. Say so, otherwise Pause looks broken.
+  /** Report a queue control that the backend refused, instead of dropping it. */
+  const reportControlFailure = useCallback((action: string, error: unknown) => {
     toast({
-      title: "Pausing after current job",
+      title: `Could not ${action} muxing`,
       description:
-        "No new jobs will start. Jobs already running will finish first — use Stop to cancel them immediately.",
+        typeof error === "string" ? error : error instanceof Error ? error.message : String(error),
+      variant: "destructive",
     });
   }, []);
 
+  const handlePauseMuxing = useCallback(() => {
+    // Pause stops the queue from starting new jobs; anything already handed to
+    // mkvmerge finishes first. Say so, otherwise Pause looks broken.
+    pauseMuxing()
+      .then(() => {
+        toast({
+          title: "Pausing after current job",
+          description:
+            "No new jobs will start. Jobs already running will finish first — use Stop to cancel them immediately.",
+        });
+      })
+      .catch((error) => reportControlFailure("pause", error));
+  }, [reportControlFailure]);
+
   const handleResumeMuxing = useCallback(() => {
-    resumeMuxing();
-  }, []);
+    resumeMuxing().catch((error) => reportControlFailure("resume", error));
+  }, [reportControlFailure]);
 
   const handleStopMuxing = useCallback(() => {
-    stopMuxing();
-    setJobs((prev) =>
-      prev.map((job) =>
-        job.status === "processing" || job.status === "queued"
-          ? { ...job, status: "stopped", errorMessage: "Stopped by user." }
-          : job,
-      ),
-    );
-  }, []);
+    // The jobs are only marked stopped once the backend confirms it: claiming
+    // they stopped while mkvmerge is still running would be a lie the UI has no
+    // way to take back.
+    stopMuxing()
+      .then(() => {
+        setJobs((prev) =>
+          prev.map((job) =>
+            job.status === "processing" || job.status === "queued"
+              ? { ...job, status: "stopped", errorMessage: "Stopped by user." }
+              : job,
+          ),
+        );
+      })
+      .catch((error) => reportControlFailure("stop", error));
+  }, [reportControlFailure]);
 
   // Checked in the background rather than only when Settings is opened. The
   // offer is a toast with an action, never a modal: an install restarts the

@@ -16,6 +16,17 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
  *  the initial folder scan. */
 const STARTUP_DELAY_MS = 8000;
 
+/** Whether a mux batch is running right now.
+ *
+ *  Module level on purpose. An install relaunches the app, and both entry
+ *  points to it -- the background offer's toast action and the Settings
+ *  button -- sit outside the component that knows about the queue. Checking a
+ *  shared flag at the moment of install is what makes "never restart mid-batch"
+ *  true regardless of which button is pressed, and regardless of the batch
+ *  having started after the offer was raised.
+ */
+let muxBatchRunning = false;
+
 interface UseAutoUpdateInput {
   /** True while a mux batch is running. Nothing is offered during one: a batch
    *  can run for many minutes and an install means a restart. */
@@ -43,6 +54,10 @@ export function useAutoUpdate({ isBusy, onUpdateAvailable }: UseAutoUpdateInput)
       const { checkUpdate } = await import("@tauri-apps/api/updater");
       const result = await checkUpdate();
       if (!result.shouldUpdate) return;
+      // A batch can start while the check above is in flight. Offering now
+      // would put an Install button in front of someone mid-run, so drop the
+      // result and let the next scheduled check raise it when things are idle.
+      if (isBusyRef.current) return;
 
       const version = result.manifest?.version ?? "";
       if (offeredRef.current === version) return;
@@ -57,6 +72,13 @@ export function useAutoUpdate({ isBusy, onUpdateAvailable }: UseAutoUpdateInput)
       setChecking(false);
     }
   }, []);
+
+  // Mirrored into module scope after commit rather than during render, so a
+  // render React throws away can never leave the flag describing a batch that
+  // is not actually running.
+  useEffect(() => {
+    muxBatchRunning = isBusy;
+  }, [isBusy]);
 
   useEffect(() => {
     const startup = setTimeout(check, STARTUP_DELAY_MS);
@@ -76,6 +98,14 @@ export function useAutoUpdate({ isBusy, onUpdateAvailable }: UseAutoUpdateInput)
  *  two copies of an install-and-relaunch sequence is one too many.
  */
 export async function installUpdateAndRestart(): Promise<void> {
+  // The last line of defence. An offer raised while idle stays on screen for
+  // 30 seconds and the Settings button is always live, so the batch state at
+  // the moment of the click is the only one that counts.
+  if (muxBatchRunning) {
+    throw new Error(
+      "A mux batch is running. Installing restarts the app, so finish or stop the batch first.",
+    );
+  }
   const { installUpdate } = await import("@tauri-apps/api/updater");
   await installUpdate();
   toast({

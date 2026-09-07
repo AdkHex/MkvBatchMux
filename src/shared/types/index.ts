@@ -67,6 +67,9 @@ export interface ExternalFile {
   >;
   muxAfter?: string;
   isManuallyEdited?: boolean;
+  /** The user picked this file's video pairing by hand. Automatic positional
+   *  pairing leaves it alone from then on. */
+  isManuallyLinked?: boolean;
   /** What a measurement produced for this file, kept so the row can keep
    *  explaining itself after a reload. Every field below is optional: sessions
    *  and presets saved before measurement existed must still load. */

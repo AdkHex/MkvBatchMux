@@ -1821,7 +1821,9 @@ fn file_name_with_crc(path: &Path, crc: &str) -> PathBuf {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("output.mkv");
-    let file_stem = file_name.trim_end_matches(".mkv");
+    // strip_suffix, not trim_end_matches: the latter strips *every* trailing
+    // ".mkv", turning "Show.mkv.mkv" into "Show".
+    let file_stem = file_name.strip_suffix(".mkv").unwrap_or(file_name);
     path.with_file_name(format!("{} [{}].mkv", file_stem, crc))
 }
 
@@ -1830,7 +1832,9 @@ fn file_name_without_crc(path: &Path) -> PathBuf {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("output.mkv");
-    let cleaned = file_name.replace(".mkv", "");
+    // Only the extension: replacing every ".mkv" in the name would also eat the
+    // text of a title that happens to contain it.
+    let cleaned = file_name.strip_suffix(".mkv").unwrap_or(file_name).to_string();
     let sanitized = if let Some(index) = cleaned.rfind('[') {
         cleaned[..index].trim().to_string()
     } else {
@@ -1933,7 +1937,17 @@ fn unique_backup_path(source: &Path) -> PathBuf {
     source.with_file_name(format!("{file_name}.mkvbatchmux-backup-{timestamp}"))
 }
 
-fn safe_replace_source(source: &Path, output: &Path, final_path: &Path) -> Result<(), String> {
+/// Replace the source file with the muxed output.
+///
+/// `Ok(Some(warning))` means the replacement succeeded but the backup copy
+/// could not be deleted. That is untidy, not a failure: the user's file has
+/// already been correctly replaced, and reporting it as a failed job used to
+/// send people off to re-run work that was in fact complete.
+fn safe_replace_source(
+    source: &Path,
+    output: &Path,
+    final_path: &Path,
+) -> Result<Option<String>, String> {
     if !output.exists() {
         return Err(format!(
             "Muxed output was not created: {}",
@@ -1969,12 +1983,12 @@ fn safe_replace_source(source: &Path, output: &Path, final_path: &Path) -> Resul
         });
     }
 
-    fs::remove_file(&backup_path).map_err(|e| {
+    Ok(fs::remove_file(&backup_path).err().map(|e| {
         format!(
             "Muxed file replaced the source, but the backup could not be removed: {} ({e})",
             backup_path.to_string_lossy()
         )
-    })
+    }))
 }
 
 fn rename_final_output(current: &Path, target: &Path) -> Result<PathBuf, String> {
@@ -2047,6 +2061,27 @@ fn collect_track_ids_by_action(tracks: &[TrackInfo], track_type: &str) -> (Vec<u
         ids.push(parse_track_id(track, index));
     }
     (ids, has_removed)
+}
+
+/// The one track per type that may carry the default flag.
+///
+/// A Matroska file is meant to have at most one default track per type, but the
+/// track editors let several be ticked at once (the "set all" checkbox does it
+/// in a single click). Muxing that produces a file players disagree about, so
+/// the first flagged track of each type wins here and the rest are written as
+/// explicitly not-default. Doing it at the point the command is built covers
+/// every editor that can set the flag.
+fn first_default_track_per_type(tracks: &[TrackInfo]) -> HashMap<String, usize> {
+    let mut winners: HashMap<String, usize> = HashMap::new();
+    for (index, track) in tracks.iter().enumerate() {
+        if is_track_removed(track) || track.is_default != Some(true) {
+            continue;
+        }
+        winners
+            .entry(track.track_type.clone())
+            .or_insert_with(|| parse_track_id(track, index));
+    }
+    winners
 }
 
 fn intersect_ids(left: Vec<usize>, right: Vec<usize>) -> Vec<usize> {
@@ -2589,6 +2624,7 @@ fn build_mkvmerge_command(
 
     // Apply individual track modifications (name, language, default, forced) BEFORE adding source file
     // Format: --default-track-flag TID:value (no 0: prefix when flag comes before the file)
+    let default_winners = first_default_track_per_type(&job.video.tracks);
     for (index, track) in job.video.tracks.iter().enumerate() {
         if is_track_removed(track) {
             continue;
@@ -2612,12 +2648,12 @@ fn build_mkvmerge_command(
         // Default flag - apply individual track defaults from ModifyTracksDialog
         // These override the bulk operations (external defaults, language filters) for specific tracks
         if let Some(is_default) = track.is_default {
+            // Only the first flagged track of this type keeps the flag; see
+            // first_default_track_per_type.
+            let wins = is_default
+                && default_winners.get(&track.track_type) == Some(&track_id);
             args.push("--default-track-flag".to_string());
-            args.push(format!(
-                "{}:{}",
-                track_id,
-                if is_default { "yes" } else { "no" }
-            ));
+            args.push(format!("{}:{}", track_id, if wins { "yes" } else { "no" }));
         }
 
         // Forced flag for subtitles (use forced-display-flag)
@@ -3003,6 +3039,36 @@ fn parse_progress(line: &str) -> Option<u8> {
     line[start..percent_pos].trim().parse::<u8>().ok()
 }
 
+/// Remove the temp file a failed overwrite job left behind.
+///
+/// In overwrite mode the output is a uniquely-named temp file written *into the
+/// source folder*. A failed job used to leave it there for good: it wastes the
+/// space of a whole remux, and because it ends in .mkv the next scan of that
+/// folder offers it up as a source video. In destination mode the path is the
+/// user's own chosen output, so it is left alone.
+fn discard_failed_temp_output(overwrite_mode: bool, output_path: &Path, state: &AppState) {
+    if !overwrite_mode || !output_path.exists() {
+        return;
+    }
+    match fs::remove_file(output_path) {
+        Ok(()) => {
+            let _ = write_log_line(
+                &state.paths,
+                &format!("Removed temp output {}", output_path.display()),
+            );
+        }
+        Err(err) => {
+            let _ = write_log_line(
+                &state.paths,
+                &format!(
+                    "Could not remove temp output {}: {err}",
+                    output_path.display()
+                ),
+            );
+        }
+    }
+}
+
 fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: MuxJobRequest) {
     if state.mux().stop {
         return;
@@ -3202,6 +3268,7 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
     let handle = match run_command_with_logs(app, state, &job, &mut command) {
         Ok(child) => child,
         Err(err) => {
+            discard_failed_temp_output(overwrite_mode, &output_path, state);
             emit_job_error(app, state, settings, &job.id, "Failed to start process", err);
             return;
         }
@@ -3235,6 +3302,7 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
                 &state.paths,
                 &format!("Job {} failed with exit code {}", job.id, exit_code),
             );
+            discard_failed_temp_output(overwrite_mode, &output_path, state);
             emit_job_error(
                 app,
                 state,
@@ -3248,9 +3316,15 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
     }
 
     if overwrite_mode && output_path.exists() {
-        if let Err(err) = safe_replace_source(Path::new(&job.video.path), &output_path, &final_path) {
-            emit_job_error(app, state, settings, &job.id, "Overwrite failed", err);
-            return;
+        match safe_replace_source(Path::new(&job.video.path), &output_path, &final_path) {
+            Ok(Some(warning)) => {
+                let _ = write_log_line(&state.paths, &format!("Job {}: {warning}", job.id));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                emit_job_error(app, state, settings, &job.id, "Overwrite failed", err);
+                return;
+            }
         }
     }
 
@@ -3547,6 +3621,89 @@ fn open_log_file(app: AppHandle, state: State<AppState>) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn track(id: &str, track_type: &str, is_default: Option<bool>) -> TrackInfo {
+        TrackInfo {
+            id: id.to_string(),
+            track_type: track_type.to_string(),
+            codec: None,
+            language: None,
+            name: None,
+            is_default,
+            is_forced: None,
+            bitrate: None,
+            action: None,
+        }
+    }
+
+    #[test]
+    fn crc_suffix_keeps_a_name_that_ends_in_a_repeated_extension() {
+        let path = Path::new("/videos/Show.mkv.mkv");
+        assert_eq!(
+            file_name_with_crc(path, "ABCD1234"),
+            PathBuf::from("/videos/Show.mkv [ABCD1234].mkv")
+        );
+    }
+
+    #[test]
+    fn crc_cleanup_only_strips_the_extension() {
+        // ".mkv" inside the title must survive; only the real extension goes.
+        let path = Path::new("/videos/Show.mkv.Rip [ABCD1234].mkv");
+        assert_eq!(
+            file_name_without_crc(path),
+            PathBuf::from("/videos/Show.mkv.Rip.mkv")
+        );
+    }
+
+    #[test]
+    fn crc_cleanup_leaves_a_name_without_a_crc_alone() {
+        let path = Path::new("/videos/Episode 01.mkv");
+        assert_eq!(
+            file_name_without_crc(path),
+            PathBuf::from("/videos/Episode 01.mkv")
+        );
+    }
+
+    #[test]
+    fn only_the_first_flagged_track_of_each_type_stays_default() {
+        let tracks = vec![
+            track("0", "video", Some(true)),
+            track("1", "audio", Some(true)),
+            track("2", "audio", Some(true)),
+            track("3", "subtitle", Some(true)),
+            track("4", "subtitle", Some(true)),
+        ];
+
+        let winners = first_default_track_per_type(&tracks);
+
+        assert_eq!(winners.get("video"), Some(&0));
+        assert_eq!(winners.get("audio"), Some(&1));
+        assert_eq!(winners.get("subtitle"), Some(&3));
+    }
+
+    #[test]
+    fn a_removed_track_never_wins_the_default_flag() {
+        let mut removed = track("1", "audio", Some(true));
+        removed.action = Some("remove".to_string());
+        let tracks = vec![removed, track("2", "audio", Some(true))];
+
+        let winners = first_default_track_per_type(&tracks);
+
+        assert_eq!(winners.get("audio"), Some(&2));
+    }
+
+    #[test]
+    fn tracks_that_are_not_flagged_default_do_not_win() {
+        let tracks = vec![
+            track("1", "audio", Some(false)),
+            track("2", "audio", None),
+            track("3", "audio", Some(true)),
+        ];
+
+        let winners = first_default_track_per_type(&tracks);
+
+        assert_eq!(winners.get("audio"), Some(&3));
+    }
+
     fn unique_test_dir(name: &str) -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3579,7 +3736,8 @@ mod tests {
         fs::write(&source, b"original").unwrap();
         fs::write(&output, b"muxed").unwrap();
 
-        safe_replace_source(&source, &output, &source).unwrap();
+        // No warning: the backup was cleaned up too.
+        assert_eq!(safe_replace_source(&source, &output, &source).unwrap(), None);
 
         assert_eq!(fs::read(&source).unwrap(), b"muxed");
         assert!(!output.exists());

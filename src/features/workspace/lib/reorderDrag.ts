@@ -33,12 +33,14 @@ export function getAutoScrollDelta({
   threshold = 40,
   maxSpeed = 18,
 }: AutoScrollInput) {
+  // Intensity is capped: dragging far past the edge (easy to do once the
+  // pointer is captured) would otherwise scale straight past maxSpeed.
   if (pointerY < containerRect.top + threshold) {
-    const intensity = (containerRect.top + threshold - pointerY) / threshold;
+    const intensity = clamp((containerRect.top + threshold - pointerY) / threshold, 0, 1);
     return -Math.max(4, Math.round(maxSpeed * intensity));
   }
   if (pointerY > containerRect.bottom - threshold) {
-    const intensity = (pointerY - (containerRect.bottom - threshold)) / threshold;
+    const intensity = clamp((pointerY - (containerRect.bottom - threshold)) / threshold, 0, 1);
     return Math.max(4, Math.round(maxSpeed * intensity));
   }
   return 0;
