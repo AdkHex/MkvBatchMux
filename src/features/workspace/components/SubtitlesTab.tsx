@@ -19,6 +19,8 @@ import { cn } from "@/shared/lib/utils";
 import type { VideoFile, ExternalFile, Preset } from "@/shared/types";
 import { pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { useTabState } from "@/features/workspace/store/useTabState";
+import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
+import { delaySecondsOrZero, parseDelayInput } from "@/shared/lib/delayInput";
 import { SUBTITLE_EXTENSIONS } from "@/shared/lib/extensions";
 import {
   getUnlinkedExternalFiles,
@@ -245,7 +247,7 @@ export function SubtitlesTab({
     if (same) return;
 
     lastAppliedConfig.current = { ...currentConfig };
-    const delayValue = Number(currentConfig.delay) || 0;
+    const delayValue = delaySecondsOrZero(currentConfig.delay);
     const updatedFiles = subtitleFiles.map((file) => ({
       ...file,
       // Global default/forced toggles must always apply from Track Configuration.
@@ -358,7 +360,7 @@ export function SubtitlesTab({
       type: 'subtitle' as const,
       language: prior?.language ?? currentConfig.language,
       trackName: prior?.trackName ?? currentConfig.trackName,
-      delay: keepsOwnDelay ? prior.delay : Number(currentConfig.delay) || 0,
+      delay: keepsOwnDelay ? prior.delay : delaySecondsOrZero(currentConfig.delay),
       ...(keepsOwnDelay ? { delayProvenance: prior.delayProvenance } : {}),
       isDefault: currentConfig.isDefault,
       isForced: currentConfig.isForced,
@@ -484,7 +486,7 @@ export function SubtitlesTab({
 
   const applyEditChanges = () => {
     if (!editingFileId) return;
-    const delayValue = Number(editForm.delay) || 0;
+    const delayValue = delaySecondsOrZero(editForm.delay);
 
     if (editForm.applyToAllFiles) {
       // Compute which track INDICES are selected in the editing file, then mirror to all files
@@ -610,7 +612,9 @@ export function SubtitlesTab({
     if (!trackEditTarget) return;
     const { fileId, trackId } = trackEditTarget;
     const nextDelay =
-      updates.delay !== undefined ? Number(updates.delay) || 0 : Number(trackEditForm.delay) || 0;
+      updates.delay !== undefined
+        ? delaySecondsOrZero(updates.delay)
+        : delaySecondsOrZero(trackEditForm.delay);
     const nextLanguage =
       updates.language !== undefined ? updates.language : trackEditForm.language;
     const nextName =
@@ -635,7 +639,7 @@ export function SubtitlesTab({
       targetTracks.forEach((track) => {
         const trackId = Number(track.id);
         if (!Number.isFinite(trackId)) return;
-        const nextDelay = Number(multiDelayValues[trackId]) || 0;
+        const nextDelay = delaySecondsOrZero(multiDelayValues[trackId]);
         const prev = nextOverrides[trackId] || {};
         nextOverrides[trackId] = { ...prev, delay: nextDelay };
       });
@@ -739,7 +743,7 @@ export function SubtitlesTab({
       source: "per-file",
       language: currentConfig.language,
       trackName: currentConfig.trackName,
-      delay: Number(currentConfig.delay) || 0,
+      delay: delaySecondsOrZero(currentConfig.delay),
       isDefault: currentConfig.isDefault,
       isForced: currentConfig.isForced,
       muxAfter: currentConfig.muxAfter,
@@ -820,7 +824,7 @@ export function SubtitlesTab({
               className="h-[30px] gap-2"
               onClick={handleImportSubtitles}
             >
-              Import Subtitles
+              Import Subtitles…
             </Button>
             <Button
               variant="outline"
@@ -1271,7 +1275,9 @@ export function SubtitlesTab({
             <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setEditDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={applyEditChanges}>Save changes</Button>
+            <Button onClick={applyEditChanges} disabled={!delayInputsAreValid(editForm.delay)}>
+              Save changes
+            </Button>
           </>
         }
       >
@@ -1303,14 +1309,10 @@ export function SubtitlesTab({
                 className="h-[30px]"
               />
             </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Delay (sec)</label>
-              <Input
-                value={editForm.delay}
-                onChange={(event) => setEditForm((prev) => ({ ...prev, delay: event.target.value }))}
-                className="h-[30px] font-mono"
-              />
-            </div>
+            <DelayField
+              value={editForm.delay}
+              onChange={(value) => setEditForm((prev) => ({ ...prev, delay: value }))}
+            />
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-muted-foreground">Track order</label>
               <Select
@@ -1524,7 +1526,12 @@ export function SubtitlesTab({
             <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setMultiDelayOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={applyMultiDelayChanges}>Save Delays</Button>
+            <Button
+              onClick={applyMultiDelayChanges}
+              disabled={!delayInputsAreValid(...Object.values(multiDelayValues))}
+            >
+              Save Delays
+            </Button>
           </>
         }
       >
@@ -1535,7 +1542,12 @@ export function SubtitlesTab({
               <Input
                 value={multiDelayBulkValue}
                 onChange={(event) => setMultiDelayBulkValue(event.target.value)}
-                className="h-[30px] font-mono"
+                aria-invalid={!parseDelayInput(multiDelayBulkValue).valid}
+                className={cn(
+                  "h-[30px] font-mono",
+                  !parseDelayInput(multiDelayBulkValue).valid &&
+                    "border-destructive focus-visible:ring-destructive",
+                )}
                 placeholder="0.000"
               />
               <Button
@@ -1595,7 +1607,22 @@ export function SubtitlesTab({
                           if (!Number.isFinite(trackId)) return;
                           setMultiDelayValues((prev) => ({ ...prev, [trackId]: value }));
                         }}
-                        className="h-[30px] font-mono text-right"
+                        aria-invalid={
+                          !parseDelayInput(
+                            Number.isFinite(trackId) ? (multiDelayValues[trackId] ?? "0.000") : "0.000",
+                          ).valid
+                        }
+                        title={
+                          parseDelayInput(
+                            Number.isFinite(trackId) ? (multiDelayValues[trackId] ?? "0.000") : "0.000",
+                          ).error
+                        }
+                        className={cn(
+                          "h-[30px] font-mono text-right",
+                          !parseDelayInput(
+                            Number.isFinite(trackId) ? (multiDelayValues[trackId] ?? "0.000") : "0.000",
+                          ).valid && "border-destructive focus-visible:ring-destructive",
+                        )}
                       />
                     </div>
                   );
@@ -1617,7 +1644,9 @@ export function SubtitlesTab({
             <Button variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={() => setTrackEditOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={applyTrackEdit}>Save</Button>
+            <Button onClick={applyTrackEdit} disabled={!delayInputsAreValid(trackEditForm.delay)}>
+              Save
+            </Button>
           </>
         }
       >
@@ -1639,23 +1668,14 @@ export function SubtitlesTab({
               onChange={(event) => {
                 const value = event.target.value;
                 setTrackEditForm((prev) => ({ ...prev, trackName: value }));
-                updateTrackOverride({ trackName: value });
               }}
               className="h-[30px]"
             />
           </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Delay (sec)</label>
-            <Input
-              value={trackEditForm.delay}
-              onChange={(event) => {
-                const value = event.target.value;
-                setTrackEditForm((prev) => ({ ...prev, delay: value }));
-                updateTrackOverride({ delay: value });
-              }}
-              className="h-[30px] font-mono"
-            />
-          </div>
+          <DelayField
+            value={trackEditForm.delay}
+            onChange={(value) => setTrackEditForm((prev) => ({ ...prev, delay: value }))}
+          />
         </div>
       </BaseModal>
 

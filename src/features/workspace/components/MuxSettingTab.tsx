@@ -125,6 +125,29 @@ export function MuxSettingTab({
     () => Object.values(previewResults).reduce((acc, result) => acc + result.warnings.length, 0),
     [previewResults],
   );
+
+  const [confirmStartOpen, setConfirmStartOpen] = useState(false);
+
+  /** The warnings themselves, so the confirmation can show what they are
+   *  rather than only how many there are. */
+  const warnings = useMemo(
+    () => Object.values(previewResults).flatMap((result) => result.warnings),
+    [previewResults],
+  );
+
+  // Validation found problems and the user is starting anyway: an alert is
+  // warranted because a batch is long-running and, with overwrite on, not
+  // undoable. Starting a clean queue raises nothing -- alerts are for the
+  // uncommon case, not for the app's primary action.
+  const startNeedsConfirming = warningCount > 0;
+
+  const handleStartClick = () => {
+    if (startNeedsConfirming) {
+      setConfirmStartOpen(true);
+      return;
+    }
+    onStartMuxing();
+  };
   const hasExternalLinkIssues = externalLinkIssues.length > 0;
   const overallProgress = useMemo(() => {
     if (!hasJobs) return 0;
@@ -536,7 +559,7 @@ export function MuxSettingTab({
                 variant="default"
                 size="sm"
                 className="h-[30px] px-4 text-xs gap-1.5 font-medium"
-                onClick={onStartMuxing}
+                onClick={handleStartClick}
                 disabled={hasExternalLinkIssues || !hasJobs || isProcessing}
               >
                 <Play className="w-3.5 h-3.5" />
@@ -798,6 +821,72 @@ export function MuxSettingTab({
             )}
           </div>
         )}
+      </BaseModal>
+
+      {/* Starting a batch that failed validation.
+          An alert rather than a toast because it needs an answer before
+          anything happens, and the choice is not undoable once mkvmerge is
+          writing over the sources. The confirm button is not styled
+          destructive: the user chose Start Muxing deliberately, and the
+          platform guidance reserves that styling for destructive actions
+          people did not intend. */}
+      <BaseModal
+        variant="alert"
+        open={confirmStartOpen}
+        onOpenChange={setConfirmStartOpen}
+        title={`Start muxing with ${warningCount} warning${warningCount === 1 ? "" : "s"}?`}
+        subtitle={
+          settings.overwriteExisting
+            ? "Overwrite source is on, so this replaces your original files."
+            : "Validation found problems with the queued jobs."
+        }
+        icon={
+          settings.overwriteExisting ? (
+            <AlertTriangle className="w-5 h-5 text-destructive" />
+          ) : (
+            <Play className="w-5 h-5 text-primary" />
+          )
+        }
+        className="max-w-lg"
+        footerRight={
+          <>
+            <Button
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setConfirmStartOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setConfirmStartOpen(false);
+                onStartMuxing();
+              }}
+            >
+              Start muxing
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            {settings.overwriteExisting
+              ? "Muxing anyway will replace the source files. This cannot be undone."
+              : "Muxing anyway may produce files that are not what you expect."}
+          </p>
+          <div className="rounded border border-panel-border bg-panel-header px-3 py-2 space-y-1 max-h-48 overflow-y-auto scrollbar-thin">
+            {warnings.slice(0, 8).map((warning, index) => (
+              <div key={`${warning}-${index}`} className="text-xs text-muted-foreground">
+                • {warning}
+              </div>
+            ))}
+            {warnings.length > 8 ? (
+              <div className="text-xs text-muted-foreground/70">
+                and {warnings.length - 8} more.
+              </div>
+            ) : null}
+          </div>
+        </div>
       </BaseModal>
     </div>
   );

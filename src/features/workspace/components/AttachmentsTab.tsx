@@ -198,7 +198,7 @@ export function AttachmentsTab({
             onClick={handleAddFiles}
           >
             <Plus className="w-4 h-4" />
-            Add Files
+            Add Files…
           </Button>
           <Button
             variant="outline"

@@ -15,6 +15,8 @@ import {
   ReorderHandle,
 } from "@/shared/components/ReorderableTable";
 import { cn } from "@/shared/lib/utils";
+import { delayInputsAreValid } from "@/shared/components/DelayField";
+import { delaySecondsOrZero, parseDelayInput } from "@/shared/lib/delayInput";
 import { pickFiles } from "@/shared/lib/backend";
 import { AUDIO_EXTENSIONS, SUBTITLE_EXTENSIONS } from "@/shared/lib/extensions";
 import type { VideoFile, Track, ExternalFile } from "@/shared/types";
@@ -529,7 +531,7 @@ export function VideoFileEditDialog({
 
   const handleConfirmAddExternal = () => {
     if (!videoFile || !addExternalType || !onAddExternalFiles) return;
-    const delayValue = Number(addExternalForm.delay) || 0;
+    const delayValue = delaySecondsOrZero(addExternalForm.delay);
     onAddExternalFiles(addExternalType, videoFile.id, pendingExternalPaths, {
       trackName: addExternalForm.trackName,
       language: addExternalForm.language || "und",
@@ -706,7 +708,7 @@ export function VideoFileEditDialog({
               onClick={handleOpenImportStreams}
             >
               <Download className="w-4 h-4" />
-              {activeTab === "audios" ? "Import Audio" : "Import Subtitles"}
+              {activeTab === "audios" ? "Import Audio…" : "Import Subtitles…"}
             </Button>
           )}
           <div className="flex items-center">
@@ -946,7 +948,11 @@ export function VideoFileEditDialog({
             >
               Cancel
             </Button>
-            <Button className="h-[30px] px-5 text-sm" onClick={handleConfirmAddExternal}>
+            <Button
+              className="h-[30px] px-5 text-sm"
+              onClick={handleConfirmAddExternal}
+              disabled={!delayInputsAreValid(addExternalForm.delay)}
+            >
               Add Track
             </Button>
           </>
@@ -975,8 +981,18 @@ export function VideoFileEditDialog({
             <TextField
               value={addExternalForm.delay}
               onChange={(e) => setAddExternalForm((prev) => ({ ...prev, delay: e.target.value }))}
-              className="h-[30px] w-32"
+              aria-invalid={!parseDelayInput(addExternalForm.delay).valid}
+              className={cn(
+                "h-[30px] w-32",
+                !parseDelayInput(addExternalForm.delay).valid &&
+                  "border-destructive focus-visible:ring-destructive",
+              )}
             />
+            {!parseDelayInput(addExternalForm.delay).valid ? (
+              <p role="alert" className="text-xs text-destructive">
+                {parseDelayInput(addExternalForm.delay).error}
+              </p>
+            ) : null}
           </div>
           <div className="flex items-center gap-6">
             <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">

@@ -16,6 +16,8 @@ import { EmptyState } from "@/shared/components/EmptyState";
 import type { VideoFile, ExternalFile, Preset, MuxSettings } from "@/shared/types";
 import { pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { useTabState } from "@/features/workspace/store/useTabState";
+import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
+import { delaySecondsOrZero, parseDelayInput } from "@/shared/lib/delayInput";
 import { CHAPTER_EXTENSIONS } from "@/shared/lib/extensions";
 
 interface ChaptersTabProps {
@@ -110,6 +112,14 @@ export function ChaptersTab({
   };
   const visibleVideos = filterAndSort(videoFiles);
   const visibleChapters = filterAndSort(chapterFiles);
+
+  // Reordering writes the real mux order, but a sorted view re-sorts it away,
+  // so the buttons would appear to do nothing while quietly changing the
+  // output. Blocked while a sort is on, with the reason on the control itself.
+  const sortHidesManualOrder = sortValue !== "loaded";
+  const reorderHelp = sortHidesManualOrder
+    ? "Sorting is on, so this list is not in mux order. Switch sort back to Loaded order to rearrange."
+    : undefined;
 
   /** Identifies the newest scan, so stale replies can be dropped. */
   const scanRequestRef = useRef(0);
@@ -228,7 +238,7 @@ export function ChaptersTab({
 
   const applyEditChanges = () => {
     if (!editingFileId) return;
-    const delayValue = Number(editForm.delay) || 0;
+    const delayValue = delaySecondsOrZero(editForm.delay);
     const updated = chapterFiles.map((file) => {
       if (file.id === editingFileId) return { ...file, delay: delayValue };
       if (editForm.applyDelayToAll) return { ...file, delay: delayValue };
@@ -240,7 +250,7 @@ export function ChaptersTab({
   };
 
   const applyDelayToAll = () => {
-    const delayValue = Number(chapterDelay) || 0;
+    const delayValue = delaySecondsOrZero(chapterDelay);
     const updated = chapterFiles.map((file) => ({ ...file, delay: delayValue }));
     onChapterFilesChange(updated);
   };
@@ -350,7 +360,13 @@ export function ChaptersTab({
             <Input
               value={chapterDelay}
               onChange={(e) => updateChapterTabState({ delay: e.target.value })}
-              className="h-[30px] w-20 text-center font-mono"
+              aria-invalid={!parseDelayInput(chapterDelay).valid}
+              title={parseDelayInput(chapterDelay).error}
+              className={cn(
+                "h-[30px] w-20 text-center font-mono",
+                !parseDelayInput(chapterDelay).valid &&
+                  "border-destructive focus-visible:ring-destructive",
+              )}
               disabled={!chaptersEnabled}
             />
             <span className="text-xs text-muted-foreground">sec</span>
@@ -358,7 +374,11 @@ export function ChaptersTab({
               variant="default"
               size="sm"
               className="h-[30px] px-4 text-xs"
-              disabled={!chaptersEnabled || chapterFiles.length === 0}
+              disabled={
+                !chaptersEnabled ||
+                chapterFiles.length === 0 ||
+                !delayInputsAreValid(chapterDelay)
+              }
               onClick={applyDelayToAll}
             >
               Apply
@@ -425,7 +445,14 @@ export function ChaptersTab({
             variant="secondary"
             size="sm"
             className="btn-toolbar h-[30px] w-[30px] p-0"
-            disabled={!chaptersEnabled || selectedChapterIndex === null || selectedChapterIndex === 0}
+            disabled={
+              !chaptersEnabled ||
+              sortHidesManualOrder ||
+              selectedChapterIndex === null ||
+              selectedChapterIndex === 0
+            }
+            aria-label="Move chapter to top"
+            title={reorderHelp ?? "Move chapter to top"}
             onClick={() => selectedChapterIndex !== null && reorderChapterFile(selectedChapterIndex, 0)}
           >
             <ChevronsUp className="w-4 h-4" />
@@ -434,7 +461,14 @@ export function ChaptersTab({
             variant="secondary"
             size="sm"
             className="btn-toolbar h-[30px] w-[30px] p-0"
-            disabled={!chaptersEnabled || selectedChapterIndex === null || selectedChapterIndex === 0}
+            disabled={
+              !chaptersEnabled ||
+              sortHidesManualOrder ||
+              selectedChapterIndex === null ||
+              selectedChapterIndex === 0
+            }
+            aria-label="Move chapter up"
+            title={reorderHelp ?? "Move chapter up"}
             onClick={() =>
               selectedChapterIndex !== null &&
               reorderChapterFile(selectedChapterIndex, selectedChapterIndex - 1)
@@ -447,6 +481,11 @@ export function ChaptersTab({
             size="sm"
             className="btn-toolbar h-[30px] px-3 text-xs"
             disabled={!chaptersEnabled || selectedVideoIndex === null || selectedChapterIndex === null}
+            title={
+              selectedVideoIndex === null || selectedChapterIndex === null
+                ? "Select a video and a chapter file to link them."
+                : "Link the selected chapter file to the selected video."
+            }
             onClick={linkChapterToVideo}
           >
             Link
@@ -457,9 +496,12 @@ export function ChaptersTab({
             className="btn-toolbar h-[30px] w-[30px] p-0"
             disabled={
               !chaptersEnabled ||
+              sortHidesManualOrder ||
               selectedChapterIndex === null ||
               selectedChapterIndex === chapterFiles.length - 1
             }
+            aria-label="Move chapter down"
+            title={reorderHelp ?? "Move chapter down"}
             onClick={() =>
               selectedChapterIndex !== null &&
               reorderChapterFile(selectedChapterIndex, selectedChapterIndex + 1)
@@ -473,9 +515,12 @@ export function ChaptersTab({
             className="btn-toolbar h-[30px] w-[30px] p-0"
             disabled={
               !chaptersEnabled ||
+              sortHidesManualOrder ||
               selectedChapterIndex === null ||
               selectedChapterIndex === chapterFiles.length - 1
             }
+            aria-label="Move chapter to bottom"
+            title={reorderHelp ?? "Move chapter to bottom"}
             onClick={() =>
               selectedChapterIndex !== null &&
               reorderChapterFile(selectedChapterIndex, chapterFiles.length - 1)
@@ -567,23 +612,18 @@ export function ChaptersTab({
             >
               Cancel
             </Button>
-            <Button onClick={applyEditChanges}>Save changes</Button>
+            <Button onClick={applyEditChanges} disabled={!delayInputsAreValid(editForm.delay)}>
+              Save changes
+            </Button>
           </>
         }
       >
         <div className="space-y-3">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Delay (sec)</label>
-            <Input
-              value={editForm.delay}
-              onChange={(event) => setEditForm((prev) => ({ ...prev, delay: event.target.value }))}
-              className="h-[30px] font-mono"
-              placeholder="0.000"
-            />
-            <p className="text-xs text-muted-foreground">
-              Positive values delay chapters, negative values make them earlier.
-            </p>
-          </div>
+          <DelayField
+            value={editForm.delay}
+            onChange={(value) => setEditForm((prev) => ({ ...prev, delay: value }))}
+            hint="Positive values delay chapters, negative values make them earlier."
+          />
           <div className="flex items-center gap-3">
             <Checkbox
               id="chapter-edit-delay-all"

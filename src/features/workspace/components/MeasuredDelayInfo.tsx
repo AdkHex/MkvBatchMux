@@ -6,7 +6,7 @@
  *  field is visible rather than silent. See plan §5.3.
  */
 
-import { AlertTriangle, Scissors } from "lucide-react";
+import { AlertTriangle, RefreshCw, Scissors } from "lucide-react";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/shared/ui/tooltip";
@@ -33,9 +33,18 @@ interface MeasuredDelayInfoProps {
   onApplyAnyway?: () => void;
   /** True while this measurement is staged but not yet in the delay field. */
   pending?: boolean;
+  /** The reference track currently selected for this file's video. When it is
+   *  not the one the measurement used, the result no longer describes what the
+   *  next measurement would produce, and the row says so. */
+  currentReferenceTrack?: number;
 }
 
-export function MeasuredDelayInfo({ measured, onApplyAnyway, pending }: MeasuredDelayInfoProps) {
+export function MeasuredDelayInfo({
+  measured,
+  onApplyAnyway,
+  pending,
+  currentReferenceTrack,
+}: MeasuredDelayInfoProps) {
   const implausible = Math.abs(measured.engineDelayMs) > MAX_PLAUSIBLE_OFFSET_MS;
   if (measured.error) {
     return (
@@ -47,6 +56,13 @@ export function MeasuredDelayInfo({ measured, onApplyAnyway, pending }: Measured
       </div>
     );
   }
+
+  // Changing the reference track changes the question, so a result measured
+  // against the old one is no longer an answer to the current one. Shown as an
+  // indicator in the row rather than an alert: it is information the user can
+  // act on when they choose to, not something to interrupt them for.
+  const referenceChanged =
+    currentReferenceTrack !== undefined && currentReferenceTrack !== measured.referenceTrack;
 
   const level = confidenceLevel(measured.confidence);
   // The stored record carries the same fields the live result did, so the
@@ -78,6 +94,22 @@ export function MeasuredDelayInfo({ measured, onApplyAnyway, pending }: Measured
           <Badge variant="outline" className="gap-1 border-primary/50 text-primary">
             Ready to apply
           </Badge>
+        )}
+
+        {referenceChanged && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant="outline" className="gap-1 border-amber-500/50 text-amber-600 dark:text-amber-400">
+                <RefreshCw className="h-3 w-3" />
+                Reference changed
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              This was measured against audio track {measured.referenceTrack + 1}, but track{" "}
+              {(currentReferenceTrack ?? 0) + 1} is the reference now. The delay below still
+              refers to the old track — measure again to get one for the current reference.
+            </TooltipContent>
+          </Tooltip>
         )}
 
         {/* Checked before the others: a result this large is not a delay, and

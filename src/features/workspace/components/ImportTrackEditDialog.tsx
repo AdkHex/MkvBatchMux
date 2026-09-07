@@ -1,6 +1,8 @@
 import * as React from "react";
 import { Pencil } from "lucide-react";
 import { BaseModal } from "@/shared/components/BaseModal";
+import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
+import { parseDelayInput } from "@/shared/lib/delayInput";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { LanguageSelect } from "./LanguageSelect";
@@ -51,11 +53,14 @@ export function ImportTrackEditDialog({
   }, [open, value.language, value.trackName, value.delay]);
 
   const handleSave = () => {
-    const parsed = Number(delay);
+    const parsed = parseDelayInput(delay);
+    // The button is disabled while this is false, so this is belt-and-braces
+    // rather than the path anyone takes.
+    if (!parsed.valid) return;
     onSave({
       language: language || undefined,
       trackName: trackName || undefined,
-      delay: Number.isFinite(parsed) ? parsed : 0,
+      delay: parsed.value,
     });
     onOpenChange(false);
   };
@@ -72,7 +77,9 @@ export function ImportTrackEditDialog({
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave}>Save</Button>
+          <Button onClick={handleSave} disabled={!delayInputsAreValid(delay)}>
+            Save
+          </Button>
         </>
       }
     >
@@ -89,18 +96,12 @@ export function ImportTrackEditDialog({
             placeholder="Leave empty to keep the original"
           />
         </div>
-        <div className="space-y-1.5">
-          <label className="text-xs text-muted-foreground">Delay (seconds)</label>
-          <Input
-            value={delay}
-            onChange={(event) => setDelay(event.target.value)}
-            className="font-mono"
-            inputMode="decimal"
-          />
-          <p className="text-xs text-muted-foreground">
-            Positive delays this stream; negative plays it earlier. Other streams are unaffected.
-          </p>
-        </div>
+        <DelayField
+          value={delay}
+          onChange={setDelay}
+          label="Delay (seconds)"
+          hint="Positive delays this stream; negative plays it earlier. Other streams are unaffected."
+        />
       </div>
     </BaseModal>
   );
