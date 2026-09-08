@@ -8,6 +8,9 @@ export interface VideoFile {
   path: string;
   size: number;
   duration?: string;
+  /** Unrounded length in seconds. `duration` is rounded to whole seconds for
+   *  display, which is too coarse to divide one length by another. */
+  durationSeconds?: number;
   fps?: number;
   status: 'pending' | 'processing' | 'completed' | 'error';
   tracks: Track[];
@@ -44,6 +47,8 @@ export interface ExternalFile {
   size?: number;
   bitrate?: number;
   duration?: string;
+  /** See `VideoFile.durationSeconds`. */
+  durationSeconds?: number;
   trackId?: number;
   tracks?: Track[];
   includedTrackIds?: number[];

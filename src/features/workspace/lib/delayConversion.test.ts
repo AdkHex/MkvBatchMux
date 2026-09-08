@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SyncResult } from "@/shared/types/audiosync";
+import type { MeasuredDelay } from "@/shared/types";
 import {
   confidenceLevel,
   engineMsToDelaySeconds,
@@ -9,7 +10,10 @@ import {
   isImplausiblyLarge,
   playerDelayMs,
   sourceDelayMs,
-  stretchRatioFor,
+  conversionBetween,
+  formatRateConversion,
+  formatRateDrift,
+  rateConversionFor,
 } from "./delayConversion";
 
 const makeResult = (overrides: Partial<SyncResult> = {}): SyncResult => ({
@@ -205,59 +209,187 @@ describe("frameOffset", () => {
   });
 });
 
-describe("stretchRatioFor", () => {
-  it("uses the exact integer ratio for known broadcast conversions", () => {
-    // A float-derived approximation lands near these but not on them, and
-    // mkvmerge applies the ratio literally. See plan §5.5.
-    expect(stretchRatioFor(0.95904, 25, 23.976)).toEqual({ num: 24000, den: 25025, exact: true });
-    expect(stretchRatioFor(1.0427, 23.976, 25)).toEqual({ num: 25025, den: 24000, exact: true });
-    expect(stretchRatioFor(1.0417, 24, 25)).toEqual({ num: 25, den: 24, exact: true });
-    expect(stretchRatioFor(0.96, 25, 24)).toEqual({ num: 24, den: 25, exact: true });
+/** A measurement carrying only the fields the conversion is derived from. */
+const makeMeasured = (
+  overrides: Partial<
+    Pick<MeasuredDelay, "correctionRatio" | "rateSourceFps" | "rateTargetFps" | "primaryFps">
+  > = {},
+) => ({
+  correctionRatio: null,
+  rateSourceFps: null,
+  rateTargetFps: null,
+  primaryFps: null,
+  ...overrides,
+});
+
+/** The engine reports an ffmpeg atempo speed factor: video rate over audio
+ *  rate. Building the fixtures through it rather than by hand keeps the tests
+ *  honest about which convention they are feeding in. */
+const engineCorrectionRatio = (audioFps: number, videoFps: number) => videoFps / audioFps;
+
+describe("rateConversionFor", () => {
+  it("stretches in the direction that slows fast-running audio", () => {
+    // The direction, stated physically so an inversion cannot pass. Audio timed
+    // at 25fps holds the same frames in less time than a 23.976fps video does,
+    // so it must be SLOWED to fit -- and mkvmerge multiplies timestamps by
+    // num/den, verified against the binary: muxing a 60.01s track with
+    // `--sync 0:0,25025/24000` produces a 62.57s one.
+    const slowingDown = rateConversionFor(
+      makeMeasured({ rateSourceFps: 25, rateTargetFps: 23.976 }),
+    )!;
+    expect(slowingDown.num / slowingDown.den).toBeGreaterThan(1);
+    expect(slowingDown.num / slowingDown.den).toBeCloseTo(25 / 23.976, 4);
+
+    // And the converse: audio timed at 23.976 against a 25fps video runs slow,
+    // so its timestamps must be compressed.
+    const speedingUp = rateConversionFor(
+      makeMeasured({ rateSourceFps: 23.976, rateTargetFps: 25 }),
+    )!;
+    expect(speedingUp.num / speedingUp.den).toBeLessThan(1);
+  });
+
+  it("does not hand mkvmerge the engine's atempo factor", () => {
+    // The engine's correctionRatio is a playback-speed factor and mkvmerge's is
+    // a timestamp multiplier, so they are reciprocals. Passing one straight
+    // through doubles the drift instead of removing it, which is what shipped
+    // before this test existed.
+    const conversion = rateConversionFor(
+      makeMeasured({ correctionRatio: engineCorrectionRatio(25, 23.976) }),
+    )!;
+    expect(conversion.num / conversion.den).toBeCloseTo(25 / 23.976, 4);
+  });
+
+  it("names the exact ratio for the conversions the engine identifies", () => {
+    // mkvmerge applies these literally, so a float-derived near-miss
+    // accumulates real error over an episode.
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 25, rateTargetFps: 23.976 })))
+      .toMatchObject({ num: 1001, den: 960, basis: "named" });
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 24, rateTargetFps: 25 })))
+      .toMatchObject({ num: 24, den: 25, basis: "named" });
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 25, rateTargetFps: 24 })))
+      .toMatchObject({ num: 25, den: 24, basis: "named" });
+  });
+
+  it("gives 1001/1000 for the NTSC pair, not the 999/1000 a decimal implies", () => {
+    // 24 -> 23.976 was the case the app got wrong: with no table entry it
+    // approximated the atempo factor and offered 999/1000, which is both
+    // inverted and inexact. 23.976 is 24000/1001, so the true ratio is
+    // 1001/1000 and the audio has to be slowed, not sped up.
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 24, rateTargetFps: 23.976 })))
+      .toMatchObject({ num: 1001, den: 1000, basis: "named" });
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 23.976, rateTargetFps: 24 })))
+      .toMatchObject({ num: 1000, den: 1001, basis: "named" });
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 30, rateTargetFps: 29.97 })))
+      .toMatchObject({ num: 1001, den: 1000, basis: "named" });
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 60, rateTargetFps: 59.94 })))
+      .toMatchObject({ num: 1001, den: 1000, basis: "named" });
   });
 
   it("tolerates the measured frame rate being slightly off", () => {
     // 23.976023.. is often reported rounded; that noise must still match.
-    expect(stretchRatioFor(0.959, 25.0, 23.976023976)).toEqual({
-      num: 24000,
-      den: 25025,
-      exact: true,
-    });
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 25.0, rateTargetFps: 23.976023976 })))
+      .toMatchObject({ num: 1001, den: 960, basis: "named" });
   });
 
   it("does not confuse 23.976 with 24, which take different ratios", () => {
-    // These are 0.024 fps apart and map to 25025/24000 versus 25/24. A
-    // tolerance wide enough to blur them would silently stretch by the wrong
-    // factor across the whole file.
-    expect(stretchRatioFor(1.0427, 23.976, 25)).toEqual({ num: 25025, den: 24000, exact: true });
-    expect(stretchRatioFor(1.0417, 24, 25)).toEqual({ num: 25, den: 24, exact: true });
+    // These are 0.024 fps apart and map to 1001/960 versus 25/24. A tolerance
+    // wide enough to blur them would silently stretch by the wrong factor
+    // across the whole file.
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 23.976, rateTargetFps: 25 })))
+      .toMatchObject({ num: 960, den: 1001 });
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 24, rateTargetFps: 25 })))
+      .toMatchObject({ num: 24, den: 25 });
   });
 
-  it("falls back to an approximation, marked inexact, when no conversion matches", () => {
-    const ratio = stretchRatioFor(1.0025, 30, 29.925);
-    expect(ratio).not.toBeNull();
-    expect(ratio!.exact).toBe(false);
-    expect(ratio!.num / ratio!.den).toBeCloseTo(1.0025, 6);
+  it("names a standard conversion the engine did not, from the speed alone", () => {
+    // The engine only names a pair when it recognises both rates; a container
+    // frame rate (31.25 for AC-3) defeats that. The speed it measured is still
+    // a standard conversion, and naming it is what turns an opaque ratio into
+    // an instruction.
+    const conversion = rateConversionFor(
+      makeMeasured({
+        correctionRatio: engineCorrectionRatio(25, 23.976),
+        rateSourceFps: 31.25,
+        rateTargetFps: 23.976,
+      }),
+    )!;
+    expect(conversion.basis).toBe("inferred");
+    expect(conversion).toMatchObject({ num: 1001, den: 960, audioFps: 25 });
   });
 
-  it("stretches in the direction that slows fast-running audio", () => {
-    // Direction check, stated physically so an inversion cannot pass:
-    // sourceFps is the rate the AUDIO was timed at, targetFps the VIDEO's.
-    // Audio timed at 25 fps against a 23.976 fps video runs fast, so its
-    // timestamps must be stretched -- the factor must exceed 1.
-    const slowingDown = stretchRatioFor(null, 25, 23.976)!;
-    expect(slowingDown.den / slowingDown.num).toBeGreaterThan(1);
-    // 25/23.976 = 1.0427, i.e. the audio must be slowed by ~4.3%.
-    expect(slowingDown.den / slowingDown.num).toBeCloseTo(25 / 23.976, 4);
+  it("uses the video's own rate to separate conversions of equal speed", () => {
+    // 24 -> 23.976, 30 -> 29.97 and 60 -> 59.94 are all 1001/1000, so the
+    // measurement cannot tell them apart. The video can: only one of them
+    // converts to the rate this video actually runs at.
+    const conversion = rateConversionFor(
+      makeMeasured({
+        correctionRatio: engineCorrectionRatio(24, 24000 / 1001),
+        primaryFps: 23.976,
+      }),
+    )!;
+    expect(conversion).toMatchObject({
+      audioFps: 24,
+      num: 1001,
+      den: 1000,
+      basis: "inferred",
+    });
+  });
 
-    // And the converse: audio timed at 23.976 against a 25 fps video runs
-    // slow, so its timestamps must be compressed.
-    const speedingUp = stretchRatioFor(null, 23.976, 25)!;
-    expect(speedingUp.den / speedingUp.num).toBeLessThan(1);
+  it("still applies the shared ratio when nothing can name the pair", () => {
+    // Without the video's rate, 24 -> 23.976 and 30 -> 29.97 are the same
+    // answer. Refusing the stretch would throw away a ratio that is exact for
+    // all of them; naming one of them would be a guess.
+    const conversion = rateConversionFor(
+      makeMeasured({ correctionRatio: engineCorrectionRatio(24, 24000 / 1001) }),
+    )!;
+    expect(conversion).toMatchObject({ num: 1001, den: 1000, basis: "inferred" });
+    expect(conversion.audioFps).toBeNull();
+    expect(formatRateConversion(conversion)).toBe("×1.001000");
+  });
+
+  it("does not dress up a factor that fits nothing as a named conversion", () => {
+    // Nothing in the table is this close to another entry, so the guard is
+    // asserted through the tolerance rather than through a real pair: a factor
+    // that fits nothing at all must not be dressed up as a named conversion.
+    expect(rateConversionFor(makeMeasured({ correctionRatio: 1 / 1.5 }))).toMatchObject({
+      basis: "measured",
+    });
+  });
+
+  it("ignores a codec frame rate rather than converting to it", () => {
+    // 31.25 is SamplingRate/SamplesPerFrame for AC-3, constant per codec and
+    // unrelated to timing. Stretching by 31.25/23.976 would destroy the file.
+    expect(conversionBetween(31.25, 23.976)).toBeNull();
+  });
+
+  it("falls back to an approximation, marked measured, when nothing standard fits", () => {
+    const conversion = rateConversionFor(
+      makeMeasured({ correctionRatio: engineCorrectionRatio(30, 29.925), primaryFps: 29.925 }),
+    )!;
+    expect(conversion.basis).toBe("measured");
+    expect(conversion.num / conversion.den).toBeCloseTo(30 / 29.925, 6);
+    // The video's rate is still known, so the implied audio rate can be named.
+    expect(conversion.audioFps).toBeCloseTo(30, 2);
   });
 
   it("returns null when there is nothing trustworthy to apply", () => {
-    expect(stretchRatioFor(null, null, null)).toBeNull();
-    expect(stretchRatioFor(undefined, null, null)).toBeNull();
-    expect(stretchRatioFor(0, null, null)).toBeNull();
+    expect(rateConversionFor(makeMeasured())).toBeNull();
+    expect(rateConversionFor(makeMeasured({ correctionRatio: 0 }))).toBeNull();
+    // Same rate on both sides is not a conversion, whatever the engine flagged.
+    expect(rateConversionFor(makeMeasured({ rateSourceFps: 25, rateTargetFps: 25 }))).toBeNull();
   });
 });
+
+describe("formatRateConversion", () => {
+  it("names both rates, which is the part a user can check", () => {
+    const conversion = rateConversionFor(
+      makeMeasured({ rateSourceFps: 24, rateTargetFps: 23.976 }),
+    )!;
+    expect(formatRateConversion(conversion)).toBe("24.000 → 23.976 fps");
+    expect(formatRateDrift(conversion)).toContain("0.10% too fast");
+    // 0.1% is 3.6 seconds across an hour -- the number that says whether it
+    // matters for this file.
+    expect(formatRateDrift(conversion)).toContain("3.6 s");
+  });
+});
+

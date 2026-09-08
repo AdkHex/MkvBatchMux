@@ -39,6 +39,8 @@ import { MeasuredDelayInfo } from "@/features/workspace/components/MeasuredDelay
 import { StretchToggle } from "@/features/workspace/components/StretchToggle";
 import { withheldReason } from "@/features/workspace/lib/delayConversion";
 import { ReferenceTrackPicker } from "@/features/workspace/components/ReferenceTrackPicker";
+import { AudioFpsBadge } from "@/features/workspace/components/AudioFpsBadge";
+import { audioFpsFor } from "@/features/workspace/lib/audioFps";
 import {
   applyMeasurement,
   applyAllPendingDelays,
@@ -183,6 +185,19 @@ export function AudiosTab({
     },
     [videoFiles, referenceTrackByVideoId],
   );
+
+  /** The frame rate a file's audio was timed at, judged against the video it is
+   *  matched to. Recomputed per render from data already in state -- there is
+   *  nothing to store, and a stale copy would outlive the measurement that
+   *  sharpened it. */
+  const fpsFor = useCallback(
+    (file: ExternalFile) =>
+      audioFpsFor(
+        file,
+        videoFiles.find((entry) => entry.id === file.matchedVideoId),
+      ),
+    [videoFiles],
+  );
   const {
     engine: audiosyncEngine,
     isMeasuring,
@@ -204,6 +219,29 @@ export function AudiosTab({
     (fileId: string, stretch: StretchSetting | undefined) => {
       onAudioFilesChange(
         audioFiles.map((file) => (file.id === fileId ? { ...file, stretch } : file)),
+      );
+    },
+    [audioFiles, onAudioFilesChange],
+  );
+
+  /** The same opt-in, for a measurement that belongs to one track of a
+   *  multi-track file. A container can hold one dub that was rate-converted and
+   *  one that was not, so the setting has to live per track -- which is where
+   *  the mux already looks for it, and where the row had no way to set it. */
+  const setStretchForTrack = useCallback(
+    (fileId: string, trackId: number, stretch: StretchSetting | undefined) => {
+      onAudioFilesChange(
+        audioFiles.map((file) =>
+          file.id === fileId
+            ? {
+                ...file,
+                trackOverrides: {
+                  ...file.trackOverrides,
+                  [trackId]: { ...(file.trackOverrides?.[trackId] ?? {}), stretch },
+                },
+              }
+            : file,
+        ),
       );
     },
     [audioFiles, onAudioFilesChange],
@@ -1468,7 +1506,10 @@ export function AudiosTab({
                     </span>
                     <span className="media-row-index">{index + 1}</span>
                     <div className="min-w-0 flex-1">
-                      <div className="media-row-name">{file.name}</div>
+                      <div className="flex items-baseline gap-2 min-w-0">
+                        <div className="media-row-name">{file.name}</div>
+                        <AudioFpsBadge value={fpsFor(file)} />
+                      </div>
                       {file.measuredDelay && (
                         <>
                           <MeasuredDelayInfo
@@ -1513,6 +1554,15 @@ export function AudiosTab({
                                   : undefined
                               }
                             />
+                            <div onClick={(event) => event.stopPropagation()}>
+                              <StretchToggle
+                                id={`stretch-${file.id}-${trackId}`}
+                                measured={override.measuredDelay!}
+                                value={override.stretch}
+                                disabled={isMeasuring}
+                                onChange={(next) => setStretchForTrack(file.id, trackId, next)}
+                              />
+                            </div>
                           </div>
                         </div>
                       ))}

@@ -136,6 +136,11 @@ struct VideoFileInfo {
     path: String,
     size: u64,
     duration: Option<String>,
+    /// The same length as `duration`, unrounded. `duration` is a display string
+    /// rounded to whole seconds, which is far too coarse to divide one length
+    /// by another and read a frame-rate conversion out of the result.
+    #[serde(rename = "durationSeconds")]
+    duration_seconds: Option<f64>,
     fps: Option<f64>,
     status: String,
     tracks: Vec<TrackInfo>,
@@ -165,6 +170,10 @@ struct ExternalFileInfo {
     size: Option<u64>,
     bitrate: Option<u64>,
     duration: Option<String>,
+    /// See `VideoFileInfo::duration_seconds` -- the unrounded length, kept so
+    /// an audio file's length can be divided by its video's.
+    #[serde(rename = "durationSeconds")]
+    duration_seconds: Option<f64>,
     #[serde(rename = "trackId")]
     track_id: Option<u64>,
     #[serde(default)]
@@ -202,6 +211,11 @@ struct TrackOverride {
 /// An opt-in linear stretch for a frame-rate-converted track, emitted as the
 /// extended `--sync <tid>:<offset>,<num>/<den>` form. Absent for every track
 /// the user has not explicitly opted in, so the plain offset stays the default.
+///
+/// mkvmerge multiplies every timestamp by `num/den`, so a ratio above 1 slows
+/// the track down: audio timed at 25fps against a 23.976fps video is short and
+/// takes 25025/24000. The frontend derives the ratio (see
+/// `rateConversionFor` in `delayConversion.ts`); this side only renders it.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 struct StretchSetting {
     num: f64,
@@ -885,7 +899,18 @@ fn get_mkvmerge_info(path: &Path) -> Option<serde_json::Value> {
     Some(value)
 }
 
-fn parse_mkvmerge_duration(mkvmerge: &serde_json::Value) -> Option<String> {
+/// Format a length in seconds as the `HH:MM:SS` string the UI displays.
+fn format_duration(seconds: f64) -> String {
+    let total_seconds = seconds.round() as u64;
+    format!(
+        "{:02}:{:02}:{:02}",
+        total_seconds / 3600,
+        (total_seconds % 3600) / 60,
+        total_seconds % 60
+    )
+}
+
+fn parse_mkvmerge_duration_seconds(mkvmerge: &serde_json::Value) -> Option<f64> {
     let duration = mkvmerge
         .get("container")?
         .get("properties")?
@@ -919,11 +944,7 @@ fn parse_mkvmerge_duration(mkvmerge: &serde_json::Value) -> Option<String> {
         return None;
     }
 
-    let total_seconds = seconds.round() as u64;
-    let hours = total_seconds / 3600;
-    let minutes = (total_seconds % 3600) / 60;
-    let secs = total_seconds % 60;
-    Some(format!("{:02}:{:02}:{:02}", hours, minutes, secs))
+    Some(seconds)
 }
 
 fn parse_mkvmerge_tracks(mkvmerge: &serde_json::Value) -> Vec<TrackInfo> {
@@ -1050,7 +1071,7 @@ fn get_mediainfo(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_slice(&output.stdout).ok()
 }
 
-fn parse_duration(mediainfo: &serde_json::Value) -> Option<String> {
+fn parse_duration_seconds(mediainfo: &serde_json::Value) -> Option<f64> {
     let tracks = mediainfo.get("media")?.get("track")?.as_array()?;
     for track in tracks {
         if track.get("@type")?.as_str()? == "General" {
@@ -1060,11 +1081,7 @@ fn parse_duration(mediainfo: &serde_json::Value) -> Option<String> {
 
                 // First try parsing as seconds (most common for mediainfo JSON)
                 if let Ok(seconds) = duration_str.trim().parse::<f64>() {
-                    let total_seconds = seconds.round() as u64;
-                    let hours = total_seconds / 3600;
-                    let minutes = (total_seconds % 3600) / 60;
-                    let secs = total_seconds % 60;
-                    return Some(format!("{:02}:{:02}:{:02}", hours, minutes, secs));
+                    return Some(seconds);
                 }
 
                 // Try parsing as HH:MM:SS.mmm format
@@ -1072,11 +1089,11 @@ fn parse_duration(mediainfo: &serde_json::Value) -> Option<String> {
                     let parts: Vec<&str> = duration_str.split(':').collect();
                     if parts.len() >= 3 {
                         if let (Ok(h), Ok(m), Ok(s)) = (
-                            parts[0].parse::<u64>(),
-                            parts[1].parse::<u64>(),
-                            parts[2].split('.').next().unwrap_or("0").parse::<u64>(),
+                            parts[0].parse::<f64>(),
+                            parts[1].parse::<f64>(),
+                            parts[2].parse::<f64>(),
                         ) {
-                            return Some(format!("{:02}:{:02}:{:02}", h, m, s));
+                            return Some(h * 3600.0 + m * 60.0 + s);
                         }
                     }
                 }
@@ -1387,6 +1404,7 @@ fn build_file_info(
             path: full_path,
             size,
             duration: None,
+            duration_seconds: None,
             fps: None,
             status: "pending".to_string(),
             tracks: Vec::new(),
@@ -1397,10 +1415,11 @@ fn build_file_info(
             || get_mkvmerge_info(path),
             || get_mediainfo(path),
         );
-        let duration = mkvmerge_info
+        let duration_seconds = mkvmerge_info
             .as_ref()
-            .and_then(parse_mkvmerge_duration)
-            .or_else(|| mediainfo.as_ref().and_then(parse_duration));
+            .and_then(parse_mkvmerge_duration_seconds)
+            .or_else(|| mediainfo.as_ref().and_then(parse_duration_seconds));
+        let duration = duration_seconds.map(format_duration);
         let fps = mediainfo.as_ref().and_then(parse_video_fps);
         let mut tracks = if include_tracks {
             if let Some(info) = mkvmerge_info.as_ref() {
@@ -1447,6 +1466,7 @@ fn build_file_info(
             path: full_path,
             size,
             duration,
+            duration_seconds,
             fps,
             status: "pending".to_string(),
             tracks,
@@ -1472,11 +1492,18 @@ fn build_file_info(
         } else {
             (None, None)
         };
-        let (bitrate, duration, track_id) = if let Some(mi) = mediainfo.as_ref() {
+        let (bitrate, duration_seconds, track_id) = if let Some(mi) = mediainfo.as_ref() {
             let tracks = parse_tracks(mi);
             let audio_track = tracks.iter().find(|t| t.track_type == "audio");
             let bitrate = audio_track.and_then(|t| t.bitrate);
-            let duration = parse_duration(mi);
+            // mediainfo reports no General duration for some raw elementary
+            // streams (a bare .aac among them), so fall back to mkvmerge, which
+            // does probe them.
+            let duration_seconds = parse_duration_seconds(mi).or_else(|| {
+                mkvmerge_info
+                    .as_ref()
+                    .and_then(parse_mkvmerge_duration_seconds)
+            });
             let track_id = if normalized_file_type == "audio" {
                 mkvmerge_info
                     .as_ref()
@@ -1489,7 +1516,7 @@ fn build_file_info(
                     .or_else(|| parse_external_track_id(mi, "Text"))
             };
             let track_id = track_id.filter(|id| *id > 0);
-            (bitrate, duration, track_id)
+            (bitrate, duration_seconds, track_id)
         } else {
             let track_id = if normalized_file_type == "audio" {
                 mkvmerge_info
@@ -1501,8 +1528,12 @@ fn build_file_info(
                     .and_then(|mkv| parse_external_track_id_mkvmerge(mkv, "Text"))
             };
             let track_id = track_id.filter(|id| *id > 0);
-            (None, None, track_id)
+            let duration_seconds = mkvmerge_info
+                .as_ref()
+                .and_then(parse_mkvmerge_duration_seconds);
+            (None, duration_seconds, track_id)
         };
+        let duration = duration_seconds.map(format_duration);
 
         let mut tracks = if include_tracks {
             if let Some(info) = mkvmerge_info.as_ref() {
@@ -1538,6 +1569,7 @@ fn build_file_info(
             size: Some(size),
             bitrate,
             duration,
+            duration_seconds,
             track_id,
             tracks,
             included_track_ids: None,
@@ -3927,17 +3959,20 @@ mod regression_tests {
     /// whole file.
     #[test]
     fn sync_value_includes_the_ratio_only_when_a_stretch_is_set() {
+        // PAL-timed audio on a film-rate video: short, so it is slowed by
+        // 25025/24000. Written the way it now reaches this function, since the
+        // reciprocal is a real mistake someone could copy out of a test.
         let stretch = StretchSetting {
-            num: 24000.0,
-            den: 25025.0,
+            num: 25025.0,
+            den: 24000.0,
         };
         assert_eq!(
             format_sync_value(1, -0.088, Some(stretch)),
-            "1:-88,24000/25025"
+            "1:-88,25025/24000"
         );
         // The offset and the stretch are independent; a zero offset still
         // carries the ratio.
-        assert_eq!(format_sync_value(1, 0.0, Some(stretch)), "1:0,24000/25025");
+        assert_eq!(format_sync_value(1, 0.0, Some(stretch)), "1:0,25025/24000");
     }
 
     /// A malformed ratio must degrade to the plain offset rather than emitting

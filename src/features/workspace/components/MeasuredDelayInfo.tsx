@@ -4,21 +4,30 @@
  *  offset in frames, a warning when the file drifts or was rate-converted, and
  *  the original unrounded milliseconds so the rounding into the three-decimal
  *  field is visible rather than silent. See plan §5.3.
+ *
+ *  Every warning here goes through `WarningBadge`, which will not render
+ *  without both halves of the answer: what caused it, and what to do about it.
+ *  A badge that only names the problem sends the user back to the same guess
+ *  they were making before they hovered it.
  */
 
-import { AlertTriangle, RefreshCw, Scissors } from "lucide-react";
+import { AlertTriangle, Gauge, RefreshCw, Scissors } from "lucide-react";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/shared/ui/tooltip";
 import { cn } from "@/shared/lib/utils";
 import type { MeasuredDelay } from "@/shared/types";
 import { MAX_PLAUSIBLE_OFFSET_MS } from "@/shared/types/audiosync";
+import { WarningBadge } from "@/features/workspace/components/WarningBadge";
 import {
   confidenceLevel,
   formatConfidence,
   formatFrameOffset,
   formatPlayerDelayMs,
+  formatRateConversion,
+  formatRateDrift,
   isUnconvincing,
+  rateConversionFor,
 } from "@/features/workspace/lib/delayConversion";
 
 const CONFIDENCE_STYLES: Record<ReturnType<typeof confidenceLevel>, string> = {
@@ -26,6 +35,12 @@ const CONFIDENCE_STYLES: Record<ReturnType<typeof confidenceLevel>, string> = {
   medium: "text-amber-600 dark:text-amber-400",
   low: "text-red-600 dark:text-red-400",
 };
+
+/** Drift is reported per second, which is too small a unit to picture. Over an
+ *  hour it becomes a number the user can compare against "did it look off". */
+function driftPerHour(driftMsPerS: number): string {
+  return `${Math.abs((driftMsPerS * 3600) / 1000).toFixed(1)} s per hour`;
+}
 
 interface MeasuredDelayInfoProps {
   measured: MeasuredDelay;
@@ -48,12 +63,29 @@ export function MeasuredDelayInfo({
   const implausible = Math.abs(measured.engineDelayMs) > MAX_PLAUSIBLE_OFFSET_MS;
   if (measured.error) {
     return (
-      <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
-        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-        <span className="truncate" title={measured.error}>
-          Measurement failed: {measured.error}
-        </span>
-      </div>
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400 cursor-help">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Measurement failed: {measured.error}</span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-sm space-y-1.5">
+            <p>
+              The engine could not analyse this pair at all, so there is no offset to show:{" "}
+              {measured.error}
+            </p>
+            <p>
+              <span className="font-semibold">What to do: </span>
+              Check the file still exists at the path in the row and that it is a media file
+              ffmpeg can decode, then measure again. A failure on every row instead of this one
+              usually means the engine or ffmpeg is missing — the audio sync panel reports that
+              at the top.
+            </p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     );
   }
 
@@ -72,6 +104,7 @@ export function MeasuredDelayInfo({
   } as Parameters<typeof isUnconvincing>[0]);
   const withheld = implausible || measured.isLikelyCut || weak;
   const frames = formatFrameOffset(measured.appliedMs, measured.primaryFps);
+  const conversion = measured.isRateMismatch ? rateConversionFor(measured) : null;
 
   return (
     <TooltipProvider>
@@ -97,108 +130,180 @@ export function MeasuredDelayInfo({
         )}
 
         {referenceChanged && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Badge variant="outline" className="gap-1 border-amber-500/50 text-amber-600 dark:text-amber-400">
-                <RefreshCw className="h-3 w-3" />
-                Reference changed
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              This was measured against audio track {measured.referenceTrack + 1}, but track{" "}
-              {(currentReferenceTrack ?? 0) + 1} is the reference now. The delay below still
-              refers to the old track — measure again to get one for the current reference.
-            </TooltipContent>
-          </Tooltip>
+          <WarningBadge
+            tone="caution"
+            icon={RefreshCw}
+            label="Reference changed"
+            cause={
+              <>
+                This was measured against audio track {measured.referenceTrack + 1} of the video,
+                but track {(currentReferenceTrack ?? 0) + 1} is the reference now. The two tracks
+                can sit at different offsets, so the delay below answers a question you are no
+                longer asking.
+              </>
+            }
+            fix={
+              <>
+                Measure this row again to get a delay for track{" "}
+                {(currentReferenceTrack ?? 0) + 1}, or set the reference back to track{" "}
+                {measured.referenceTrack + 1} if that was the one you meant.
+              </>
+            }
+          />
         )}
 
         {/* Checked before the others: a result this large is not a delay, and
             saying "different cut" about it would be a guess at the cause. */}
         {implausible && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Badge variant="destructive" className="gap-1">
-                <AlertTriangle className="h-3 w-3" />
-                Implausible
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              {formatPlayerDelayMs(measured.engineDelayMs)} is far larger than any real
-              audio delay, so it was measured but not filled in. It usually means the
-              analysis locked onto a repeated part of the soundtrack rather than the
-              matching one — high confidence only means the sample windows agreed with
-              each other. Check the files play in sync before applying anything.
-            </TooltipContent>
-          </Tooltip>
+          <WarningBadge
+            tone="blocking"
+            solid
+            icon={AlertTriangle}
+            label="Implausible"
+            cause={
+              <>
+                {formatPlayerDelayMs(measured.engineDelayMs)} is far larger than any real audio
+                delay — a container offset is milliseconds, occasionally a second or two, so this
+                was measured but not filled in. It nearly always means the correlator locked onto
+                a repeated passage: the same music cue, an ident, or a stretch of near-silence
+                that occurs twice. A high confidence does not rule that out, because it only says
+                the sample windows agreed with each other, and a repeated passage looks identical
+                in every window.
+              </>
+            }
+            fix={
+              <>
+                Choose a reference track that actually shares dialogue with this dub and measure
+                again — a music-only or commentary track is the usual cause. If the audio comes
+                from a release with an extra logo or intro, trim it first, or type the offset by
+                hand. Use <span className="font-medium">Apply anyway</span> only after playing
+                both files at the same timestamp and confirming the offset is real.
+              </>
+            }
+          />
         )}
 
         {!implausible && measured.isLikelyCut && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Badge variant="destructive" className="gap-1">
-                <Scissors className="h-3 w-3" />
-                Different cut
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              These two files look like different cuts of the material, so no single delay can
-              align them. Nothing was filled in.
-              {measured.rateExplanation ? ` ${measured.rateExplanation}` : ""}
-            </TooltipContent>
-          </Tooltip>
+          <WarningBadge
+            tone="blocking"
+            solid
+            icon={Scissors}
+            label="Different cut"
+            cause={
+              <>
+                The offset does not stay put: it changes
+                {measured.driftMsPerS !== null
+                  ? ` by ${measured.driftMsPerS.toFixed(3)} ms every second (${driftPerHour(
+                      measured.driftMsPerS,
+                    )})`
+                  : ""}
+                , far faster than any frame-rate conversion can explain. That means the two files
+                do not hold the same material end to end — scenes added or removed, an extended
+                cut against a theatrical one, or recap footage only one of them has. Nothing was
+                filled in, because no single delay and no stretch can align them.
+                {measured.rateExplanation ? ` ${measured.rateExplanation}` : ""}
+              </>
+            }
+            fix={
+              <>
+                Pair this audio with the release it was made for — matching runtimes are the quick
+                check. If you have to keep this pairing, cut or pad the audio to match the video
+                outside the app first; muxing it as-is will drift further out the longer it plays.
+              </>
+            }
+          />
         )}
 
         {/* A weak correlation means no distinct peak was found, so the number
             beside it is not a measurement of anything. Ranked below the two
             structural problems, which explain themselves more specifically. */}
         {!implausible && !measured.isLikelyCut && weak && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Badge variant="outline" className="gap-1 border-red-500 text-red-600 dark:text-red-400">
-                <AlertTriangle className="h-3 w-3" />
-                Weak match
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              The analysis never found a clear match, so this offset was measured
-              but not filled in. Usually it means the two files share little
-              audible material — a different encode, a heavily re-mixed dub, or
-              the wrong pairing. Check they play in sync before applying it.
-            </TooltipContent>
-          </Tooltip>
+          <WarningBadge
+            tone="blocking"
+            icon={AlertTriangle}
+            label="Weak match"
+            cause={
+              <>
+                The analysis never found a clear peak — the sample windows disagreed with each
+                other, so at {formatConfidence(measured.confidence)} the offset beside this is not
+                a measurement of anything and was not filled in. It usually means the two files
+                share little audible material: a heavily re-mixed dub, a reference track that is
+                music and effects only, a different encode, or simply the wrong pairing.
+              </>
+            }
+            fix={
+              <>
+                Check this audio really belongs to this video, then pick a reference track with
+                dialogue in it and measure again. If it stays low, set the delay by hand after
+                listening to both at the same timestamp —{" "}
+                <span className="font-medium">Apply anyway</span> accepts this number unchanged
+                rather than improving it.
+              </>
+            }
+          />
         )}
 
         {!measured.isLikelyCut && measured.isRateMismatch && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Badge variant="outline" className="gap-1 border-amber-500 text-amber-600 dark:text-amber-400">
-                <AlertTriangle className="h-3 w-3" />
-                Frame rate
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              {measured.rateExplanation ??
-                "This file looks frame-rate converted; a plain delay will drift over its length."}
-            </TooltipContent>
-          </Tooltip>
+          <WarningBadge
+            tone="caution"
+            icon={Gauge}
+            label={conversion ? formatRateConversion(conversion) : "Frame rate"}
+            cause={
+              <>
+                {measured.rateExplanation ??
+                  "This file looks frame-rate converted; a plain delay will drift over its length."}
+                {conversion && <> The audio runs {formatRateDrift(conversion)}.</>}
+              </>
+            }
+            fix={
+              conversion ? (
+                <>
+                  Turn on <span className="font-medium">Correct frame rate</span> below: it muxes
+                  the track with a {conversion.num}/{conversion.den} stretch, which is the exact
+                  conversion between these two rates
+                  {conversion.basis === "measured"
+                    ? " as far as the measurement can tell — check the end of the file before running a batch"
+                    : ""}
+                  . A delay on its own only lines up the start.
+                </>
+              ) : (
+                <>
+                  Measure this row again so the engine can name both rates; without them a stretch
+                  ratio would be a guess, and a wrong one drifts a file that a plain delay merely
+                  leaves imperfect.
+                </>
+              )
+            }
+          />
         )}
 
         {!measured.isLikelyCut && !measured.isRateMismatch && measured.hasSignificantDrift && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Badge variant="outline" className="gap-1 border-amber-500 text-amber-600 dark:text-amber-400">
-                <AlertTriangle className="h-3 w-3" />
-                Drift
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              The offset changes across the file
-              {measured.driftMsPerS !== null
-                ? ` by ${measured.driftMsPerS.toFixed(3)} ms per second`
-                : ""}
-              . The delay applied is the one measured at the start.
-            </TooltipContent>
-          </Tooltip>
+          <WarningBadge
+            tone="caution"
+            icon={AlertTriangle}
+            label="Drift"
+            cause={
+              <>
+                The offset changes across the file
+                {measured.driftMsPerS !== null
+                  ? ` by ${measured.driftMsPerS.toFixed(3)} ms per second, about ${driftPerHour(
+                      measured.driftMsPerS,
+                    )}`
+                  : ""}
+                , but by an amount that matches no standard frame-rate conversion. A
+                variable-rate source, a file joined from several pieces, or audio resampled at a
+                slightly wrong rate all look like this.
+              </>
+            }
+            fix={
+              <>
+                The delay applied is the one measured at the start, so the opening will be in sync
+                and the drift accumulates from there. Check the last few minutes; if it has gone
+                far enough to notice, resample the audio outside the app rather than muxing it
+                with a delay alone.
+              </>
+            }
+          />
         )}
 
         {withheld && onApplyAnyway && (
