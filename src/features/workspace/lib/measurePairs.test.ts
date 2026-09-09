@@ -5,6 +5,7 @@ import {
   defaultReferenceTrack,
   measurementKey,
   parseMeasurementKey,
+  plannedReferenceTrack,
 } from "./measurePairs";
 import { buildMuxJobRequests } from "./muxJobBuilder";
 
@@ -645,5 +646,50 @@ describe("which external track is measured", () => {
 
     // Falls back to the video's default track rather than matching on eng.
     expect(plan.measurements[0].pair.primaryTrack).toBe(0);
+  });
+});
+
+describe("the reference track a row should compare itself against", () => {
+  // A row flags "Reference changed" when the track a measurement used differs
+  // from the one in force now. That comparison is only meaningful if both sides
+  // are derived the same way -- and the plan does not always use the video's
+  // default track: with no explicit choice it prefers the video track sharing
+  // the muxed track's language, because same-language material correlates far
+  // more sharply. Comparing that against defaultReferenceTrack() reports a
+  // change on every such measurement, when nothing changed at all.
+  const videoWithHindi = (): VideoFile => ({
+    ...makeVideo("v1", "Show - 01.mkv", [
+      { id: "0", type: "audio", isDefault: true, language: "eng" },
+      { id: "1", type: "audio", isDefault: false, language: "hin" },
+    ]),
+  });
+
+  const hindiDub = (): ExternalFile =>
+    makeAudio("a1", "Show - 01.mkv", {
+      language: "hin",
+      tracks: [{ id: "0", type: "audio", isDefault: true, language: "hin" }],
+    });
+
+  it("plans against the language match, not the video's default track", () => {
+    const plan = buildMeasurementPlan({
+      videoFiles: [videoWithHindi()],
+      audioFiles: [hindiDub()],
+    });
+
+    expect(plan.measurements).toHaveLength(1);
+    expect(plan.measurements[0].pair.primaryTrack).toBe(1);
+    // The default is the English track, which is exactly the discrepancy.
+    expect(defaultReferenceTrack(videoWithHindi())).toBe(0);
+  });
+
+  it("reports the track the next measurement would actually use", () => {
+    const video = videoWithHindi();
+    const file = hindiDub();
+
+    // What the row must compare a stored measurement against.
+    expect(plannedReferenceTrack(video, file, {})).toBe(1);
+
+    // And an explicit choice is still honoured as-is.
+    expect(plannedReferenceTrack(video, file, { v1: 0 })).toBe(0);
   });
 });

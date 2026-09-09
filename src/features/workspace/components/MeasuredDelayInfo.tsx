@@ -109,9 +109,25 @@ export function MeasuredDelayInfo({
   return (
     <TooltipProvider>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-        <span className={cn("font-medium", CONFIDENCE_STYLES[level])}>
-          {formatConfidence(measured.confidence)}
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className={cn("font-medium", CONFIDENCE_STYLES[level])}>
+              {formatConfidence(measured.confidence)}
+            </span>
+          </TooltipTrigger>
+          {/* Confidence is a property of the comparison, not of the file, and
+              the comparison is against one particular track of the video. Two
+              tools measuring the same pair report the same delay and different
+              confidence when they reference different tracks -- the offset is
+              shared by everything in the container, the correlation sharpness
+              is not. Naming the track is what makes that difference readable
+              instead of looking like one of the two being wrong. */}
+          <TooltipContent className="max-w-xs">
+            Measured against audio track {measured.referenceTrack + 1} of the video. Confidence
+            says how distinct the correlation peak was against that track, so comparing it with
+            another tool only means anything if that tool used the same one.
+          </TooltipContent>
+        </Tooltip>
 
         {/* The unrounded measurement, in the same convention the user reads in
             AudioSyncMaster, so the rounding into the field is visible. */}

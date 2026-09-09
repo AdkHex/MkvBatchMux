@@ -77,6 +77,29 @@ export function defaultReferenceTrack(video: VideoFile): number {
   return defaultIndex >= 0 ? defaultIndex : 0;
 }
 
+/** The video audio track the next measurement of this file would use.
+ *
+ *  The same answer `buildMeasurementPlan` will reach, exported so a row can say
+ *  whether a stored measurement is still answering the current question. It has
+ *  to be this and not `defaultReferenceTrack`: with no explicit choice the plan
+ *  prefers the video track sharing the muxed track's language, so comparing
+ *  against the default reported "reference changed" on every language-matched
+ *  measurement -- on the pairing the app had deliberately chosen as the best
+ *  one, and without anything having changed.
+ */
+export function plannedReferenceTrack(
+  video: VideoFile,
+  file: ExternalFile,
+  referenceTrackByVideoId: Record<string, number> = {},
+): number {
+  return chooseMeasurementTracks(
+    video,
+    file,
+    includedAudioTrackIndices(file),
+    referenceTrackByVideoId,
+  ).primaryTrack;
+}
+
 /** Whether a file's delay should be left alone by a bulk measurement pass. */
 function shouldSkip(file: ExternalFile): boolean {
   // A hand-typed delay always wins; measurement never overwrites one.
