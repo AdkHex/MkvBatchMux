@@ -155,6 +155,8 @@ describe("applyMeasurement", () => {
           targetFps: 25,
           isRateMismatch: true,
           isLikelyCut: false,
+          cutPositionS: null,
+          cutMagnitudeMs: null,
           explanation: "23.976 to 25 fps conversion",
           correctionRatio: 1.0427,
         },

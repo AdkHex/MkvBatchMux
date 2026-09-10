@@ -21,8 +21,15 @@
 import type { ExternalFile, MeasuredDelay, VideoFile } from "@/shared/types";
 import { conversionBetween, type RateConversion } from "./delayConversion";
 
-/** Frame rates real releases actually use. Mirrors `COMMON_RATES` in
- *  AudioSyncMaster's `audiosync/framerate.py`; keep the two in step. */
+/** Frame rates real releases actually use. The same set as `COMMON_RATES` in
+ *  AudioSyncMaster's `audiosync/framerate.py` and `EXACT_RATES` in
+ *  `delayConversion.ts`; keep the three in step.
+ *
+ *  Decimals are enough here and nowhere else: this matches against a rate
+ *  derived from a duration ratio, where encoder padding and a trimmed logo are
+ *  already worth 0.1%, so the 1e-6 between 23.976 and 24000/1001 is far below
+ *  the noise. Anything that becomes a stretch ratio goes through
+ *  `exactRateFor` in `delayConversion.ts`, which restores the rational. */
 export const COMMON_RATES = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60];
 
 /** How far the duration-derived rate may sit from a common rate and still be

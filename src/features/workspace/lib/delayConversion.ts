@@ -154,8 +154,10 @@ export function formatFrameOffset(delayMs: number | null, fps: number | null | u
  *  claims to be exact.
  *
  *  Same set as the engine's `COMMON_RATES` (AudioSyncMaster's
- *  `audiosync/framerate.py`) and as `COMMON_RATES` in `audioFps.ts`, expressed
- *  exactly rather than as decimals; keep the three in step.
+ *  `audiosync/framerate.py`), which holds them as rationals for the same
+ *  reason, and as `COMMON_RATES` in `audioFps.ts`, which does not because it
+ *  matches against a duration estimate with a 0.5% tolerance. Keep the three
+ *  in step as a set of rates; only these two need to be exact.
  */
 const EXACT_RATES: ReadonlyArray<{ num: number; den: number }> = [
   { num: 24000, den: 1001 }, // 23.976

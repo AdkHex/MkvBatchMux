@@ -28,12 +28,16 @@ export interface TrackListing {
 
 /** Why a file drifts: a frame-rate conversion, or a different cut. */
 export interface RateDiagnosis {
-  driftMsPerS: number;
+  /** Null when a cut left too few windows on one side to fit a line through. */
+  driftMsPerS: number | null;
   speedRatio: number;
   sourceFps: number | null;
   targetFps: number | null;
   isRateMismatch: boolean;
   isLikelyCut: boolean;
+  /** Where the offset jumps and by how much, once a splice has been located. */
+  cutPositionS: number | null;
+  cutMagnitudeMs: number | null;
   explanation: string;
   correctionRatio: number | null;
 }
@@ -65,7 +69,17 @@ export interface SyncResult {
   primaryFps?: number | null;
   secondaryFps?: number | null;
   isLikelyCut?: boolean | null;
+  /** Where the cut is in the video's timeline, how tightly that was pinned
+   *  down, and how far the offset jumps there. Present only when isLikelyCut. */
+  cutPositionS?: number | null;
+  cutUncertaintyS?: number | null;
+  cutMagnitudeMs?: number | null;
   isRateMismatch?: boolean | null;
+  /** Playback-speed difference the engine undid during decoding so the two
+   *  could be correlated at all. 1.0 means the files were measured as they are;
+   *  a PAL-sped dub reads about 1.0427. Diagnostic only -- the drift and the
+   *  correction ratio already describe the pair as the user has it. */
+  speedCompensation?: number | null;
   codecDelayMs?: number | null;
   primaryCodec?: string | null;
   secondaryCodec?: string | null;
