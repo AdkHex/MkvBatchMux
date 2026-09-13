@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+    # A push to main is a public release, so documentation-only pushes must
+    # not make one: nothing an installed user receives would have changed.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".gitignore"
   workflow_dispatch:
 
 permissions:

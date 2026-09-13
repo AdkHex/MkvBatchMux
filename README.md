@@ -203,12 +203,16 @@ with nothing on screen to say why. See
 
 ### Releases and CI
 
-Every push to `main` runs **Build installers**: it bumps the minor version,
-builds the Windows installer with the bundled FFmpeg and engine, signs the
-updater bundle, and publishes a GitHub release marked *latest*. Installed apps
-pick that release up automatically, so **a push to `main` is a public
-release**. Release notes are generated from the commit subjects since the
-previous release, which is why they are written as behaviour changes.
+Every push to `main` that touches code runs **Build installers**: it bumps
+the minor version, builds the Windows installer with the bundled FFmpeg and
+engine, signs the updater bundle, and publishes a GitHub release marked
+*latest*. Installed apps pick that release up automatically, so **a push to
+`main` is a public release**. Release notes are generated from the commit
+subjects since the previous release, which is why they are written as
+behaviour changes.
+
+Pushes that only change documentation (`*.md`, `docs/`, `LICENSE`) do not
+build or release anything.
 
 The same workflow can be run by hand from the Actions tab (**Run workflow**)
 without pushing.
