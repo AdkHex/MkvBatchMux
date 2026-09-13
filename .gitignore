@@ -36,3 +36,6 @@ src-tauri/resources/ffmpeg/*
 
 # Editor session scratch (screenshots, transcripts)
 .nimbalyst/
+
+# Terminal/editor workspace config
+.cmux/
