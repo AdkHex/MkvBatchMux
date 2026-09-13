@@ -229,11 +229,11 @@ and where to get its source.
 
 **Subtitles**
 
-![Subtitles](docs/screenshots/SubtitleTab.png)
+![Subtitles](docs/screenshots/Subtitles.png)
 
 **Attachments**
 
-![Attachments](docs/screenshots/AttachmentsTab.png)
+![Attachments](docs/screenshots/Attachment.png)
 
 **Mux Settings**
 
@@ -241,14 +241,14 @@ and where to get its source.
 
 **Videos**
 
-![Videos](docs/screenshots/VideoTab.png)
+![Videos](docs/screenshots/Videos.png)
 
 **Audio Tracks**
 
-![Audio Tracks](docs/screenshots/AudioTab.png)
+![Audio Tracks](docs/screenshots/Audio.png)
 
 **Chapters**
 
-![Chapters](docs/screenshots/ChaptersTab.png)
+![Chapters](docs/screenshots/Chapter.png)
 
 </details>
