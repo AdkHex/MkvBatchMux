@@ -1,231 +1,22 @@
 # MKVBatchMux
 
-A desktop app for scanning MKV collections and batch muxing with a premium, focused workflow.
+**Batch-mux a whole folder of MKVs at once.** Point it at your videos, your
+audio tracks, subtitles, chapters and attachments, set the flags and delays
+once, and let it run through the queue with MKVToolNix.
 
-## Features
-- Scan source folders and auto-load media metadata
-- Batch mux using MKVToolNix
-- Video, Audio, Subtitle, Chapter, and Attachment tabs with dedicated workflows
-- External audio/subtitle injection with per-track overrides
-- Multi-track extraction and inclusion from a single external file
-- Track language, name, default flag, and per-track delay control
-- Track reordering with drag handles in edit dialogs
-- Per-stream language, name and delay when importing from another video
-- Detailed change reports for queued jobs
-- Queue management, validation, and progress tracking
-- Advanced mux settings (chapters, attachments, tags, safety checks)
-- Calm dark UI with a live dependency and update panel in Settings
-- Tauri desktop app. Installers are published for **Windows x64**; macOS and
-  Linux build from source but are not shipped or tested yet
+[![Latest release](https://img.shields.io/github/v/release/AdkHex/MkvBatchMux?label=download&color=2ea44f)](https://github.com/AdkHex/MkvBatchMux/releases/latest)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 
-## Install (Windows)
-
-Download the latest `MKVBatchMux_<version>_x64-setup.exe` from
-[Releases](https://github.com/AdkHex/MkvBatchMux/releases/latest) and run it.
-
-The installer is not yet code-signed, so Windows SmartScreen shows
-"Windows protected your PC" on first run. Click **More info → Run anyway**.
-The download itself can be verified: every release lists the installer's
-SHA-256 in its notes, and once installed the app only accepts updates signed
-with the key in `src-tauri/tauri.conf.json`.
-
-MKVToolNix and MediaInfo are not bundled; the app offers to download them from
-their official sites the first time it finds them missing (Settings →
-Dependencies). FFmpeg and the delay-measurement engine are bundled.
-
-## Requirements (building from source)
-- Node.js 20+
-- Rust (stable toolchain)
-- MKVToolNix (for `mkvmerge` / `mkvpropedit`)
-- MediaInfo CLI (for `mediainfo`)
-
-Installed builds need nothing else: the delay-measurement dependencies are
-bundled into the installer (see below).
-
-### Delay measurement
-
-The **Measure delays** action measures each external audio track's offset
-against the video it will be muxed into, and fills in the delay field for you.
-It needs FFmpeg (`ffmpeg` and `ffprobe`) and the AudioSync analysis engine.
-
-**Installed builds ship both**, so the feature works on a machine that has
-never installed FFmpeg. CI fetches them before bundling and fails the build if
-either is missing, so a release can never go out with the feature quietly
-disabled.
-
-In a development checkout neither is present by default. The app falls back to
-whatever `ffmpeg`/`ffprobe` are on your PATH, and to running AudioSyncMaster's
-`python/bridge.py` directly, so the feature is usable without a PyInstaller
-build. To mirror a release build locally:
-
-```bash
-npm run fetch-ffmpeg                              # downloads a static build
-FFMPEG_DIR=/path/to/bin npm run fetch-ffmpeg      # or copy from a local dir
-
-npm run fetch-engine                              # uses ../AudioSyncMaster
-AUDIOSYNC_REPO=/path/to/AudioSyncMaster npm run fetch-engine
-AUDIOSYNC_ENGINE_DIR=/path/to/prebuilt npm run fetch-engine
-```
-
-These write into `src-tauri/resources/ffmpeg/` and `src-tauri/resources/engine/`.
-Both are build artifacts and are not committed. The engine is built from
-[AudioSyncMaster](https://github.com/AdkHex/AudioSyncMaster) rather than
-vendored here so it does not diverge from the fixes made there.
-
-#### The engine is pinned to an AudioSyncMaster release
-
-`package.json` names the AudioSyncMaster release the engine is built from:
-
-```json
-"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.8.0" }
-```
-
-CI checks that tag out, `fetch-engine` refuses a checkout that is at any
-other commit or has uncommitted engine changes, and the built engine is
-stamped with its version (`ENGINE_VERSION`), which Settings shows under
-*Audio analysis engine*. Both apps report the same delay for the same files
-only while they run the same engine code, and that pin is what makes it so:
-building from AudioSyncMaster's `main` once shipped an unreleased engine
-rewrite that flagged cuts and drift on files the released engine measured
-cleanly, and the two apps disagreed by tens of milliseconds with nothing on
-screen to say why.
-
-To move to a newer engine, bump `audiosyncEngine.ref` to the new release tag
-in a commit of its own. CI warns when AudioSyncMaster has a newer release
-than the pin. To try an unreleased checkout locally, set
-`AUDIOSYNC_ALLOW_UNPINNED=1`; the stamp then says so, and the app warns on
-the Measure button that its results may differ from AudioSyncMaster's.
-
-The measurement parameters are AudioSyncMaster's defaults (`ENGINE_DEFAULTS`
-in `src/shared/types/audiosync.ts`), and the request is the one it sends.
-One thing is deliberately different, and it is bounded:
-
-- The row shows the delay at the start of the file (`delayAtStartMs`), which
-  is the value `--sync` applies and the value AudioSyncMaster's own *Fix*
-  applies. AudioSyncMaster's headline is the mid-file value; the two only
-  differ on a file flagged *Drift*, where its detail panel shows the same
-  start value as *Applied from t=0*.
-
-The engine decodes with FFmpeg, and which build it is forms part of the
-measurement: builds differ in whether they trim E-AC3 / AC-3 / TrueHD
-decoder priming inside a container, which shifts every delay on such a track
-by a constant tens of milliseconds. AudioSyncMaster uses the FFmpeg on your
-PATH, so this app does too whenever `ffmpeg` and `ffprobe` are both found
-there; the bundled copy is only used on a machine without one. The reference
-track is likewise AudioSyncMaster's default -- the video's first audio stream
--- unless you choose another in the *Reference audio track* panel.
-
-### Windows installer
-The Windows build produces an NSIS `.exe` installer. No extra toolchain is
-needed; the bundler ships its own NSIS.
-
-## Automatic updates
-
-Installed builds check GitHub Releases shortly after launch and every six
-hours, and offer any newer version as a toast with an Install action. Settings
-also has a Check now button for an immediate check.
-
-Pushing to `main` bumps the version, builds a signed installer, publishes it as
-the latest release, and installed apps pick it up from there.
-
-Nothing installs without being asked. A check is skipped entirely while a mux
-batch is running, and each version is offered once per session — an install
-restarts the app, and a batch can be many minutes from finishing.
-
-### Repository secrets (required)
-
-Updates are cryptographically signed and the app rejects unsigned ones, so CI
-needs two secrets. Without them the build still succeeds and publishes an
-installer for manual download, but no `latest.json` is generated and auto-update stays off
-(the workflow logs a warning saying so).
-
-| Secret | Value |
-|---|---|
-| `TAURI_PRIVATE_KEY` | Contents of the updater private key file |
-| `TAURI_KEY_PASSWORD` | The key's password (empty string if none) |
-
-**Keep the private key safe.** If it is lost, already-installed apps can no
-longer be updated — every user would have to reinstall by hand. The matching
-public key lives in `src-tauri/tauri.conf.json` under `tauri.updater.pubkey`.
-
-To generate a fresh keypair (this invalidates existing installs):
-
-```bash
-npx tauri signer generate -w ~/.tauri/mkvbatchmux.key
-```
-
-## Installation & Usage
-
-### 1) Install dependencies
-```bash
-npm ci
-```
-
-### 2) Run in development
-```bash
-npm run dev
-```
-
-### 3) Build the desktop app
-```bash
-npm run tauri:build
-```
-
-### 4) Build the Windows installer
-```bash
-npm run tauri:build -- --bundles nsis
-```
-
-The installer will be located under:
-```
-src-tauri/target/release/bundle/nsis/
-```
-
-## GitHub Actions
-
-Every push to `main` runs **Build installers**: it bumps the minor version,
-builds the Windows installer with the bundled FFmpeg and analysis engine,
-signs the updater bundle, and publishes a GitHub release marked *latest*.
-Installed apps pick that release up automatically, so **a push to `main` is a
-public release**. The release notes are generated from the commit subjects
-since the previous release, which is why they are written as behaviour
-changes.
-
-The same workflow can be run by hand from the Actions tab (**Run workflow**)
-without pushing.
+- **Windows x64** — installer on the [Releases](https://github.com/AdkHex/MkvBatchMux/releases/latest) page
+- **macOS / Linux** — build from source (untested, not shipped)
 
 ---
-
-## Project Structure
-```text
-src/
-  app/        App entry, routes, and global styles
-  features/   Workspace, history, and session-specific code
-  shared/     Reusable UI, shared components, utilities, types, and data
-src-tauri/    Rust backend and Tauri configuration
-docs/         Project documentation assets such as screenshots
-scripts/      Project maintenance scripts
-```
-
----
-
-## License
-
-MKVBatchMux is free software under the [GNU GPL v3](LICENSE).
-Copyright (c) 2026 Ionicboy (AdkHex).
-
-The installer bundles FFmpeg (GPL) and the AudioSync analysis engine, and can
-download MKVToolNix (GPL) and MediaInfo (BSD) on request. See
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for each component's license
-and where to get its source.
-
-## Credits
-- Ionicboy (AdkHex)
 
 ## Screenshots
 
 <details>
-<summary>Show screenshots</summary>
+<summary><b>Show screenshots</b></summary>
+<br>
 
 **Videos**
 
@@ -252,3 +43,222 @@ and where to get its source.
 ![Mux Settings](docs/screenshots/MuxSettings.png)
 
 </details>
+
+---
+
+## Features
+
+| | |
+|---|---|
+| **Batch muxing** | Scan a folder, auto-load metadata, queue every file, mux with MKVToolNix |
+| **One tab per track type** | Video, Audio, Subtitle, Chapter and Attachment tabs, each with its own workflow |
+| **External tracks** | Inject audio and subtitles from separate files, with per-track overrides |
+| **Multi-track sources** | Pick and include several tracks from a single external file |
+| **Full track control** | Language, name, default flag, delay, and drag-to-reorder |
+| **Import from another video** | Per-stream language, name and delay when pulling tracks out of another MKV |
+| **Measured delays** | Measure each external audio track's offset against its video and fill the delay in for you |
+| **Safe queue** | Validation, change reports, progress tracking, pause and resume |
+| **Advanced mux settings** | Chapters, attachments, tags, safety checks |
+| **Calm dark UI** | Live dependency and update status in Settings |
+
+---
+
+## Install (Windows)
+
+1. Download `MKVBatchMux_<version>_x64-setup.exe` from the
+   [latest release](https://github.com/AdkHex/MkvBatchMux/releases/latest).
+2. Run it. The installer is not yet code-signed, so SmartScreen shows
+   *"Windows protected your PC"* the first time — click **More info → Run anyway**.
+3. Open the app. If **MKVToolNix** or **MediaInfo** are missing it offers to
+   download them from their official sites (Settings → Dependencies).
+
+**FFmpeg and the delay-measurement engine are bundled** — nothing else to install.
+
+> Every release lists the installer's SHA-256 in its notes, and the app only
+> accepts updates signed with the key in `src-tauri/tauri.conf.json`.
+
+### Automatic updates
+
+Installed builds check GitHub Releases shortly after launch and every six
+hours, and offer a newer version as a toast with an **Install** action.
+Settings also has **Check now**.
+
+Nothing installs without being asked. Checks are skipped while a mux batch is
+running, and each version is offered once per session — installing restarts
+the app, and a batch can be minutes from finishing.
+
+---
+
+## Measuring delays
+
+**Measure delays** (Audio tab) measures each external audio track's offset
+against the video it will be muxed into and fills in the delay field. It uses
+the same analysis engine as
+[AudioSyncMaster](https://github.com/AdkHex/AudioSyncMaster), and is built to
+report the **same number** for the same files:
+
+- The engine is pinned to an AudioSyncMaster **release** (`v2.8.0`), never to
+  its `main` branch. Settings → *Audio analysis engine* shows the stamp.
+- The measurement parameters are AudioSyncMaster's defaults, and the request
+  is the one it sends.
+- The reference track defaults to the video's **first audio stream**, as in
+  AudioSyncMaster. Choose another in the *Reference audio track* panel.
+- FFmpeg decodes the audio, and the build matters: builds differ in whether
+  they trim E-AC3 / AC-3 / TrueHD decoder priming inside a container, which
+  shifts every delay on such a track by a constant tens of milliseconds.
+  AudioSyncMaster uses the FFmpeg on your PATH, so this app does too whenever
+  `ffmpeg` and `ffprobe` are both found there; the bundled copy is only used
+  on a machine without one.
+
+<details>
+<summary>The one deliberate difference from AudioSyncMaster</summary>
+<br>
+
+The row shows the delay **at the start of the file** (`delayAtStartMs`),
+which is the value `--sync` applies and the value AudioSyncMaster's own *Fix*
+applies. AudioSyncMaster's headline is the mid-file value; the two only differ
+on a file flagged *Drift*, where its detail panel shows the same start value
+as *Applied from t=0*.
+
+</details>
+
+A result is measured and shown but **not filled in** when the engine flags a
+different cut, the offset is over 10 seconds, or the confidence is below 50 %.
+Each of those has an **Apply anyway** action once you've checked the files.
+
+---
+
+## Building from source
+
+### Requirements
+
+| Tool | Needed for |
+|---|---|
+| Node.js 20+ | Frontend and build scripts |
+| Rust (stable) | Tauri backend |
+| MKVToolNix | `mkvmerge` / `mkvpropedit` |
+| MediaInfo CLI | `mediainfo` |
+
+### Commands
+
+```bash
+npm ci                                  # install dependencies
+npm run dev                             # run in development
+npm run tauri:build                     # build the desktop app
+npm run tauri:build -- --bundles nsis   # build the Windows installer
+```
+
+The installer lands in `src-tauri/target/release/bundle/nsis/`. No extra
+toolchain is needed; the bundler ships its own NSIS.
+
+### Delay measurement in a dev checkout
+
+Neither FFmpeg nor the engine is present by default. The app falls back to
+whatever `ffmpeg`/`ffprobe` are on your PATH, and to running AudioSyncMaster's
+`python/bridge.py` directly, so the feature is usable without a PyInstaller
+build. To mirror a release build locally:
+
+```bash
+npm run fetch-ffmpeg                              # downloads a static build
+FFMPEG_DIR=/path/to/bin npm run fetch-ffmpeg      # or copy from a local dir
+
+npm run fetch-engine                              # uses ../AudioSyncMaster
+AUDIOSYNC_REPO=/path/to/AudioSyncMaster npm run fetch-engine
+AUDIOSYNC_ENGINE_DIR=/path/to/prebuilt npm run fetch-engine
+```
+
+These write into `src-tauri/resources/ffmpeg/` and `src-tauri/resources/engine/`.
+Both are build artifacts and are not committed.
+
+<details>
+<summary>How the engine pin works, and how to move it</summary>
+<br>
+
+`package.json` names the AudioSyncMaster release the engine is built from:
+
+```json
+"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.8.0" }
+```
+
+CI checks that tag out, `fetch-engine` refuses a checkout at any other commit
+or with uncommitted engine changes, and the built engine is stamped with its
+version (`ENGINE_VERSION`). CI also measures a fixture with the bundled
+engine before building the installer, so a release can never go out with the
+feature quietly broken.
+
+Why it matters: building from AudioSyncMaster's `main` once shipped an
+unreleased engine rewrite that flagged cuts and drift on files the released
+engine measured cleanly, and the two apps disagreed by tens of milliseconds
+with nothing on screen to say why. See
+[docs/AUDIOSYNC_ENGINE_PARITY.md](docs/AUDIOSYNC_ENGINE_PARITY.md).
+
+- **To move to a newer engine**, bump `audiosyncEngine.ref` to the new release
+  tag in a commit of its own. CI warns when AudioSyncMaster has a newer
+  release than the pin.
+- **To try an unreleased checkout locally**, set `AUDIOSYNC_ALLOW_UNPINNED=1`.
+  The stamp then says so, and the Measure button warns that results may
+  differ from AudioSyncMaster's.
+
+</details>
+
+### Releases and CI
+
+Every push to `main` runs **Build installers**: it bumps the minor version,
+builds the Windows installer with the bundled FFmpeg and engine, signs the
+updater bundle, and publishes a GitHub release marked *latest*. Installed apps
+pick that release up automatically, so **a push to `main` is a public
+release**. Release notes are generated from the commit subjects since the
+previous release, which is why they are written as behaviour changes.
+
+The same workflow can be run by hand from the Actions tab (**Run workflow**)
+without pushing.
+
+<details>
+<summary>Repository secrets (required for auto-update)</summary>
+<br>
+
+Updates are cryptographically signed and the app rejects unsigned ones, so CI
+needs two secrets. Without them the build still succeeds and publishes an
+installer for manual download, but no `latest.json` is generated and
+auto-update stays off (the workflow logs a warning saying so).
+
+| Secret | Value |
+|---|---|
+| `TAURI_PRIVATE_KEY` | Contents of the updater private key file |
+| `TAURI_KEY_PASSWORD` | The key's password (empty string if none) |
+
+**Keep the private key safe.** If it is lost, already-installed apps can no
+longer be updated — every user would have to reinstall by hand. The matching
+public key lives in `src-tauri/tauri.conf.json` under `tauri.updater.pubkey`.
+
+To generate a fresh keypair (this invalidates existing installs):
+
+```bash
+npx tauri signer generate -w ~/.tauri/mkvbatchmux.key
+```
+
+</details>
+
+### Project structure
+
+```text
+src/
+  app/        App entry, routes, and global styles
+  features/   Workspace, history, and session-specific code
+  shared/     Reusable UI, shared components, utilities, types, and data
+src-tauri/    Rust backend and Tauri configuration
+docs/         Project documentation and screenshots
+scripts/      Project maintenance scripts
+```
+
+---
+
+## License
+
+MKVBatchMux is free software under the [GNU GPL v3](LICENSE).
+Copyright (c) 2026 Ionicboy (AdkHex).
+
+The installer bundles FFmpeg (GPL) and the AudioSync analysis engine, and can
+download MKVToolNix (GPL) and MediaInfo (BSD) on request. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for each component's license
+and where to get its source.
