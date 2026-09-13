@@ -1,6 +1,6 @@
 /** Chooses which of a video's audio tracks a measurement compares against.
  *
- *  Auto-picks the video's default audio track, falling back to its first, but
+ *  Defaults to the video's first audio track, as AudioSyncMaster does, but
  *  a container often carries an original language, a dub and a commentary --
  *  measuring against the wrong one produces a confident, wrong delay.
  *
@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from "@/shared/ui/select";
 import type { VideoFile } from "@/shared/types";
-import { defaultReferenceTrack } from "@/features/workspace/lib/measurePairs";
+import { DEFAULT_REFERENCE_TRACK } from "@/features/workspace/lib/measurePairs";
 import { CODE_TO_LABEL } from "@/shared/data/languages-iso6393";
 
 interface ReferenceTrackPickerProps {
@@ -127,7 +127,7 @@ export function ReferenceTrackPicker({
           const selected =
             stored !== undefined && stored >= 0 && stored < audioTracks.length
               ? stored
-              : defaultReferenceTrack(video);
+              : DEFAULT_REFERENCE_TRACK;
           return (
             <div key={video.id} className="flex items-center gap-2">
               <span className="flex-1 truncate text-xs" title={video.name}>

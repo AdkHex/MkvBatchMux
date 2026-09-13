@@ -55,7 +55,7 @@ export interface BuildMeasurementPlanInput {
   videoFiles: VideoFile[];
   audioFiles: ExternalFile[];
   /** Which audio track of each video to measure against, by video id.
-   *  Defaults to the video's default audio track, else its first. */
+   *  Defaults to the first audio track, as AudioSyncMaster does. */
   referenceTrackByVideoId?: Record<string, number>;
   /** Ignore the skip rules -- used by the per-row "re-measure" action, which is
    *  an explicit request for these specific files. */
@@ -65,39 +65,24 @@ export interface BuildMeasurementPlanInput {
 }
 
 
-/** The audio stream index to measure the video against.
+/** The video audio stream measured against when the user has not chosen one.
  *
  *  Index is *among the video's audio tracks*, not among all its tracks: the
- *  engine counts audio streams, so passing a global track index would compare
- *  against the wrong stream on any file with subtitles ordered before audio.
+ *  engine counts audio streams. Stream 0 regardless of default flags, because
+ *  that is AudioSyncMaster's default and the two apps must agree.
  */
-export function defaultReferenceTrack(video: VideoFile): number {
-  const audioTracks = (video.tracks ?? []).filter((track) => track.type === "audio");
-  const defaultIndex = audioTracks.findIndex((track) => track.isDefault);
-  return defaultIndex >= 0 ? defaultIndex : 0;
-}
+export const DEFAULT_REFERENCE_TRACK = 0;
 
 /** The video audio track the next measurement of this file would use.
  *
  *  The same answer `buildMeasurementPlan` will reach, exported so a row can say
- *  whether a stored measurement is still answering the current question. It has
- *  to be this and not `defaultReferenceTrack`: with no explicit choice the plan
- *  prefers the video track sharing the muxed track's language, so comparing
- *  against the default reported "reference changed" on every language-matched
- *  measurement -- on the pairing the app had deliberately chosen as the best
- *  one, and without anything having changed.
+ *  whether a stored measurement is still answering the current question.
  */
 export function plannedReferenceTrack(
   video: VideoFile,
-  file: ExternalFile,
   referenceTrackByVideoId: Record<string, number> = {},
 ): number {
-  return chooseMeasurementTracks(
-    video,
-    file,
-    includedAudioTrackIndices(file),
-    referenceTrackByVideoId,
-  ).primaryTrack;
+  return chooseMeasurementTracks(video, [], referenceTrackByVideoId).primaryTrack;
 }
 
 /** Whether a file's delay should be left alone by a bulk measurement pass. */
@@ -159,7 +144,7 @@ export function buildMeasurementPlan({
     // audio shares no waveform detail, and produced "no distinct correlation
     // peak" or a confident wrong answer, while the easy Hindi-against-Hindi
     // comparison that answers the question was never surfaced.
-    const chosen = chooseMeasurementTracks(video, file, includedTracks, referenceTrackByVideoId);
+    const chosen = chooseMeasurementTracks(video, includedTracks, referenceTrackByVideoId);
 
     measurements.push({
       pair: {
@@ -184,96 +169,36 @@ export function buildMeasurementPlan({
 
 /** Pick the one track pair a file's measurement should be taken from.
  *
- *  Deterministic, and deliberately close to AudioSyncMaster, which measures
- *  stream 0 of each side unless the user picks otherwise (`Index.tsx`:
- *  `trackChoicesRef.current[path] ?? 0`). Matching that is what makes the two
- *  tools agree on the same files.
+ *  Identical to AudioSyncMaster's choice, on purpose: it measures audio stream
+ *  0 of the video unless the user picks otherwise (`Index.tsx`:
+ *  `trackChoicesRef.current[path] ?? 0`). Two tracks in one container do not
+ *  necessarily sit at the same offset, so any smarter default here -- the
+ *  default-flagged track, or one sharing the dub's language -- produced a
+ *  different delay from AudioSyncMaster on the same files, by tens of
+ *  milliseconds, on every multi-track release. A track that correlates more
+ *  sharply is still the user's to choose, in both apps, through the reference
+ *  picker.
  *
  *  The external side is not a choice at all: the delay is applied to the track
- *  being muxed, so that is the track to measure. Measuring some other track --
- *  an English one that happens to correlate better than the dub -- answers a
- *  different question, because two tracks in one container need not sit at the
- *  same offset once their codec delays differ.
- *
- *  The video side, in order:
- *
- *  1. An explicit reference choice. A statement about the video, honoured as-is.
- *  2. The video track sharing the muxed track's language. Same-language
- *     material correlates far more sharply than a dub against the original,
- *     and the engine compensates codec delay between tracks, so this sharpens
- *     the measurement without moving it.
- *  3. The video's default audio track, which is stream 0 in practically every
- *     release -- AudioSyncMaster's choice.
+ *  being muxed, so that is the track to measure.
  */
 function chooseMeasurementTracks(
   video: VideoFile,
-  file: ExternalFile,
   includedTracks: Array<{ trackId: number; streamIndex: number }>,
   referenceTrackByVideoId: Record<string, number>,
 ): { primaryTrack: number; secondaryTrack: number } {
-  const videoAudio = (video.tracks ?? []).filter((track) => track.type === "audio");
-  const audioTrackCount = (file.tracks ?? []).filter((track) => track.type === "audio").length;
-
-  // Candidates are the tracks being muxed, and only those. One measurement
-  // sets the delay for all of them, so any of them may be measured -- but a
-  // track that is not being muxed must not be, because its offset is not
-  // necessarily theirs once codec delays differ.
-  const languageOf = (entry: { trackId: number }) =>
-    normalizeLanguage(
-      // A per-track override wins: it is what the user says this track is.
-      file.trackOverrides?.[entry.trackId]?.language ??
-        (file.tracks ?? []).find(
-          (track) => track.type === "audio" && Number(track.id) === entry.trackId,
-        )?.language ??
-        // A single-track file often carries the language on the file itself.
-        // Keyed on the file genuinely having one track: with several, the
-        // file-level language describes only one of them.
-        (audioTrackCount <= 1 ? file.language : undefined),
-    );
-
-  const fallbackSecondary = includedTracks[0]?.streamIndex ?? 0;
+  const videoAudioCount = (video.tracks ?? []).filter((track) => track.type === "audio").length;
+  const secondaryTrack = includedTracks[0]?.streamIndex ?? 0;
 
   const explicitReference = referenceTrackByVideoId[video.id];
-  if (
+  const primaryTrack =
     explicitReference !== undefined &&
     explicitReference >= 0 &&
-    explicitReference < Math.max(videoAudio.length, 1)
-  ) {
-    // The choice is about the video, so it is honoured either way. If one of
-    // the muxed tracks shares its language, that is the sharper pairing.
-    const wanted = normalizeLanguage(videoAudio[explicitReference]?.language);
-    const match = wanted
-      ? includedTracks.find((entry) => languageOf(entry) === wanted)
-      : undefined;
-    return {
-      primaryTrack: explicitReference,
-      secondaryTrack: match ? match.streamIndex : fallbackSecondary,
-    };
-  }
+    explicitReference < Math.max(videoAudioCount, 1)
+      ? explicitReference
+      : DEFAULT_REFERENCE_TRACK;
 
-  // Same language on both sides correlates far more sharply than a dub against
-  // the original. The engine compensates codec delay between tracks, so this
-  // sharpens the measurement rather than moving it.
-  for (const entry of includedTracks) {
-    const language = languageOf(entry);
-    if (!language) continue;
-    const index = videoAudio.findIndex(
-      (candidate) => normalizeLanguage(candidate.language) === language,
-    );
-    if (index >= 0) return { primaryTrack: index, secondaryTrack: entry.streamIndex };
-  }
-
-  // Nothing to go on: the video's default audio track, which is stream 0 in
-  // practically every release and is what AudioSyncMaster uses.
-  return { primaryTrack: defaultReferenceTrack(video), secondaryTrack: fallbackSecondary };
-}
-
-/** Language codes vary in case and in the 2- vs 3-letter form between tools. */
-function normalizeLanguage(value: string | undefined | null): string | null {
-  if (!value) return null;
-  const trimmed = value.trim().toLowerCase();
-  if (!trimmed || trimmed === "und" || trimmed === "mul") return null;
-  return trimmed;
+  return { primaryTrack, secondaryTrack };
 }
 
 /** The audio tracks of an external file that will actually be muxed.

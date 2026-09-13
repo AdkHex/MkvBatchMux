@@ -30,14 +30,12 @@ const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
 static FFMPEG_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static FFMPEG_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+static FFMPEG_ON_PATH: OnceLock<bool> = OnceLock::new();
 
 /// Directory holding the bundled ffmpeg/ffprobe, if this build shipped them.
 ///
 /// The installer bundles them under `resources/ffmpeg` so delay measurement
-/// works on a machine that has never installed FFmpeg. A user's own PATH copy
-/// is still honoured as a fallback (and in dev builds, where nothing is
-/// bundled), but the bundled pair wins: it is the version this app was tested
-/// against.
+/// works on a machine that has never installed FFmpeg.
 fn bundled_ffmpeg_dir(app: &AppHandle) -> Option<PathBuf> {
     FFMPEG_DIR
         .get_or_init(|| {
@@ -56,13 +54,32 @@ fn bundled_ffmpeg_dir(app: &AppHandle) -> Option<PathBuf> {
         .clone()
 }
 
-/// Whether this build ships its own ffmpeg pair.
-pub fn ffmpeg_is_bundled(app: &AppHandle) -> bool {
-    bundled_ffmpeg_dir(app).is_some()
+/// Whether the user's own ffmpeg and ffprobe are on PATH.
+///
+/// When they are, they win over the bundled pair. AudioSyncMaster ships no
+/// ffmpeg and resolves both tools from PATH, and which build decodes the audio
+/// is part of the measurement: builds differ in whether they trim E-AC-3 and
+/// TrueHD decoder priming inside a container, which moved every delay by
+/// 15-40 ms against AudioSyncMaster's on the same files. Using the same
+/// binary it uses is the only way the two apps can report the same number.
+fn ffmpeg_on_path() -> bool {
+    *FFMPEG_ON_PATH.get_or_init(|| {
+        crate::tool_available("ffmpeg", "-version") && crate::tool_available("ffprobe", "-version")
+    })
 }
 
-/// Absolute path to a bundled tool, else the bare name for PATH lookup.
+/// Whether measurement will run on the bundled ffmpeg pair rather than the
+/// user's own.
+pub fn ffmpeg_is_bundled(app: &AppHandle) -> bool {
+    !ffmpeg_on_path() && bundled_ffmpeg_dir(app).is_some()
+}
+
+/// The bare name when the tool is on PATH, else the bundled tool's absolute
+/// path, else the bare name so the failure names the missing tool.
 pub fn ffmpeg_tool(app: &AppHandle, tool: &str) -> String {
+    if ffmpeg_on_path() {
+        return tool.to_string();
+    }
     let name = if cfg!(windows) {
         format!("{tool}.exe")
     } else {
@@ -75,14 +92,13 @@ pub fn ffmpeg_tool(app: &AppHandle, tool: &str) -> String {
 }
 
 /// Mirrors `mediainfo_available()` / `mkvmerge_available()` in main.rs, but
-/// checks the bundled copies first so a fresh install reports available.
+/// falls back to the bundled copies so a fresh install reports available.
 pub fn ffmpeg_available_for(app: &AppHandle) -> bool {
     *FFMPEG_AVAILABLE.get_or_init(|| {
         crate::tool_available(&ffmpeg_tool(app, "ffmpeg"), "-version")
             && crate::tool_available(&ffmpeg_tool(app, "ffprobe"), "-version")
     })
 }
-
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -534,18 +550,23 @@ fn find_python(repo_root: &std::path::Path) -> PathBuf {
     PathBuf::from(if cfg!(windows) { "python" } else { "python3" })
 }
 
-/// Build the command that starts the engine, preferring the bundled sidecar.
-/// Returns the command and a human-readable description for the log.
-/// Prepend the bundled ffmpeg directory to the child's PATH.
+/// Point the engine at the ffmpeg pair this app resolved.
 ///
-/// The engine shells out to ffmpeg/ffprobe by bare name, so bundling the
-/// binaries is not enough on its own -- the child has to be able to find them.
-/// Prepending (rather than replacing) means a user's own FFmpeg still works if
-/// nothing is bundled, and the tested pair wins when it is.
+/// The engine resolves the tools itself (`AUDIOSYNC_FFMPEG`/`AUDIOSYNC_FFPROBE`,
+/// then a bundled copy next to its own executable, then PATH), so it is told
+/// the exact binaries rather than left to repeat the search: with the user's
+/// pair on PATH that is what AudioSyncMaster's engine finds too, and only
+/// without one does the bundled pair step in.
 fn apply_ffmpeg_path(app: &AppHandle, command: &mut Command) {
+    if ffmpeg_on_path() {
+        return;
+    }
     let Some(dir) = bundled_ffmpeg_dir(app) else {
         return;
     };
+    let exe = if cfg!(windows) { ".exe" } else { "" };
+    command.env("AUDIOSYNC_FFMPEG", dir.join(format!("ffmpeg{exe}")));
+    command.env("AUDIOSYNC_FFPROBE", dir.join(format!("ffprobe{exe}")));
     let existing = std::env::var_os("PATH").unwrap_or_default();
     let mut entries = vec![dir];
     entries.extend(std::env::split_paths(&existing));
@@ -554,6 +575,8 @@ fn apply_ffmpeg_path(app: &AppHandle, command: &mut Command) {
     }
 }
 
+/// Build the command that starts the engine, preferring the bundled sidecar.
+/// Returns the command and a human-readable description for the log.
 fn build_command(app: &AppHandle) -> Result<(Command, String), String> {
     if let Some(sidecar) = find_sidecar(app) {
         let described = sidecar.to_string_lossy().to_string();

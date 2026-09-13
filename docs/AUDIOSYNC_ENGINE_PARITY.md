@@ -108,6 +108,19 @@ Verified end to end on this machine: the frozen, pinned engine that
 `fetch-engine` now builds, fed MkvBatchMux's request, matches AudioSyncMaster
 v2.8.0 fed its own request **byte for byte** on all 14 fixture pairs.
 
+## Two more that were closed later the same day
+
+With the pinned engine both apps still disagreed by 14–37 ms on the same four
+files (−4212.0 / −25319.9 / +6.5 / −4216.9 against ASM's −4177.9 / −25282.9 /
++20.2 / −4182.5). Under one frame, and still enough to put lips out. Both
+causes were on the video side of the pair, which is why the residual varied
+per file while the dub was the same file in every row.
+
+| What | MkvBatchMux did | AudioSyncMaster does | Now |
+|---|---|---|---|
+| Reference track | explicit choice → video track sharing the dub's language → the default-flagged track | audio stream 0 unless chosen | Stream 0 unless chosen (`DEFAULT_REFERENCE_TRACK` in `measurePairs.ts`). Two tracks in one container do not sit at the same offset, so any smarter default measured a different track from AudioSyncMaster on every multi-track remux. The sharper pairing is still one click away in both apps. |
+| FFmpeg | always the bundled Gyan 7.1 essentials build | ships none; resolves `ffmpeg`/`ffprobe` from PATH | The user's PATH pair when both are present, the bundled pair only when they are not (`ffmpeg_on_path` in `audiosync.rs`). Which build decodes the audio is part of the measurement — builds differ in whether E-AC-3/TrueHD decoder priming inside a container is trimmed — so only the same binary gives the same number. The engine is told the exact pair through `AUDIOSYNC_FFMPEG`/`AUDIOSYNC_FFPROBE` when the bundled one is used. |
+
 ## Divergences that remain, on purpose
 
 | What | MkvBatchMux | AudioSyncMaster | Why it stays |
@@ -115,8 +128,6 @@ v2.8.0 fed its own request **byte for byte** on all 14 fixture pairs.
 | Headline field | `delayAtStartMs` (t = 0) | `delayMs` (mid-file) | MkvBatchMux's number is what `--sync` puts in the file, and it is the same field AudioSyncMaster's own *Fix* applies. With the v2.8.0 engine the two fields are equal unless the file is flagged *Drift*, where AudioSyncMaster's detail panel shows this value as *Applied from t=0*. |
 | Rounding | whole ms (the delay field holds three decimals of a second) | 0.1 ms shown, µs applied | mkvmerge takes integer ms. |
 | Gates on applying | withholds *Different cut*, `|delay| > 10 s`, confidence < 0.5 | disables only *Different cut* | Muxing is irreversible in place; a withheld value is still shown and can be applied deliberately. |
-| Reference track | explicit choice → same-language video track → video's default | stream 0 unless chosen | Same-language material correlates far more sharply; with an original-language dub against an original-language video it is stream 0 anyway. |
-| FFmpeg | bundled 7.1 | whatever is on PATH | Whether E-AC3/AC-3 decoder priming inside a container is trimmed is a property of the ffmpeg build, so two builds can differ by a constant 5.3 ms (¼ frame) on such a track. Raw `.eac3`/`.ac3` is corrected by the engine on every build. AudioSyncMaster would have to bundle the same ffmpeg for this to close. |
 | `maxWorkers` | 4 | 3 | Thread-pool size; each pair is analysed independently. |
 
 ## For AudioSyncMaster, before `f38ace9` is released

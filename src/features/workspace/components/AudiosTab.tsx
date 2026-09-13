@@ -169,24 +169,20 @@ export function AudiosTab({
   const [selectedVideoIndex, setSelectedVideoIndex] = useState<number | null>(null);
   const [selectedAudioIndex, setSelectedAudioIndex] = useState<number | null>(null);
   /** Which audio track of each video to measure against, by video id. Empty
-   *  means "use each video's default", resolved at plan time. */
+   *  means "the first audio track", as AudioSyncMaster does. */
   const [referenceTrackByVideoId, setReferenceTrackByVideoId] = useState<Record<string, number>>(
     {},
   );
 
   /** The reference track in force for the video a file is matched to, so a
    *  measurement taken against a different one can be flagged as out of date.
-   *
-   *  Asked of the planner rather than derived here: with no explicit choice the
-   *  plan prefers the video track sharing the muxed track's language, not the
-   *  video's default one. Reading the default instead reported the reference as
-   *  changed on exactly the measurements the app had chosen most carefully. */
+   *  Asked of the planner so the two can never disagree. */
   const currentReferenceFor = useCallback(
     (file: ExternalFile): number | undefined => {
       if (!file.matchedVideoId) return undefined;
       const video = videoFiles.find((entry) => entry.id === file.matchedVideoId);
       if (!video) return undefined;
-      return plannedReferenceTrack(video, file, referenceTrackByVideoId);
+      return plannedReferenceTrack(video, referenceTrackByVideoId);
     },
     [videoFiles, referenceTrackByVideoId],
   );

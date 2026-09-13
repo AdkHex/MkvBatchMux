@@ -98,22 +98,22 @@ the Measure button that its results may differ from AudioSyncMaster's.
 
 The measurement parameters are AudioSyncMaster's defaults (`ENGINE_DEFAULTS`
 in `src/shared/types/audiosync.ts`), and the request is the one it sends.
-Two things are deliberately different and both are bounded:
+One thing is deliberately different, and it is bounded:
 
 - The row shows the delay at the start of the file (`delayAtStartMs`), which
   is the value `--sync` applies and the value AudioSyncMaster's own *Fix*
   applies. AudioSyncMaster's headline is the mid-file value; the two only
   differ on a file flagged *Drift*, where its detail panel shows the same
   start value as *Applied from t=0*.
-- The engine decodes with the FFmpeg it can find. This app bundles one;
-  AudioSyncMaster uses the one on your PATH. Whether a build trims E-AC3 /
-  AC-3 decoder priming inside a container is a property of the build, so on
-  such a track the two apps can differ by a constant 5.3 ms (a quarter of a
-  frame) if their FFmpeg builds differ. Raw `.ac3`/`.eac3` streams are
-  corrected by the engine on every build.
 
-A bundled FFmpeg takes precedence over one on your PATH: it is the version the
-app was tested against.
+The engine decodes with FFmpeg, and which build it is forms part of the
+measurement: builds differ in whether they trim E-AC3 / AC-3 / TrueHD
+decoder priming inside a container, which shifts every delay on such a track
+by a constant tens of milliseconds. AudioSyncMaster uses the FFmpeg on your
+PATH, so this app does too whenever `ffmpeg` and `ffprobe` are both found
+there; the bundled copy is only used on a machine without one. The reference
+track is likewise AudioSyncMaster's default -- the video's first audio stream
+-- unless you choose another in the *Reference audio track* panel.
 
 ### Windows installer
 The Windows build produces an NSIS `.exe` installer. No extra toolchain is

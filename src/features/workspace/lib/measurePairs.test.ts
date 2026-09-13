@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ExternalFile, Track, VideoFile } from "@/shared/types";
 import {
   buildMeasurementPlan,
-  defaultReferenceTrack,
+  DEFAULT_REFERENCE_TRACK,
   measurementKey,
   parseMeasurementKey,
   plannedReferenceTrack,
@@ -181,20 +181,27 @@ describe("buildMeasurementPlan", () => {
     expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
   });
 
-  it("uses the video's default audio track as the reference", () => {
+  it("measures against the video's first audio track, not its default-flagged one", () => {
+    // AudioSyncMaster measures audio stream 0 unless told otherwise. Following
+    // the default flag instead put the two apps on different tracks of the
+    // same remux, and tracks in one container need not share an offset.
     const video = makeVideo("v1", "Show - 01.mkv", [
       { id: "0", type: "video" },
       audioTrack("1"),
       audioTrack("2", true),
     ]);
+    const audio = makeAudio("a1", "Show - 01.hin.mkv", {
+      matchedVideoId: "v1",
+      tracks: [audioTrack("0")],
+      includedTrackIds: [0],
+    });
+
+    const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
+
     // Index among audio streams, not among all tracks: the video track must
     // not shift the count.
-    expect(defaultReferenceTrack(video)).toBe(1);
-  });
-
-  it("falls back to the first audio track when none is marked default", () => {
-    const video = makeVideo("v1", "Show - 01.mkv", [audioTrack("0"), audioTrack("1")]);
-    expect(defaultReferenceTrack(video)).toBe(0);
+    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
+    expect(DEFAULT_REFERENCE_TRACK).toBe(0);
   });
 
   it("honours an explicitly chosen reference track", () => {
@@ -242,11 +249,13 @@ describe("choosing the reference track per external track", () => {
     language,
   });
 
-  it("compares a shared language rather than whatever is first", () => {
-    // Regression: a Korean track was measured against the video's Hindi.
-    // Two languages share no waveform, so the correlator had no true peak to
-    // find and returned whatever fit best -- at high confidence, because every
-    // sample window agreed on the same wrong answer.
+  it("does not pick the video track by language", () => {
+    // A Korean dub against a [jpn, kor] video correlates far better against
+    // the Korean track -- and AudioSyncMaster still measures stream 0 unless
+    // the user chooses. Choosing here made the two apps measure different
+    // tracks of the same file and report different delays. The sharper
+    // pairing is still one click away, in both apps, through the reference
+    // picker.
     const video = makeVideo("v1", "Ep01.mkv", [
       langTrack("0", "jpn"),
       langTrack("1", "kor"),
@@ -260,8 +269,7 @@ describe("choosing the reference track per external track", () => {
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
     expect(plan.measurements).toHaveLength(1);
-    // Korean against Korean, not against the video's first track.
-    expect(plan.measurements[0].pair.primaryTrack).toBe(1);
+    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
     expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
   });
 
@@ -300,8 +308,7 @@ describe("choosing the reference track per external track", () => {
     expect(plan.measurements[0].pair.primaryTrack).toBe(0);
   });
 
-  it("ignores und, which says nothing about the language", () => {
-    // und on both sides is not a match; the kor pair is.
+  it("measures the first muxed track of the file against the video's first", () => {
     const video = makeVideo("v1", "Ep01.mkv", [
       langTrack("0", "und"),
       langTrack("1", "kor"),
@@ -315,8 +322,8 @@ describe("choosing the reference track per external track", () => {
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
     expect(plan.measurements).toHaveLength(1);
-    expect(plan.measurements[0].pair.primaryTrack).toBe(1);
-    expect(plan.measurements[0].pair.secondaryTrack).toBe(1);
+    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
+    expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
   });
 });
 
@@ -443,8 +450,8 @@ describe("when nothing identifies which video track matches the dub", () => {
     // This used to measure every combination and let confidence pick a winner.
     // That made the answer depend on which pairing happened to correlate best
     // -- a different video track per file, so a batch came back internally
-    // inconsistent and disagreed with AudioSyncMaster, which simply uses the
-    // default track. One pairing, chosen the same way every time.
+    // inconsistent and disagreed with AudioSyncMaster, which simply uses
+    // stream 0. One pairing, chosen the same way every time.
     const video = makeVideo("v1", "Ep01.mkv", [
       { id: "1", type: "audio" },
       { id: "2", type: "audio", isDefault: true },
@@ -458,7 +465,7 @@ describe("when nothing identifies which video track matches the dub", () => {
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
     expect(plan.measurements).toHaveLength(1);
-    expect(plan.measurements[0].pair.primaryTrack).toBe(1);
+    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
     expect(plan.measurements[0].trackId).toBeNull();
   });
 
@@ -482,7 +489,7 @@ describe("when nothing identifies which video track matches the dub", () => {
     }
   });
 
-  it("does not multiply work when the languages already agree", () => {
+  it("does not multiply work when the languages agree", () => {
     const video = makeVideo("v1", "Ep01.mkv", [
       langTrack("1", "kor"),
       langTrack("2", "hin"),
@@ -496,7 +503,7 @@ describe("when nothing identifies which video track matches the dub", () => {
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
     expect(plan.measurements).toHaveLength(1);
-    expect(plan.measurements[0].pair.primaryTrack).toBe(1);
+    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
   });
 });
 
@@ -583,9 +590,9 @@ describe("which external track is measured", () => {
     expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
   });
 
-  it("prefers a shared language among the tracks that are muxed", () => {
+  it("measures the first muxed track when several are muxed", () => {
     // Both tracks are muxed, so one delay covers both and either may be
-    // measured -- take the pairing that correlates best.
+    // measured. The first is AudioSyncMaster's choice, so it is this one's.
     const video = makeVideo("v1", "Ep01.mkv", [
       langTrack("1", "jpn"),
       langTrack("2", "eng"),
@@ -599,8 +606,8 @@ describe("which external track is measured", () => {
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
     expect(plan.measurements[0].pair).toMatchObject({
-      primaryTrack: 1,
-      secondaryTrack: 1,
+      primaryTrack: 0,
+      secondaryTrack: 0,
     });
   });
 
@@ -651,45 +658,27 @@ describe("which external track is measured", () => {
 
 describe("the reference track a row should compare itself against", () => {
   // A row flags "Reference changed" when the track a measurement used differs
-  // from the one in force now. That comparison is only meaningful if both sides
-  // are derived the same way -- and the plan does not always use the video's
-  // default track: with no explicit choice it prefers the video track sharing
-  // the muxed track's language, because same-language material correlates far
-  // more sharply. Comparing that against defaultReferenceTrack() reports a
-  // change on every such measurement, when nothing changed at all.
-  const videoWithHindi = (): VideoFile => ({
-    ...makeVideo("v1", "Show - 01.mkv", [
-      { id: "0", type: "audio", isDefault: true, language: "eng" },
-      { id: "1", type: "audio", isDefault: false, language: "hin" },
-    ]),
-  });
-
-  const hindiDub = (): ExternalFile =>
-    makeAudio("a1", "Show - 01.mkv", {
-      language: "hin",
-      tracks: [{ id: "0", type: "audio", isDefault: true, language: "hin" }],
-    });
-
-  it("plans against the language match, not the video's default track", () => {
-    const plan = buildMeasurementPlan({
-      videoFiles: [videoWithHindi()],
-      audioFiles: [hindiDub()],
-    });
-
-    expect(plan.measurements).toHaveLength(1);
-    expect(plan.measurements[0].pair.primaryTrack).toBe(1);
-    // The default is the English track, which is exactly the discrepancy.
-    expect(defaultReferenceTrack(videoWithHindi())).toBe(0);
-  });
+  // from the one in force now, so the row must derive it the way the plan does.
+  const video = (): VideoFile =>
+    makeVideo("v1", "Show - 01.mkv", [
+      { id: "0", type: "audio", isDefault: false, language: "eng" },
+      { id: "1", type: "audio", isDefault: true, language: "hin" },
+    ]);
 
   it("reports the track the next measurement would actually use", () => {
-    const video = videoWithHindi();
-    const file = hindiDub();
+    const plan = buildMeasurementPlan({
+      videoFiles: [video()],
+      audioFiles: [
+        makeAudio("a1", "Show - 01.mkv", {
+          language: "hin",
+          tracks: [{ id: "0", type: "audio", isDefault: true, language: "hin" }],
+        }),
+      ],
+    });
 
-    // What the row must compare a stored measurement against.
-    expect(plannedReferenceTrack(video, file, {})).toBe(1);
-
-    // And an explicit choice is still honoured as-is.
-    expect(plannedReferenceTrack(video, file, { v1: 0 })).toBe(0);
+    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
+    expect(plannedReferenceTrack(video(), {})).toBe(0);
+    // And an explicit choice is honoured as-is, by both.
+    expect(plannedReferenceTrack(video(), { v1: 1 })).toBe(1);
   });
 });
