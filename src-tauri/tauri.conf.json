@@ -35,7 +35,7 @@
     "bundle": {
       "identifier": "com.ionicboy.mkvbatchmuxingtool",
       "publisher": "Ionicboy (AdkHex)",
-      "copyright": "Copyright (c) 2026 Ionicboy (AdkHex). Licensed under the GNU GPL v3.",
+      "copyright": "Copyright (c) 2026 Ionicboy (AdkHex). All rights reserved.",
       "shortDescription": "Batch mux MKV files with MKVToolNix",
       "targets": [
         "nsis",

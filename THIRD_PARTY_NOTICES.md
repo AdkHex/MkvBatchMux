@@ -1,25 +1,24 @@
 # Third-party notices
 
-MKVBatchMux is licensed under the GNU General Public License v3.0 (see
-[LICENSE](LICENSE)). The installer also ships, or downloads on request, the
-software listed here. Each remains under its own license; nothing below is
-relicensed by being distributed with MKVBatchMux.
+MKVBatchMux is proprietary software (see [LICENSE](LICENSE)). The installer
+also ships, or downloads on request, the software listed here. Each remains
+under its own license; nothing below is relicensed by being distributed with
+MKVBatchMux.
 
 ## Bundled in the installer
 
-### FFmpeg 7.1 (`ffmpeg.exe`, `ffprobe.exe`)
+### FFmpeg 8.1 (`ffmpeg.exe`, `ffprobe.exe`)
 
-- Build: [gyan.dev "essentials" build](https://www.gyan.dev/ffmpeg/builds/),
-  fetched from <https://github.com/GyanD/codexffmpeg/releases/tag/7.1>
-- License: **GNU GPL v3** (the build enables GPL components such as libx264
-  and libx265, so the whole binary is GPL)
+- Build: [BtbN FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), static
+  `win64-lgpl` variant
+- License: **GNU LGPL v2.1 or later**. The build is configured without
+  `--enable-gpl` and without `--enable-nonfree`, so no GPL-only component is
+  included. MKVBatchMux invokes the binaries as separate processes and does not
+  link against them.
 - Copyright: the FFmpeg developers, <https://ffmpeg.org>
-- Source: <https://ffmpeg.org/download.html#get-sources> (FFmpeg 7.1). The
-  exact configure flags for the shipped build are printed by `ffmpeg -version`
-  and listed on the gyan.dev builds page. On request, the maintainer of
-  MKVBatchMux will provide the corresponding complete source for the shipped
-  binaries, as required by GPL §6; open an issue at
-  <https://github.com/AdkHex/MkvBatchMux/issues>.
+- Source: <https://ffmpeg.org/download.html#get-sources>; the build scripts
+  and exact configure flags are in the BtbN repository above, and are printed
+  by `ffmpeg -version`.
 
 ### AudioSync analysis engine (`audiosync-cli.exe`)
 
@@ -59,8 +58,8 @@ Apache-2.0, BSD-3-Clause, 0BSD and BlueOak-1.0.0 — all permissive. The Rust
 backend depends on the crates listed in `src-tauri/Cargo.toml`; their licenses
 are MIT and/or Apache-2.0 for the large majority, with a handful under
 BSD-2/3-Clause, Unicode-3.0, Unlicense, CC0-1.0, BSL-1.0, Zlib and MPL-2.0
-(the `cssparser`/`selectors` family used by Tauri's HTML processing). No
-dependency is under a license incompatible with GPL-3.0.
+(the `cssparser`/`selectors` family used by Tauri's HTML processing). All are
+permissive or weak-copyleft licenses that permit use in proprietary software.
 
 The complete dependency trees with their license texts can be regenerated
 from a checkout with `npx license-checker --production` and

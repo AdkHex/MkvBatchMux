@@ -5,7 +5,7 @@ audio tracks, subtitles, chapters and attachments, set the flags and delays
 once, and let it run through the queue with MKVToolNix.
 
 [![Latest release](https://img.shields.io/github/v/release/AdkHex/MkvBatchMux?label=download&color=2ea44f)](https://github.com/AdkHex/MkvBatchMux/releases/latest)
-[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-proprietary-lightgrey.svg)](LICENSE)
 
 - **Windows x64** — installer on the [Releases](https://github.com/AdkHex/MkvBatchMux/releases/latest) page
 - **macOS / Linux** — build from source (untested, not shipped)
@@ -189,8 +189,7 @@ feature quietly broken.
 Why it matters: building from AudioSyncMaster's `main` once shipped an
 unreleased engine rewrite that flagged cuts and drift on files the released
 engine measured cleanly, and the two apps disagreed by tens of milliseconds
-with nothing on screen to say why. See
-[docs/AUDIOSYNC_ENGINE_PARITY.md](docs/AUDIOSYNC_ENGINE_PARITY.md).
+with nothing on screen to say why.
 
 - **To move to a newer engine**, bump `audiosyncEngine.ref` to the new release
   tag in a commit of its own. CI warns when AudioSyncMaster has a newer
@@ -203,19 +202,21 @@ with nothing on screen to say why. See
 
 ### Releases and CI
 
-Every push to `main` that touches code runs **Build installers**: it bumps
-the minor version, builds the Windows installer with the bundled FFmpeg and
-engine, signs the updater bundle, and publishes a GitHub release marked
-*latest*. Installed apps pick that release up automatically, so **a push to
-`main` is a public release**. Release notes are generated from the commit
-subjects since the previous release, which is why they are written as
-behaviour changes.
+Every push and pull request runs **CI** (typecheck, lint, tests, `cargo check`).
+Documentation-only changes are skipped.
 
-Pushes that only change documentation (`*.md`, `docs/`, `LICENSE`) do not
-build or release anything.
+A release is cut from a tag:
 
-The same workflow can be run by hand from the Actions tab (**Run workflow**)
-without pushing.
+```bash
+npm run release -- minor --push     # or patch / major / 1.65.0
+```
+
+This writes the version into `package.json`, `tauri.conf.json` and
+`Cargo.toml`, commits `Release vX.Y.Z`, tags it and pushes. The **Release**
+workflow then builds the Windows installer with the bundled FFmpeg and engine,
+signs the updater bundle, and publishes a GitHub release marked *latest* —
+installed apps pick it up automatically. Release notes are the commit subjects
+since the previous tag.
 
 <details>
 <summary>Repository secrets (required for auto-update)</summary>
@@ -259,10 +260,10 @@ scripts/      Project maintenance scripts
 
 ## License
 
-MKVBatchMux is free software under the [GNU GPL v3](LICENSE).
-Copyright (c) 2026 Ionicboy (AdkHex).
+Copyright (c) 2026 Ionicboy (AdkHex). All rights reserved — see [LICENSE](LICENSE).
+The source is published for reference; the installer is free to download and use.
 
-The installer bundles FFmpeg (GPL) and the AudioSync analysis engine, and can
+The installer bundles FFmpeg (LGPL) and the AudioSync analysis engine, and can
 download MKVToolNix (GPL) and MediaInfo (BSD) on request. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for each component's license
 and where to get its source.

@@ -1,12 +1,6 @@
 /**
- * Fetch ffmpeg + ffprobe into src-tauri/resources/ffmpeg so the installer can
- * bundle them.
- *
- * Delay measurement shells out to both tools. Requiring the user to install
- * FFmpeg themselves meant a fresh install silently disabled the feature, so
- * release builds ship a known-good pair instead. The app still falls back to
- * whatever is on PATH when nothing is bundled (which is the normal state of a
- * development checkout).
+ * Fetch ffmpeg + ffprobe into src-tauri/resources/ffmpeg so the installer can bundle them.
+ * Falls back to whatever is on PATH when nothing is bundled (the normal state of a dev checkout).
  *
  * Usage:
  *   npm run fetch-ffmpeg                       # download a build for this platform
@@ -30,20 +24,17 @@ function fail(message, hint) {
   process.exit(1);
 }
 
-/** Static builds, chosen because they need no runtime shared libraries. */
+// Static LGPL builds: no runtime shared libraries, and no GPL-only components,
+// so the binaries can ship inside a proprietary installer.
+const BTBN = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest";
+
 function downloadUrl() {
   const arch = process.arch;
   if (process.platform === "win32" && arch === "x64") {
-    return {
-      url: "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
-      archive: "zip",
-    };
+    return { url: `${BTBN}/ffmpeg-n8.1-latest-win64-lgpl-8.1.zip`, archive: "zip" };
   }
   if (process.platform === "linux" && arch === "x64") {
-    return {
-      url: "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
-      archive: "tar.xz",
-    };
+    return { url: `${BTBN}/ffmpeg-n8.1-latest-linux64-lgpl-8.1.tar.xz`, archive: "tar.xz" };
   }
   if (process.platform === "darwin") {
     // evermeet.cx publishes ffmpeg and ffprobe as separate archives.
