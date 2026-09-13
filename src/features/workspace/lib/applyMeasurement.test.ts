@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ExternalFile } from "@/shared/types";
 import type { SyncResult } from "@/shared/types/audiosync";
 import {
+  acceptWithheldMeasurement,
   applyMeasurement,
   applyMeasuredDelay,
   applyAllPendingDelays,
@@ -165,6 +166,83 @@ describe("applyMeasurement", () => {
     expect(updated.measuredDelay?.isRateMismatch).toBe(true);
     expect(updated.measuredDelay?.correctionRatio).toBe(1.0427);
     expect(updated.stretch).toBeUndefined();
+  });
+});
+
+describe("acceptWithheldMeasurement", () => {
+  // A cut on a frame-rate-converted track: withheld, and carrying the
+  // diagnosis the stretch control needs.
+  const withheld = () =>
+    apply(
+      makeFile(),
+      makeResult({
+        delayMs: 4240.3,
+        isLikelyCut: true,
+        isRateMismatch: true,
+        rateDiagnosis: {
+          driftMsPerS: 1.0,
+          speedRatio: 1.0427,
+          sourceFps: 25,
+          targetFps: 23.976,
+          isRateMismatch: true,
+          isLikelyCut: true,
+          cutPositionS: null,
+          cutMagnitudeMs: null,
+          explanation: "25 to 23.976 fps conversion",
+          correctionRatio: 0.959,
+        },
+      }),
+    );
+
+  it("commits the delay rather than staging it", () => {
+    const file = withheld();
+    expect(file.delay).toBeUndefined();
+    expect(file.pendingDelay).toBeUndefined();
+
+    const accepted = acceptWithheldMeasurement(file, null);
+    // "Apply anyway" is the agreement; nothing should be left waiting.
+    expect(accepted.delay).toBe(-4.24);
+    expect(accepted.delayProvenance).toBe("measured");
+    expect(accepted.pendingDelay).toBeUndefined();
+  });
+
+  it("keeps the stored measurement intact, diagnosis included", () => {
+    const file = withheld();
+    const accepted = acceptWithheldMeasurement(file, null);
+    expect(accepted.measuredDelay).toEqual(file.measuredDelay);
+    expect(accepted.measuredDelay?.rateSourceFps).toBe(25);
+    expect(accepted.measuredDelay?.rateTargetFps).toBe(23.976);
+    expect(accepted.measuredDelay?.correctionRatio).toBe(0.959);
+    expect(accepted.measuredDelay?.isLikelyCut).toBe(true);
+  });
+
+  it("overrides a hand-typed delay, since the click is explicit", () => {
+    const file = withheld();
+    const typed = { ...file, delay: 0.5, delayProvenance: "manual" as const };
+    expect(acceptWithheldMeasurement(typed, null).delay).toBe(-4.24);
+  });
+
+  it("does nothing without a measurement, or for a failed one", () => {
+    const bare = makeFile();
+    expect(acceptWithheldMeasurement(bare, null)).toBe(bare);
+    const failed = apply(makeFile(), makeResult({ delayMs: null, error: "no peak" }));
+    expect(acceptWithheldMeasurement(failed, null)).toBe(failed);
+  });
+
+  it("works per track", () => {
+    const file = applyMeasurement({
+      file: makeFile(),
+      result: makeResult({ delayMs: 4240.3, isLikelyCut: true }),
+      trackId: 2,
+      referenceTrack: 0,
+      measuredAt: MEASURED_AT,
+    });
+    const accepted = acceptWithheldMeasurement(file, 2);
+    expect(accepted.trackOverrides?.[2]?.delay).toBe(-4.24);
+    expect(accepted.trackOverrides?.[2]?.delayProvenance).toBe("measured");
+    expect(accepted.trackOverrides?.[2]?.pendingDelay).toBeUndefined();
+    expect(accepted.trackOverrides?.[2]?.measuredDelay).toEqual(file.trackOverrides?.[2]?.measuredDelay);
+    expect(accepted.delay).toBeUndefined();
   });
 });
 

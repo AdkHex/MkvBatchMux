@@ -73,6 +73,7 @@ export function useMeasureDelays({
             engineAvailable: false,
             ffmpegAvailable: false,
             enginePath: null,
+            engineVersion: null,
             message: "The audio analysis engine could not be reached.",
           });
         }

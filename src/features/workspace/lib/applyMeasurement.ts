@@ -142,6 +142,70 @@ export function applyMeasuredDelay(file: ExternalFile, trackId: number | null): 
   };
 }
 
+/** Accept a measurement the rules withheld -- a likely cut, an implausible
+ *  offset, a weak correlation -- and put it straight into the delay field.
+ *
+ *  This is the "Apply anyway" button, so it commits rather than stages: the
+ *  click *is* the user's agreement, and staging behind it meant a toast said
+ *  "applied" while the field still read 0.000 until a second click nobody was
+ *  told about.
+ *
+ *  The stored record is kept exactly as it was. Only whether the value is
+ *  accepted changes, not what was measured -- and rebuilding the record from
+ *  the minimal result below would drop the frame-rate diagnosis the stretch
+ *  control reads, so "Apply anyway" on a rate-converted track used to erase
+ *  the very warning that made it worth reading.
+ *
+ *  Returns the file unchanged when there is no measurement to accept.
+ */
+export function acceptWithheldMeasurement(file: ExternalFile, trackId: number | null): ExternalFile {
+  const measured =
+    trackId === null ? file.measuredDelay : file.trackOverrides?.[trackId]?.measuredDelay;
+  if (!measured || measured.error) return file;
+
+  const staged = applyMeasurement({
+    file,
+    // The minimal result the writer needs, so this path shares the same
+    // conversion as an ordinary measurement.
+    result: {
+      videoFile: "",
+      audioFile: file.name,
+      delayMs: measured.engineDelayMs,
+      delayAtStartMs: null,
+      confidence: measured.confidence,
+      driftMsPerS: measured.driftMsPerS,
+      totalDriftMs: null,
+      hasSignificantDrift: measured.hasSignificantDrift,
+      startDelayMs: null,
+      endDelayMs: null,
+      windowsUsed: null,
+      windowsTotal: null,
+      error: null,
+      elapsedMs: null,
+      isLikelyCut: measured.isLikelyCut,
+      isRateMismatch: measured.isRateMismatch,
+      primaryFps: measured.primaryFps,
+    },
+    trackId,
+    referenceTrack: measured.referenceTrack,
+    measuredAt: measured.measuredAt,
+    allowCut: true,
+    force: true,
+  });
+
+  const restored: ExternalFile =
+    trackId === null
+      ? { ...staged, measuredDelay: measured }
+      : {
+          ...staged,
+          trackOverrides: {
+            ...(staged.trackOverrides ?? {}),
+            [trackId]: { ...(staged.trackOverrides?.[trackId] ?? {}), measuredDelay: measured },
+          },
+        };
+  return applyMeasuredDelay(restored, trackId);
+}
+
 /** Whether this file has a measured delay waiting to be accepted. */
 export function hasPendingDelay(file: ExternalFile): boolean {
   if (file.pendingDelay !== undefined) return true;

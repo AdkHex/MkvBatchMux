@@ -56,6 +56,46 @@ Both are build artifacts and are not committed. The engine is built from
 [AudioSyncMaster](https://github.com/AdkHex/AudioSyncMaster) rather than
 vendored here so it does not diverge from the fixes made there.
 
+#### The engine is pinned to an AudioSyncMaster release
+
+`package.json` names the AudioSyncMaster release the engine is built from:
+
+```json
+"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.8.0" }
+```
+
+CI checks that tag out, `fetch-engine` refuses a checkout that is at any
+other commit or has uncommitted engine changes, and the built engine is
+stamped with its version (`ENGINE_VERSION`), which Settings shows under
+*Audio analysis engine*. Both apps report the same delay for the same files
+only while they run the same engine code, and that pin is what makes it so:
+building from AudioSyncMaster's `main` once shipped an unreleased engine
+rewrite that flagged cuts and drift on files the released engine measured
+cleanly, and the two apps disagreed by tens of milliseconds with nothing on
+screen to say why.
+
+To move to a newer engine, bump `audiosyncEngine.ref` to the new release tag
+in a commit of its own. CI warns when AudioSyncMaster has a newer release
+than the pin. To try an unreleased checkout locally, set
+`AUDIOSYNC_ALLOW_UNPINNED=1`; the stamp then says so, and the app warns on
+the Measure button that its results may differ from AudioSyncMaster's.
+
+The measurement parameters are AudioSyncMaster's defaults (`ENGINE_DEFAULTS`
+in `src/shared/types/audiosync.ts`), and the request is the one it sends.
+Two things are deliberately different and both are bounded:
+
+- The row shows the delay at the start of the file (`delayAtStartMs`), which
+  is the value `--sync` applies and the value AudioSyncMaster's own *Fix*
+  applies. AudioSyncMaster's headline is the mid-file value; the two only
+  differ on a file flagged *Drift*, where its detail panel shows the same
+  start value as *Applied from t=0*.
+- The engine decodes with the FFmpeg it can find. This app bundles one;
+  AudioSyncMaster uses the one on your PATH. Whether a build trims E-AC3 /
+  AC-3 decoder priming inside a container is a property of the build, so on
+  such a track the two apps can differ by a constant 5.3 ms (a quarter of a
+  frame) if their FFmpeg builds differ. Raw `.ac3`/`.eac3` streams are
+  corrected by the engine on every build.
+
 A bundled FFmpeg takes precedence over one on your PATH: it is the version the
 app was tested against.
 

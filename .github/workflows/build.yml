@@ -37,7 +37,7 @@ jobs:
           node scripts/bump-version.mjs
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
           git commit -m "chore: bump version [skip ci]"
           # Two pushes landing close together race here: the second run's push
           # is rejected because main moved under it, which fails the whole
@@ -93,11 +93,45 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The engine is pinned to the AudioSyncMaster *release* the AudioSyncMaster
+      # app ships (package.json: audiosyncEngine.ref), never to its main branch.
+      # Checking out main here once bundled an unreleased engine rewrite that
+      # had landed thirteen minutes earlier, and the two apps then reported
+      # different delays for the same files -- cuts and drift flagged on
+      # material the released engine measured cleanly -- with nothing in
+      # either app to say why. Moving to a newer engine is a deliberate bump
+      # of that pin, made in a commit, when AudioSyncMaster has released it.
+      - name: Resolve the pinned analysis engine
+        id: engine
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref=$(node -p "require('./package.json').audiosyncEngine.ref")
+          repo=$(node -p "require('./package.json').audiosyncEngine.repository")
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "Engine pinned to $repo@$ref"
+          # Not a failure: the pin is meant to lag until both apps move
+          # together. But it should never lag silently.
+          latest=$(gh release view --repo "$repo" --json tagName -q .tagName 2>/dev/null || true)
+          if [ -n "$latest" ] && [ "$latest" != "$ref" ]; then
+            echo "::warning title=Engine pin behind::$repo's latest release is $latest but this build pins $ref. Bump audiosyncEngine.ref in package.json when both apps should move to it."
+          fi
+
       - name: Check out AudioSyncMaster
         uses: actions/checkout@v4
         with:
-          repository: AdkHex/AudioSyncMaster
+          repository: ${{ steps.engine.outputs.repo }}
+          ref: ${{ steps.engine.outputs.ref }}
           path: AudioSyncMaster
+          # fetch-engine verifies the checkout against the pinned tag and
+          # stamps the build with `git describe`; both need the tags present.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Fetch FFmpeg
+        run: npm run fetch-ffmpeg
 
       - name: Build the analysis engine
         shell: bash
@@ -115,8 +149,70 @@ jobs:
           done
           npm run fetch-engine
 
-      - name: Fetch FFmpeg
-        run: npm run fetch-ffmpeg
+      # Mirrors the smoke test in AudioSyncMaster's own release workflow: an
+      # engine that starts but computes garbage is invisible until a user
+      # presses Measure. The stamp check is what this pipeline was missing --
+      # it is the one line that would have said "this is not v2.8.0".
+      - name: Verify the bundled engine is the pinned release and measures correctly
+        shell: bash
+        env:
+          AUDIOSYNC_REPO: ${{ github.workspace }}/AudioSyncMaster
+          PINNED: ${{ steps.engine.outputs.ref }}
+        run: |
+          set -euo pipefail
+          stamp=$(cat src-tauri/resources/engine/ENGINE_VERSION)
+          echo "Bundled engine: $stamp"
+          case "$stamp" in
+            "AudioSyncMaster $PINNED ("*) ;;
+            *) echo "::error::The bundled engine is '$stamp', not the pinned $PINNED."; exit 1 ;;
+          esac
+
+          if [ "${{ runner.os }}" = "Windows" ]; then EXT=".exe"; else EXT=""; fi
+          ENGINE=""
+          for candidate in "src-tauri/resources/engine/audiosync-cli$EXT" \
+                           "src-tauri/resources/engine/audiosync-cli/audiosync-cli$EXT"; do
+            [ -f "$candidate" ] && ENGINE="$PWD/$candidate" && break
+          done
+          [ -n "$ENGINE" ] || { echo "::error::No audiosync-cli binary to smoke-test."; exit 1; }
+          # The engine shells out to ffmpeg by name, exactly as the installed
+          # app will make it do; the runner image has none of its own.
+          export PATH="$PWD/src-tauri/resources/ffmpeg:$PATH"
+          (cd "$AUDIOSYNC_REPO" && python tests/make_fixtures.py)
+          # The same request shape the app sends: explicit pairs, upstream's
+          # default window settings. Built by Python rather than printf because
+          # the Windows workspace path contains backslashes, which are not
+          # valid JSON escapes.
+          python - "$ENGINE" "$AUDIOSYNC_REPO" <<'CHECK'
+          import json, os, subprocess, sys
+          engine, repo = sys.argv[1], sys.argv[2]
+          fixture = lambda name: os.path.join(repo, "tests", "fixtures", name)
+          request = {
+              "command": "analyze",
+              "pairs": [{
+                  "primaryPath": fixture("offset_500ms_primary.wav"),
+                  "secondaryPath": fixture("offset_500ms_secondary.wav"),
+                  "key": "smoke", "method": "mkvbatchmux", "score": 1,
+                  "primaryTrack": 0, "secondaryTrack": 0,
+              }],
+              "windowSeconds": 8, "windowCount": 3, "maxOffsetMs": 60000, "maxWorkers": 1,
+          }
+          out = subprocess.run(
+              [engine], input=json.dumps(request) + "\n" + json.dumps({"command": "shutdown"}) + "\n",
+              capture_output=True, text=True, timeout=300,
+          )
+          delay = None
+          for line in out.stdout.splitlines():
+              try:
+                  event = json.loads(line)
+              except ValueError:
+                  continue
+              if event.get("type") == "result":
+                  delay = event.get("delayMs")
+          if delay is None or abs(delay - 500.0) > 5.0:
+              sys.stderr.write(out.stderr)
+              raise SystemExit(f"engine measured {delay!r} ms for a 500 ms fixture")
+          print(f"engine measured {delay:.2f} ms for a 500 ms fixture")
+          CHECK
 
       # fetch-engine and fetch-ffmpeg both exit non-zero on failure, so reaching
       # here means the files exist; this asserts they are where the bundler will

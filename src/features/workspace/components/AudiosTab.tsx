@@ -42,7 +42,7 @@ import { ReferenceTrackPicker } from "@/features/workspace/components/ReferenceT
 import { AudioFpsBadge } from "@/features/workspace/components/AudioFpsBadge";
 import { audioFpsFor } from "@/features/workspace/lib/audioFps";
 import {
-  applyMeasurement,
+  acceptWithheldMeasurement,
   applyAllPendingDelays,
   hasPendingDelay,
   markDelayAsManual,
@@ -300,49 +300,15 @@ export function AudiosTab({
   const applyCutDelayAnyway = useCallback(
     (fileId: string, trackId: number | null) => {
       const file = audioFiles.find((candidate) => candidate.id === fileId);
-      const measured = trackId === null
-        ? file?.measuredDelay
-        : file?.trackOverrides?.[trackId]?.measuredDelay;
-      if (!file || !measured) return;
-
-      // Rebuild the minimal result the writer needs from what was stored, so
-      // this path shares the same conversion as an ordinary measurement.
+      if (!file) return;
+      const accepted = acceptWithheldMeasurement(file, trackId);
+      if (accepted === file) return;
       onAudioFilesChange(
-        audioFiles.map((candidate) =>
-          candidate.id === fileId
-            ? applyMeasurement({
-                file: candidate,
-                result: {
-                  videoFile: "",
-                  audioFile: candidate.name,
-                  delayMs: measured.engineDelayMs,
-                  delayAtStartMs: null,
-                  confidence: measured.confidence,
-                  driftMsPerS: measured.driftMsPerS,
-                  totalDriftMs: null,
-                  hasSignificantDrift: measured.hasSignificantDrift,
-                  startDelayMs: null,
-                  endDelayMs: null,
-                  windowsUsed: null,
-                  windowsTotal: null,
-                  error: null,
-                  elapsedMs: null,
-                  isLikelyCut: measured.isLikelyCut,
-                  isRateMismatch: measured.isRateMismatch,
-                  primaryFps: measured.primaryFps,
-                },
-                trackId,
-                referenceTrack: measured.referenceTrack,
-                measuredAt: measured.measuredAt,
-                allowCut: true,
-                force: true,
-              })
-            : candidate,
-        ),
+        audioFiles.map((candidate) => (candidate.id === fileId ? accepted : candidate)),
       );
       toast({
         title: "Delay applied",
-        description: "The measured delay was applied despite the different-cut warning.",
+        description: "The measured delay is in the delay field despite the warning.",
       });
     },
     [audioFiles, onAudioFilesChange],
@@ -512,7 +478,12 @@ export function AudiosTab({
         : {
             language: currentConfig.language,
             trackName: currentConfig.trackName,
-            delay: delayValue,
+            // A delay the user accepted from a measurement is that file's own
+            // answer, like a hand-typed one; the global field is a default
+            // for files that have none. Without this, changing the language
+            // after Apply put every measured delay back to the global value
+            // while the row went on showing the measurement it had lost.
+            delay: file.delayProvenance === "measured" ? file.delay : delayValue,
             muxAfter: currentConfig.muxAfter,
           }),
     }));

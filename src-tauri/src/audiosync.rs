@@ -90,6 +90,13 @@ pub struct EngineStatus {
     pub engine_available: bool,
     pub ffmpeg_available: bool,
     pub engine_path: Option<String>,
+    /// Which AudioSyncMaster build the engine is, e.g. "AudioSyncMaster v2.8.0
+    /// (8e53e8b)". The engine speaks no version of its own, so this is the
+    /// stamp `fetch-engine` wrote beside the bundled binary, or `git describe`
+    /// of the development checkout. Shown in Settings because two apps that
+    /// claim to share an engine can only be checked against each other if
+    /// each says which engine it has.
+    pub engine_version: Option<String>,
     pub message: Option<String>,
 }
 
@@ -454,6 +461,63 @@ fn dev_bridge_script() -> Option<PathBuf> {
         .find(|script| script.is_file())
 }
 
+/// Written by `scripts/fetch-engine.mjs` beside the bundled engine. The name
+/// is shared with that script; change both or neither.
+const ENGINE_VERSION_FILE: &str = "ENGINE_VERSION";
+
+/// The AudioSyncMaster release this build expects to measure with, from
+/// package.json via build.rs. Empty when the pin is missing there.
+const PINNED_ENGINE_REF: &str = env!("AUDIOSYNC_ENGINE_REF");
+
+/// Whether a version stamp names the pinned release exactly.
+///
+/// Bundled stamps read "AudioSyncMaster v2.8.0 (8e53e8b)"; a development
+/// checkout reads "AudioSyncMaster v2.8.0 (development checkout)" at the tag
+/// and "AudioSyncMaster v2.8.0-2-gf38ace9 (development checkout)" two commits
+/// past it, so the tag has to be followed by a space, not merely be a prefix.
+fn is_pinned_release(version: &str) -> bool {
+    if PINNED_ENGINE_REF.is_empty() {
+        return true; // Nothing to compare against; do not cry wolf.
+    }
+    version
+        .strip_prefix("AudioSyncMaster ")
+        .and_then(|rest| rest.strip_prefix(PINNED_ENGINE_REF))
+        .is_some_and(|rest| rest.starts_with(' '))
+}
+
+/// The stamp fetch-engine left beside a bundled sidecar.
+fn sidecar_version(sidecar: &std::path::Path) -> Option<String> {
+    // The stamp sits at the top of resources/engine, which is the sidecar's
+    // own directory -- or its parent when PyInstaller nested the binary one
+    // level down (see find_sidecar).
+    let own = sidecar.parent()?;
+    [Some(own), own.parent()]
+        .into_iter()
+        .flatten()
+        .find_map(|dir| std::fs::read_to_string(dir.join(ENGINE_VERSION_FILE)).ok())
+        .and_then(|text| {
+            let line = text.lines().next().unwrap_or("").trim();
+            (!line.is_empty()).then(|| line.to_string())
+        })
+}
+
+/// `git describe` of a development checkout, so a dev build says which commit
+/// it is measuring with -- including whether that is the released engine or
+/// something on the way to the next one.
+fn checkout_version(repo_root: &std::path::Path) -> Option<String> {
+    let output = hidden_command("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["describe", "--tags", "--always", "--dirty"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let described = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!described.is_empty()).then(|| format!("AudioSyncMaster {described} (development checkout)"))
+}
+
 fn find_python(repo_root: &std::path::Path) -> PathBuf {
     let venv = if cfg!(windows) {
         repo_root
@@ -533,11 +597,22 @@ pub fn audiosync_engine_status(
     engine: tauri::State<'_, EngineHandle>,
 ) -> EngineStatus {
     let ffmpeg = ffmpeg_available_for(&app);
-    let located = find_sidecar(&app)
-        .map(|p| p.to_string_lossy().to_string())
-        .or_else(|| {
-            dev_bridge_script().map(|p| format!("{} (development)", p.to_string_lossy()))
-        });
+    let (located, version) = match find_sidecar(&app) {
+        Some(sidecar) => (
+            Some(sidecar.to_string_lossy().to_string()),
+            sidecar_version(&sidecar),
+        ),
+        None => match dev_bridge_script() {
+            Some(script) => {
+                let repo_root = script.parent().and_then(|p| p.parent()).map(PathBuf::from);
+                (
+                    Some(format!("{} (development)", script.to_string_lossy())),
+                    repo_root.as_deref().and_then(checkout_version),
+                )
+            }
+            None => (None, None),
+        },
+    };
 
     // Release builds bundle both, so these only surface if something went
     // wrong with the install -- or in a dev checkout, where the build command
@@ -562,13 +637,31 @@ pub fn audiosync_engine_status(
                 .to_string()
         })
     } else {
-        None
+        // Measuring still works with an unpinned engine; the results just
+        // cannot be expected to match AudioSyncMaster's. That is worth saying
+        // out loud: this exact situation went unnoticed once because nothing
+        // reported it.
+        version
+            .as_deref()
+            .filter(|found| !is_pinned_release(found))
+            .map(|found| {
+                format!(
+                    "The analysis engine is {found}, not the pinned AudioSyncMaster \
+                     {PINNED_ENGINE_REF}. Its delays may differ from AudioSyncMaster's.{}",
+                    if cfg!(debug_assertions) {
+                        " Run `npm run fetch-engine` against a checkout at that tag."
+                    } else {
+                        ""
+                    }
+                )
+            })
     };
 
     EngineStatus {
         engine_available: located.is_some(),
         ffmpeg_available: ffmpeg,
         engine_path: engine.path().or(located),
+        engine_version: version,
         message,
     }
 }
@@ -861,6 +954,62 @@ pub fn measure_delays_cancel(engine: tauri::State<'_, EngineHandle>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stamp is read from beside the binary in both layouts PyInstaller
+    /// produces, and its absence is reported as such rather than invented.
+    #[test]
+    fn the_stamp_is_found_in_both_sidecar_layouts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = dir.path().join("engine");
+        std::fs::create_dir_all(engine.join("audiosync-cli")).unwrap();
+        let flat = engine.join("audiosync-cli.exe");
+        let nested = engine.join("audiosync-cli").join("audiosync-cli.exe");
+        std::fs::write(&flat, b"").unwrap();
+        std::fs::write(&nested, b"").unwrap();
+
+        assert_eq!(sidecar_version(&flat), None);
+        std::fs::write(
+            engine.join(ENGINE_VERSION_FILE),
+            "AudioSyncMaster v2.8.0 (8e53e8b)\nsecond line ignored\n",
+        )
+        .unwrap();
+        assert_eq!(
+            sidecar_version(&flat).as_deref(),
+            Some("AudioSyncMaster v2.8.0 (8e53e8b)")
+        );
+        assert_eq!(
+            sidecar_version(&nested).as_deref(),
+            Some("AudioSyncMaster v2.8.0 (8e53e8b)")
+        );
+    }
+
+    #[test]
+    fn a_stamp_at_the_pinned_tag_is_the_release() {
+        if PINNED_ENGINE_REF.is_empty() {
+            return; // package.json without a pin: nothing to check.
+        }
+        assert!(is_pinned_release(&format!("AudioSyncMaster {PINNED_ENGINE_REF} (8e53e8b)")));
+        assert!(is_pinned_release(&format!(
+            "AudioSyncMaster {PINNED_ENGINE_REF} (development checkout)"
+        )));
+    }
+
+    #[test]
+    fn a_stamp_past_the_tag_is_not_the_release() {
+        if PINNED_ENGINE_REF.is_empty() {
+            return;
+        }
+        // `git describe` of two commits past the tag: the tag is a prefix but
+        // the engine is not the release.
+        assert!(!is_pinned_release(&format!(
+            "AudioSyncMaster {PINNED_ENGINE_REF}-2-gf38ace9 (development checkout)"
+        )));
+        assert!(!is_pinned_release(&format!(
+            "AudioSyncMaster {PINNED_ENGINE_REF}-dirty (development checkout)"
+        )));
+        assert!(!is_pinned_release("AudioSyncMaster v0.0.1 (0000000)"));
+        assert!(!is_pinned_release("unknown (prebuilt copy from /x; pin is v2.8.0)"));
+    }
 
     #[test]
     fn measure_request_deserializes_from_the_frontend_payload() {

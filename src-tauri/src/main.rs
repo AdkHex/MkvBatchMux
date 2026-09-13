@@ -230,13 +230,27 @@ impl StretchSetting {
     }
 }
 
+/// The whole milliseconds mkvmerge's `--sync` takes, from the seconds the
+/// delay field holds.
+///
+/// Rounded, not cast. The field holds three decimals, i.e. whole milliseconds,
+/// but `1.001` is not representable in binary and reads as `1000.9999...` once
+/// multiplied out; `as i64` truncates that to 1000 and the mux lands 1 ms short
+/// of what the field shows. That happens for 190 of the 20 001 whole-millisecond
+/// values within ±10 s -- every odd millisecond from 1.001 to 1.023 s, every
+/// fourth from 2.002 to 2.046 s, and so on -- and never below 1 s, which is why
+/// the old tests, all under 2 s, passed.
+fn delay_to_sync_ms(delay_seconds: f64) -> i64 {
+    (delay_seconds * 1000.0).round() as i64
+}
+
 /// Render the `--sync` value for a track: a plain offset, or an offset with a
 /// linear stretch when one is set.
 ///
 /// The offset and the stretch are independent -- the stretch is applied about
 /// t=0, so the offset remains the start-referenced delay either way.
 fn format_sync_value(track_id: u64, delay_seconds: f64, stretch: Option<StretchSetting>) -> String {
-    let offset_ms = (delay_seconds * 1000.0) as i64;
+    let offset_ms = delay_to_sync_ms(delay_seconds);
     match stretch {
         Some(ratio) if ratio.is_usable() => {
             format!(
@@ -795,7 +809,9 @@ fn dependency_status(app: AppHandle) -> Vec<DependencyStatus> {
             name: "Audio analysis engine".into(),
             purpose: "Measures how far a dub drifts from the video.".into(),
             available: engine.engine_available,
-            version: None,
+            // The AudioSyncMaster release this engine was built from. Both
+            // apps must show the same one to be expected to agree.
+            version: engine.engine_version.clone(),
             bundled: engine.engine_available,
             required: false,
             download_url: "https://github.com/AdkHex/AudioSyncMaster".into(),
@@ -2924,7 +2940,7 @@ fn build_mkvmerge_command(
             if delay != 0.0 {
                 args.push("--sync".to_string());
                 // For chapter files, use 0:milliseconds format (0 refers to the last added file)
-                args.push(format!("0:{}", (delay * 1000.0) as i64));
+                args.push(format!("0:{}", delay_to_sync_ms(delay)));
             }
         }
     }
@@ -3992,8 +4008,9 @@ mod regression_tests {
         assert_eq!(format_sync_value(1, -0.088, Some(negative)), "1:-88");
     }
 
-    /// The value the frontend computes must survive the cast main.rs performs.
-    /// This is the Rust half of the round-trip proved in delayConversion.test.ts.
+    /// The value the frontend computes must survive the conversion main.rs
+    /// performs. This is the Rust half of the round-trip proved in
+    /// delayConversion.test.ts.
     #[test]
     fn sync_offset_matches_the_frontend_rounding() {
         // engineMsToDelaySeconds(87.7) == -0.088
@@ -4002,6 +4019,25 @@ mod regression_tests {
         assert_eq!(format_sync_value(1, 0.034, None), "1:34");
         // engineMsToDelaySeconds(1890.4) == -1.890
         assert_eq!(format_sync_value(1, -1.890, None), "1:-1890");
+    }
+
+    /// Whole-millisecond delays whose binary representation falls just short
+    /// of the integer. `as i64` truncated these to one millisecond less than
+    /// the field showed; the measured Snatch delay of -4.178 s is one of them
+    /// in spirit, and 1.001 s is the smallest.
+    #[test]
+    fn sync_offset_is_rounded_not_truncated() {
+        assert_eq!(format_sync_value(1, 1.001, None), "1:1001");
+        assert_eq!(format_sync_value(1, -1.001, None), "1:-1001");
+        assert_eq!(format_sync_value(1, 2.002, None), "1:2002");
+        assert_eq!(format_sync_value(1, -1.023, None), "1:-1023");
+        assert_eq!(format_sync_value(1, -4.178, None), "1:-4178");
+        // Every whole millisecond within ±10 s must survive the round trip
+        // the delay field performs: seconds with three decimals -> ms.
+        for ms in -10_000..=10_000i64 {
+            let seconds: f64 = format!("{:.3}", ms as f64 / 1000.0).parse().unwrap();
+            assert_eq!(delay_to_sync_ms(seconds), ms, "{seconds} s");
+        }
     }
 
     /// Saved sessions written before the stretch field existed must still load.

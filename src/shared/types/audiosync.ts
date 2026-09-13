@@ -153,6 +153,10 @@ export interface EngineStatus {
   ffmpegAvailable: boolean;
   /** Where the engine was found, for the log and for diagnosing a bad build. */
   enginePath: string | null;
+  /** Which AudioSyncMaster build it is, e.g. "AudioSyncMaster v2.8.0 (8e53e8b)".
+   *  Null when the bundle carries no stamp. The two apps can only be expected
+   *  to agree while this matches the AudioSyncMaster release installed. */
+  engineVersion: string | null;
   message: string | null;
 }
 

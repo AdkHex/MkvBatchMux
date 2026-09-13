@@ -2,6 +2,10 @@
   "name": "mkv-batch-mux",
   "private": true,
   "version": "1.57.0",
+  "audiosyncEngine": {
+    "repository": "AdkHex/AudioSyncMaster",
+    "ref": "v2.8.0"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
