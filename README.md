@@ -227,21 +227,13 @@ and where to get its source.
 <details>
 <summary>Show screenshots</summary>
 
-**Subtitles**
-
-![Subtitles](docs/screenshots/Subtitles.png)
-
-**Attachments**
-
-![Attachments](docs/screenshots/Attachment.png)
-
-**Mux Settings**
-
-![Mux Settings](docs/screenshots/MuxSettings.png)
-
 **Videos**
 
 ![Videos](docs/screenshots/Videos.png)
+
+**Subtitles**
+
+![Subtitles](docs/screenshots/Subtitles.png)
 
 **Audio Tracks**
 
@@ -250,5 +242,13 @@ and where to get its source.
 **Chapters**
 
 ![Chapters](docs/screenshots/Chapter.png)
+
+**Attachments**
+
+![Attachments](docs/screenshots/Attachment.png)
+
+**Mux Settings**
+
+![Mux Settings](docs/screenshots/MuxSettings.png)
 
 </details>
