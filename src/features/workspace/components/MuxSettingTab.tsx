@@ -135,10 +135,8 @@ export function MuxSettingTab({
     [previewResults],
   );
 
-  // Validation found problems and the user is starting anyway: an alert is
-  // warranted because a batch is long-running and, with overwrite on, not
-  // undoable. Starting a clean queue raises nothing -- alerts are for the
-  // uncommon case, not for the app's primary action.
+  // Alert only when starting anyway despite validation problems: a long-running
+  // batch with overwrite on is not undoable.
   const startNeedsConfirming = warningCount > 0;
 
   const handleStartClick = () => {
@@ -823,13 +821,8 @@ export function MuxSettingTab({
         )}
       </BaseModal>
 
-      {/* Starting a batch that failed validation.
-          An alert rather than a toast because it needs an answer before
-          anything happens, and the choice is not undoable once mkvmerge is
-          writing over the sources. The confirm button is not styled
-          destructive: the user chose Start Muxing deliberately, and the
-          platform guidance reserves that styling for destructive actions
-          people did not intend. */}
+      {/* Confirming a batch that failed validation; not styled destructive since
+          the user chose Start Muxing deliberately. */}
       <BaseModal
         variant="alert"
         open={confirmStartOpen}

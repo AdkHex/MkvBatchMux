@@ -102,14 +102,7 @@ const getSubtitleTrackIds = (file: ExternalFile) =>
     ? file.tracks.filter((t) => t.type === "subtitle").map((t) => Number(t.id)).filter((id) => Number.isFinite(id))
     : [];
 
-/**
- * Per-track measurement results for a file, in track order.
- *
- * A multi-track external file is measured once per included track, and each
- * result is written to trackOverrides[trackId] rather than to the file. Rows
- * render file.measuredDelay directly, so without this the results of a batch
- * were invisible even though the mux used them.
- */
+/** Per-track measurement results for a file, in track order. */
 const measuredTrackEntries = (file: ExternalFile) => {
   const overrides = file.trackOverrides;
   if (!overrides) return [];
@@ -175,8 +168,7 @@ export function AudiosTab({
   );
 
   /** The reference track in force for the video a file is matched to, so a
-   *  measurement taken against a different one can be flagged as out of date.
-   *  Asked of the planner so the two can never disagree. */
+   *  measurement taken against a different one can be flagged as out of date. */
   const currentReferenceFor = useCallback(
     (file: ExternalFile): number | undefined => {
       if (!file.matchedVideoId) return undefined;
@@ -188,9 +180,7 @@ export function AudiosTab({
   );
 
   /** The frame rate a file's audio was timed at, judged against the video it is
-   *  matched to. Recomputed per render from data already in state -- there is
-   *  nothing to store, and a stale copy would outlive the measurement that
-   *  sharpened it. */
+   *  matched to. Recomputed per render so a stale copy can't outlive a new measurement. */
   const fpsFor = useCallback(
     (file: ExternalFile) =>
       audioFpsFor(
@@ -225,10 +215,8 @@ export function AudiosTab({
     [audioFiles, onAudioFilesChange],
   );
 
-  /** The same opt-in, for a measurement that belongs to one track of a
-   *  multi-track file. A container can hold one dub that was rate-converted and
-   *  one that was not, so the setting has to live per track -- which is where
-   *  the mux already looks for it, and where the row had no way to set it. */
+  /** The same opt-in, but per track: a container can hold one dub that was
+   *  rate-converted and one that was not. */
   const setStretchForTrack = useCallback(
     (fileId: string, trackId: number, stretch: StretchSetting | undefined) => {
       onAudioFilesChange(
@@ -256,10 +244,7 @@ export function AudiosTab({
     [startMeasuring],
   );
 
-  /** Apply a delay that cut detection withheld -- a deliberate act, per §5.4. */
-  // How many files have a measurement waiting to be accepted, and how many
-  // have been measured at all -- the first drives the Apply button, the second
-  // decides whether re-measuring is a meaningful offer.
+  // Drives the Apply button; measuredCount separately gates the re-measure offer.
   const pendingCount = useMemo(
     () => audioFiles.filter(hasPendingDelay).length,
     [audioFiles],
@@ -389,13 +374,8 @@ export function AudiosTab({
     () => getUnlinkedExternalFiles(audioFiles, videoFiles).length,
     [audioFiles, videoFiles],
   );
-  /**
-   * Whether the audio row at this index has grown to show a measurement.
-   *
-   * The two panes are separate scroll areas paired by index, so a taller audio
-   * row has to push its video partner to the same height or every row below
-   * drifts out of alignment.
-   */
+  /** Whether the audio row at this index has grown to show a measurement, so
+   *  its paired video row can grow to match and keep the two lists aligned. */
   const audioRowIsTall = useCallback(
     (index: number) => {
       const file = audioFiles[index];
@@ -474,11 +454,8 @@ export function AudiosTab({
         : {
             language: currentConfig.language,
             trackName: currentConfig.trackName,
-            // A delay the user accepted from a measurement is that file's own
-            // answer, like a hand-typed one; the global field is a default
-            // for files that have none. Without this, changing the language
-            // after Apply put every measured delay back to the global value
-            // while the row went on showing the measurement it had lost.
+            // An accepted measurement is the file's own delay, not a slot for
+            // the global default to keep overwriting.
             delay: file.delayProvenance === "measured" ? file.delay : delayValue,
             muxAfter: currentConfig.muxAfter,
           }),
@@ -901,9 +878,7 @@ export function AudiosTab({
       type: 'audio',
       include_tracks: true,
     });
-    // A rescan re-reads the same folder, so anything already measured or typed
-    // for a file still applies. Carrying it over means pressing refresh does
-    // not silently discard a batch of measured delays.
+    // Carry over prior measured/typed delays so a refresh doesn't discard them.
     const priorByPath = new Map(
       audioFilesRef.current.map((file) => [file.path.toLowerCase(), file] as const),
     );
@@ -947,9 +922,7 @@ export function AudiosTab({
 
   useEffect(() => {
     if (audioFiles.length === 0) return;
-    // Only the files that have a video to pair with: rows past the end
-    // keep their existing link, so comparing them against undefined
-    // would report a mismatch that relinking can never resolve.
+    // Only compare rows that have a video to pair with; past the end, keep the existing link.
     const needsRowMatch = audioFiles
       .slice(0, videoFiles.length)
       .some((file, index) => file.matchedVideoId !== videoFiles[index]?.id);
@@ -1044,9 +1017,8 @@ export function AudiosTab({
       includedTrackIds: mergedIncludedTrackIds,
       includeSubtitles: false,
       includedSubtitleTrackIds: [],
-      // Carry any per-stream edits through as track overrides, keyed by track
-      // id so the mux job picks them up the same way manual edits do. Without
-      // this every imported stream would silently take the tab's shared delay.
+      // Keyed by track id so the mux job picks up per-stream edits, not the
+      // tab's shared delay.
       trackOverrides: (() => {
         const overrides: NonNullable<ExternalFile["trackOverrides"]> = {
           ...(existingAtTarget?.trackOverrides ?? {}),
@@ -1133,9 +1105,7 @@ export function AudiosTab({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     {/* A disabled button emits no pointer events, so the span
-                        must be inline-block (it needs a box of its own) for the
-                        tooltip to fire — which is exactly when the reason for
-                        the button being disabled matters most. */}
+                        needs its own box for the tooltip to fire. */}
                     <span className="inline-block">
                       <Button
                         variant="outline"
@@ -1163,9 +1133,7 @@ export function AudiosTab({
                 </Tooltip>
               </TooltipProvider>
             )}
-            {/* Measuring no longer fills the delay field, so accepting the
-                results is its own action. Shown only once there is something
-                to accept, so the toolbar stays quiet the rest of the time. */}
+            {/* Accepting a measurement is its own action; only shown once there's something to accept. */}
             {pendingCount > 0 && !isMeasuring && (
               <Button
                 variant="default"
@@ -1505,11 +1473,7 @@ export function AudiosTab({
                           </div>
                         </>
                       )}
-                      {/* A file with several included tracks is measured once
-                          per track, and each result lands in trackOverrides
-                          rather than on the file. Without this the whole batch
-                          appeared to do nothing: the delays were stored and
-                          used by the mux, but never shown. */}
+                      {/* A multi-track file's results land in trackOverrides, not on the file. */}
                       {measuredTrackEntries(file).map(({ trackId, override, label }) => (
                         <div key={trackId} className="flex items-start gap-2">
                           <span className="text-xs text-muted-foreground shrink-0 mt-px">
@@ -1827,9 +1791,7 @@ export function AudiosTab({
             </div>
           </div>
 
-          {/* One flat list of switches. "Forced" is gone: audio is never
-              forced in practice, and the flag still defaults to false in the
-              mux job. */}
+          {/* "Forced" is gone: audio is never forced in practice. */}
           <div className="rounded border border-panel-border divide-y divide-panel-border">
             <label className="flex items-center gap-3 px-3 py-2.5 cursor-pointer">
               <div className="min-w-0 flex-1">

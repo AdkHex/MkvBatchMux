@@ -1,12 +1,5 @@
-/** Chooses which of a video's audio tracks a measurement compares against.
- *
- *  Defaults to the video's first audio track, as AudioSyncMaster does, but
- *  a container often carries an original language, a dub and a commentary --
- *  measuring against the wrong one produces a confident, wrong delay.
- *
- *  Populated from the track data mediainfo/mkvmerge already gave this app, so
- *  opening this does not cost a second probe of every file. See plan §5.3b.
- */
+/** Lets a user pick which audio track a measurement compares against, since a
+ *  container often mixes original, dub, and commentary tracks. */
 
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
@@ -119,10 +112,8 @@ export function ReferenceTrackPicker({
       >
         {withChoice.map((video) => {
           const audioTracks = (video.tracks ?? []).filter((track) => track.type === "audio");
-          // A stored choice can outlive the track it pointed at: rescanning a
-          // video keeps its id but can leave it with fewer tracks. An index past
-          // the end matches no item and renders the control blank, so fall back
-          // to the default the measurement itself would use.
+          // A stored choice can outlive the track it pointed at (rescanning
+          // keeps the id but can drop tracks), so fall back to the default.
           const stored = value[video.id];
           const selected =
             stored !== undefined && stored >= 0 && stored < audioTracks.length

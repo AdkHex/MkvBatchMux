@@ -54,9 +54,8 @@ export function ChaptersTab({
 
   const [selectedVideoIndex, setSelectedVideoIndex] = useState<number | null>(null);
   const [selectedChapterIndex, setSelectedChapterIndex] = useState<number | null>(null);
-  /** The selected chapter's id, so the highlight can follow it when the list is
-   *  reordered and be dropped when a rescan replaces it. Selecting by position
-   *  alone meant Remove could act on whatever file later took that slot. */
+  /** Selected by id, not position, so the highlight survives reordering and
+   *  Remove never acts on whatever file later took that slot. */
   const selectedChapterIdRef = useRef<string | null>(null);
 
   const selectChapterIndex = useCallback(
@@ -74,9 +73,8 @@ export function ChaptersTab({
     applyDelayToAll: false,
   });
 
-  // Applied when the preset's chapter folder actually changes, not whenever the
-  // preset object is replaced. Saving any unrelated option rebuilds that object,
-  // and reacting to its identity would wipe a folder the user had just typed.
+  // Applied when the folder value actually changes, not on every preset object
+  // identity change, or saving an unrelated option would wipe a typed folder.
   const appliedPresetFolderRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -113,9 +111,8 @@ export function ChaptersTab({
   const visibleVideos = filterAndSort(videoFiles);
   const visibleChapters = filterAndSort(chapterFiles);
 
-  // Reordering writes the real mux order, but a sorted view re-sorts it away,
-  // so the buttons would appear to do nothing while quietly changing the
-  // output. Blocked while a sort is on, with the reason on the control itself.
+  // Blocked while a sort is on: a sorted view re-sorts reordering away, so the
+  // buttons would appear to do nothing while quietly changing mux order.
   const sortHidesManualOrder = sortValue !== "loaded";
   const reorderHelp = sortHidesManualOrder
     ? "Sorting is on, so this list is not in mux order. Switch sort back to Loaded order to rearrange."
@@ -161,11 +158,8 @@ export function ChaptersTab({
     }
   };
 
-  // Pairing chapter files to videos by position is the default, not a rule.
-  // A file the user linked by hand keeps that link, otherwise linking would
-  // undo itself: the link changes chapterFiles, which re-runs the sync below.
-  // A hand-made link whose video has since disappeared falls back to the
-  // positional default rather than pointing at nothing.
+  // Positional pairing is the default; a hand-linked file keeps its link unless
+  // that video disappears, in which case it falls back to positional.
   const resolveChapterLink = useCallback(
     (file: ExternalFile, index: number): ExternalFile => {
       if (file.isManuallyLinked && videoFiles.some((video) => video.id === file.matchedVideoId)) {

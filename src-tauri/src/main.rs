@@ -136,9 +136,8 @@ struct VideoFileInfo {
     path: String,
     size: u64,
     duration: Option<String>,
-    /// The same length as `duration`, unrounded. `duration` is a display string
-    /// rounded to whole seconds, which is far too coarse to divide one length
-    /// by another and read a frame-rate conversion out of the result.
+    /// The same length as `duration`, unrounded -- `duration` is rounded to
+    /// whole seconds, too coarse to derive a frame-rate ratio from.
     #[serde(rename = "durationSeconds")]
     duration_seconds: Option<f64>,
     fps: Option<f64>,
@@ -208,14 +207,8 @@ struct TrackOverride {
     stretch: Option<StretchSetting>,
 }
 
-/// An opt-in linear stretch for a frame-rate-converted track, emitted as the
-/// extended `--sync <tid>:<offset>,<num>/<den>` form. Absent for every track
-/// the user has not explicitly opted in, so the plain offset stays the default.
-///
-/// mkvmerge multiplies every timestamp by `num/den`, so a ratio above 1 slows
-/// the track down: audio timed at 25fps against a 23.976fps video is short and
-/// takes 25025/24000. The frontend derives the ratio (see
-/// `rateConversionFor` in `delayConversion.ts`); this side only renders it.
+/// An opt-in linear stretch for a frame-rate-converted track, emitted as
+/// mkvmerge's extended `--sync <tid>:<offset>,<num>/<den>` form.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 struct StretchSetting {
     num: f64,
@@ -231,15 +224,8 @@ impl StretchSetting {
 }
 
 /// The whole milliseconds mkvmerge's `--sync` takes, from the seconds the
-/// delay field holds.
-///
-/// Rounded, not cast. The field holds three decimals, i.e. whole milliseconds,
-/// but `1.001` is not representable in binary and reads as `1000.9999...` once
-/// multiplied out; `as i64` truncates that to 1000 and the mux lands 1 ms short
-/// of what the field shows. That happens for 190 of the 20 001 whole-millisecond
-/// values within ±10 s -- every odd millisecond from 1.001 to 1.023 s, every
-/// fourth from 2.002 to 2.046 s, and so on -- and never below 1 s, which is why
-/// the old tests, all under 2 s, passed.
+/// delay field holds. Rounded, not cast: `1.001` isn't exactly representable in
+/// binary, so `as i64` would truncate it to 1000 instead of 1001.
 fn delay_to_sync_ms(delay_seconds: f64) -> i64 {
     (delay_seconds * 1000.0).round() as i64
 }
@@ -265,9 +251,8 @@ fn format_sync_value(track_id: u64, delay_seconds: f64, stretch: Option<StretchS
     }
 }
 
-/// Ratios are whole numbers in every case this app generates (24000/25025 and
-/// friends), so they are printed without a trailing ".0" that would read as a
-/// float to anyone comparing the command against MKVToolNix documentation.
+/// Ratios are whole numbers in every case this app generates, so they are
+/// printed without a trailing ".0" that would read as a float.
 fn format_ratio_part(value: f64) -> String {
     if value.fract() == 0.0 {
         format!("{}", value as i64)
@@ -428,13 +413,8 @@ struct AppState {
     cancelled_scans: Arc<Mutex<HashSet<String>>>,
 }
 
-/// Lock a mutex, recovering the guard if a previous holder panicked.
-///
-/// The muxing state is plain data (flags, a queue, child handles); a panic
-/// elsewhere does not leave it logically corrupt. Previously every call site
-/// used `.lock().unwrap()`, so a single panic poisoned the mutex and made every
-/// later command -- including pause and stop -- panic too, permanently bricking
-/// the app. Recovering the guard degrades gracefully instead.
+/// Lock a mutex, recovering the guard if a previous holder panicked. The
+/// muxing state is plain data, so a stale guard after a panic elsewhere is safe to reuse.
 fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(guard) => guard,
@@ -644,10 +624,8 @@ fn tools_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Prepend our tools directory to this process's PATH.
-///
-/// Called after an install so the new binary is usable immediately, and at
-/// startup so a previously installed tool is found without a reinstall.
+/// Prepend our tools directory to this process's PATH, so a just-installed or
+/// already-installed tool is usable without restarting.
 fn register_tools_on_path(app: &AppHandle) {
     let Ok(dir) = tools_dir(app) else { return };
     let mut entries: Vec<PathBuf> = vec![dir.clone()];
@@ -673,12 +651,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Download a dependency and make it runnable.
-///
-/// Windows-only in practice: it is the platform where these tools are not
-/// already a package-manager install away. Zips are unpacked into the app's
-/// data directory and added to this process's PATH; .exe installers are run
-/// with their silent flag.
+/// Download a dependency and make it runnable. Windows-only in practice, since
+/// other platforms have these tools a package manager away.
 #[tauri::command]
 fn install_dependency(app: AppHandle, id: String) -> Result<String, String> {
     #[derive(Clone, Copy)]
@@ -687,12 +661,8 @@ fn install_dependency(app: AppHandle, id: String) -> Result<String, String> {
         Installer,
     }
 
-    // Each URL is pinned to a release and to that release's SHA-256, so what
-    // runs is exactly the file that was checked when the pin was made -- an
-    // installer runs elevated, and HTTPS alone says nothing about a mirror
-    // that was swapped out upstream. To move to a newer release, change the
-    // URL and the digest together; MKVToolNix publishes a `.sha256` next to
-    // every installer, MediaInfo's is taken from the download itself.
+    // Each URL is pinned to a release and its SHA-256, so what runs is exactly
+    // the file checked when the pin was made. Update both together when bumping versions.
     let (url, sha256, kind, probe) = match id.as_str() {
         "mediainfo" => (
             "https://mediaarea.net/download/binary/mediainfo/26.05/MediaInfo_CLI_26.05_Windows_x64.zip",
@@ -784,10 +754,8 @@ fn install_dependency(app: AppHandle, id: String) -> Result<String, String> {
     }
 }
 
-/// Live status of everything the app shells out to.
-///
-/// The Settings panel renders this directly rather than a static link list, so
-/// a user can see what is actually missing instead of guessing from an error.
+/// Live status of everything the app shells out to, rendered directly in
+/// Settings so a user sees what's missing instead of guessing from an error.
 #[tauri::command]
 fn dependency_status(app: AppHandle) -> Vec<DependencyStatus> {
     let ffmpeg_bundled = audiosync::ffmpeg_is_bundled(&app);
@@ -798,9 +766,8 @@ fn dependency_status(app: AppHandle) -> Vec<DependencyStatus> {
             id: "mkvtoolnix".into(),
             name: "MKVToolNix".into(),
             purpose: "Performs the actual muxing (mkvmerge, mkvpropedit).".into(),
-            // Probed live rather than through the cached mkvmerge_available():
-            // that value is a OnceLock set at first use, so after installing
-            // from Settings it would keep reporting the tool as missing.
+            // Probed live rather than cached: mkvmerge_available() is a OnceLock,
+            // which would keep reporting missing after an install from Settings.
             available: tool_available("mkvmerge", "-V"),
             version: tool_version("mkvmerge", "-V"),
             bundled: false,
@@ -847,8 +814,7 @@ fn file_info_cache() -> &'static Mutex<HashMap<String, serde_json::Value>> {
 }
 
 /// Raw `mkvmerge -J` output, keyed by path, size and mtime. Separate from
-/// FILE_INFO_CACHE, which stores the app's own parsed shape rather than the
-/// probe it was derived from.
+/// FILE_INFO_CACHE, which stores the app's own parsed shape, not the raw probe.
 fn mkvmerge_info_cache() -> &'static Mutex<HashMap<String, serde_json::Value>> {
     static MKVMERGE_INFO_CACHE: OnceLock<Mutex<HashMap<String, serde_json::Value>>> =
         OnceLock::new();
@@ -890,13 +856,8 @@ fn put_cached_file_info(cache_key: String, value: &serde_json::Value) {
     }
 }
 
-/// Probe a file with `mkvmerge -J`, reusing the answer for identical files.
-///
-/// Building one job's command line probes every external file attached to it,
-/// and a batch typically attaches the same dub to every episode -- so the same
-/// file was being probed once per job, each time paying a process spawn and a
-/// full container parse. The key includes size and mtime, so a file edited
-/// between runs is re-read rather than served stale.
+/// Probe a file with `mkvmerge -J`, caching by path, size and mtime since a
+/// batch typically attaches the same external file to every job.
 fn get_mkvmerge_info(path: &Path) -> Option<serde_json::Value> {
     if !mkvmerge_available() {
         return None;
@@ -1536,8 +1497,7 @@ fn build_file_info(
             let audio_track = tracks.iter().find(|t| t.track_type == "audio");
             let bitrate = audio_track.and_then(|t| t.bitrate);
             // mediainfo reports no General duration for some raw elementary
-            // streams (a bare .aac among them), so fall back to mkvmerge, which
-            // does probe them.
+            // streams (a bare .aac among them); fall back to mkvmerge, which does probe them.
             let duration_seconds = parse_duration_seconds(mi).or_else(|| {
                 mkvmerge_info
                     .as_ref()
@@ -1774,9 +1734,8 @@ fn cancel_scan(state: State<AppState>, scan_id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Serializes all log writes. Up to MAX_PARALLEL_JOBS worker threads plus their
-/// stdout/stderr readers append to one file; without this lock their lines
-/// interleave mid-line and the log becomes unparseable.
+/// Serializes all log writes; without it, concurrent worker threads interleave
+/// lines mid-write and the log becomes unparseable.
 static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 fn write_log_line(paths: &AppPaths, line: &str) -> Result<(), String> {
@@ -1817,10 +1776,8 @@ fn get_output_paths(job: &MuxJobRequest, settings: &MuxSettings) -> (PathBuf, Pa
     let overwrite_mode = settings.destination_dir.trim().is_empty() || settings.overwrite_source;
 
     if overwrite_mode {
-        // Nanosecond clock PLUS a per-process monotonic counter. Second-level
-        // resolution let two parallel jobs with the same output stem pick the
-        // same temp path and corrupt each other; even nanoseconds alone can
-        // repeat on coarse clocks, so the counter guarantees uniqueness.
+        // Nanosecond clock plus a per-process counter: nanoseconds alone can
+        // still repeat on coarse clocks, so the counter guarantees uniqueness.
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::from_secs(0))
@@ -1979,9 +1936,8 @@ fn emit_job_error(
 }
 
 fn abort_mux_queue(state: &AppState) {
-    // Drain the child handles while holding the state lock, then RELEASE it
-    // before killing anything. Killing while holding mux_state inverts the lock
-    // order used by wait_for_child_or_stop and deadlocks the UI.
+    // Drain child handles under the state lock, then release it before killing
+    // anything -- matches the lock order wait_for_child_or_stop uses.
     let handles: Vec<Arc<Mutex<Child>>> = {
         let mut mux_state = state.mux();
         mux_state.stop = true;
@@ -2008,12 +1964,8 @@ fn unique_backup_path(source: &Path) -> PathBuf {
     source.with_file_name(format!("{file_name}.mkvbatchmux-backup-{timestamp}"))
 }
 
-/// Replace the source file with the muxed output.
-///
-/// `Ok(Some(warning))` means the replacement succeeded but the backup copy
-/// could not be deleted. That is untidy, not a failure: the user's file has
-/// already been correctly replaced, and reporting it as a failed job used to
-/// send people off to re-run work that was in fact complete.
+/// Replace the source file with the muxed output. `Ok(Some(warning))` means the
+/// replace succeeded but the backup copy could not be deleted -- untidy, not a failure.
 fn safe_replace_source(
     source: &Path,
     output: &Path,
@@ -2134,14 +2086,8 @@ fn collect_track_ids_by_action(tracks: &[TrackInfo], track_type: &str) -> (Vec<u
     (ids, has_removed)
 }
 
-/// The one track per type that may carry the default flag.
-///
-/// A Matroska file is meant to have at most one default track per type, but the
-/// track editors let several be ticked at once (the "set all" checkbox does it
-/// in a single click). Muxing that produces a file players disagree about, so
-/// the first flagged track of each type wins here and the rest are written as
-/// explicitly not-default. Doing it at the point the command is built covers
-/// every editor that can set the flag.
+/// The one track per type that may carry the default flag. The UI can tick
+/// several via "set all", so only the first survives and the rest are written not-default.
 fn first_default_track_per_type(tracks: &[TrackInfo]) -> HashMap<String, usize> {
     let mut winners: HashMap<String, usize> = HashMap::new();
     for (index, track) in tracks.iter().enumerate() {
@@ -2813,9 +2759,8 @@ fn build_mkvmerge_command(
             }
             file_index += 1;
         }
-        // Subtitle order: externals explicitly flagged "place first" win, then the
-        // source file's own subtitle tracks, then bulk externals, then per-video
-        // externals. Only tracks the user flagged may precede source subtitles.
+        // Subtitle order: flagged-first externals, then source subtitles, then
+        // bulk externals, then per-video externals.
         order.extend(first_subtitle_entries);
         for id in source_subtitle_tracks {
             order.push(format!("0:{}", id));
@@ -2996,15 +2941,8 @@ fn spawn_log_reader<R: Read + Send + 'static>(
             }
             let trimmed = line.trim_end().to_string();
 
-            // `--gui-mode` emits a progress line per percent, so a single job
-            // produces a hundred of them and a batch produces hundreds more.
-            // Each one used to reopen the log file under a lock every worker
-            // shares, and to cross the IPC boundary as its own event -- work
-            // that competes with the copy for both disk and the main thread,
-            // to say "#GUI#progress 42%" in a file nobody reads.
-            //
-            // The progress event itself still fires: that is what drives the
-            // bar. Only the logging and the raw line are skipped.
+            // `--gui-mode` emits a progress line per percent; skip logging the
+            // raw line so a batch doesn't spam the shared log file. The progress event itself still fires.
             if let Some(progress) = parse_progress(&trimmed) {
                 emit_progress(
                     &app,
@@ -3066,13 +3004,8 @@ fn emit_progress(app: &AppHandle, event: MuxProgressEvent) {
     let _ = app.emit_all("mux-progress", event);
 }
 
-/// Wait for a child process, killing it if a stop was requested.
-///
-/// Lock discipline: the mux_state lock is ALWAYS released before the child
-/// handle is locked, and the two are never held simultaneously. `abort_mux_queue`
-/// follows the same rule. Previously this function held mux_state while taking
-/// the child lock, while abort_mux_queue did the same in the opposite effective
-/// order, so pressing Stop while a worker sat in `try_wait` deadlocked the app.
+/// Wait for a child process, killing it if a stop was requested. Never holds
+/// the mux_state lock and the child lock at once -- `abort_mux_queue` follows the same rule.
 fn wait_for_child_or_stop(handle: Arc<Mutex<Child>>, state: &AppState) -> Option<i32> {
     loop {
         // Read the flag and drop the guard immediately -- never hold it across
@@ -3110,13 +3043,8 @@ fn parse_progress(line: &str) -> Option<u8> {
     line[start..percent_pos].trim().parse::<u8>().ok()
 }
 
-/// Remove the temp file a failed overwrite job left behind.
-///
-/// In overwrite mode the output is a uniquely-named temp file written *into the
-/// source folder*. A failed job used to leave it there for good: it wastes the
-/// space of a whole remux, and because it ends in .mkv the next scan of that
-/// folder offers it up as a source video. In destination mode the path is the
-/// user's own chosen output, so it is left alone.
+/// Remove the temp file a failed overwrite job left behind in the source
+/// folder -- otherwise the next scan offers it up as a source video.
 fn discard_failed_temp_output(overwrite_mode: bool, output_path: &Path, state: &AppState) {
     if !overwrite_mode || !output_path.exists() {
         return;
@@ -3352,13 +3280,8 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
     }
 
     if exit_code != 0 {
-        // mkvmerge exits 1 for warnings, having still written a valid file.
-        // Only `output_path` proves THIS run produced output: in overwrite mode
-        // it is a fresh uniquely-named temp file, and in destination mode it is
-        // the file we just asked mkvmerge to write. `final_path` was also
-        // accepted before, but it can be left over from an earlier successful
-        // run, which made genuinely failed jobs report as completed.
-        // Require a non-empty file so a truncated/aborted write is not accepted.
+        // mkvmerge exits 1 for warnings but still writes a valid file. Only
+        // `output_path` proves this run produced it; `final_path` can be left over from an earlier run.
         let produced_output = fs::metadata(&output_path)
             .map(|meta| meta.is_file() && meta.len() > 0)
             .unwrap_or(false);
@@ -3446,10 +3369,8 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
         &format!("Job {} completed successfully", job.id),
     );
 
-    // `output_dir` already resolves to the destination folder, or to the source
-    // folder when overwriting in place. Gating on a non-empty destination_dir
-    // silently dropped the log for every overwrite-source run, which is the
-    // common case.
+    // `output_dir` already resolves to the destination or source folder, so
+    // gating on a non-empty destination_dir here would drop the log for overwrite-source runs.
     if settings.keep_log_file {
         let _ = fs::copy(
             &state.paths.log_path,
@@ -3607,12 +3528,8 @@ fn preview_mux(
     Ok(results)
 }
 
-/// Pause the QUEUE, not the running processes.
-///
-/// Jobs already handed to mkvmerge run to completion -- suspending an external
-/// process portably would require OS-specific signalling that this app does not
-/// link. Workers stop picking up new jobs immediately. The log records this so
-/// the delay between pressing Pause and work actually stopping is explainable.
+/// Pause the QUEUE, not running processes: jobs already handed to mkvmerge run
+/// to completion, since suspending them portably needs OS-specific signalling.
 #[tauri::command]
 fn pause_muxing(state: State<AppState>) -> Result<(), String> {
     let mut mux_state = state.mux();
@@ -3857,15 +3774,12 @@ fn main() {
             };
             app.manage(state);
             app.manage(audiosync::EngineHandle::default());
-            // Anything installed from Settings on a previous run lives in the
-            // app's data directory, which is not on the system PATH. Register
-            // it before the first availability probe caches a "missing".
+            // A tool installed from Settings lives in the app's data directory,
+            // not on the system PATH. Register it before the first availability probe caches "missing".
             register_tools_on_path(&app.handle());
 
-            // The configured size suits a large display. On a smaller one it
-            // would open larger than the screen, so shrink to fit -- leaving
-            // room for the taskbar -- and re-centre. Only ever shrinks: a
-            // monitor big enough for the default is left alone.
+            // Shrink to fit a smaller-than-default display, leaving room for the
+            // taskbar, and re-centre. Only ever shrinks.
             if let Some(window) = app.get_window("main") {
                 if let Ok(Some(monitor)) = window.current_monitor() {
                     let scale = monitor.scale_factor();
@@ -3977,8 +3891,6 @@ mod regression_tests {
     }
 
     /// Two jobs sharing an output stem must never pick the same temp path.
-    /// Second-resolution timestamps previously collided under parallel muxing,
-    /// letting two mkvmerge processes write the same file.
     #[test]
     fn temp_output_paths_are_unique_for_identical_stems() {
         let settings = overwrite_settings();
@@ -3996,8 +3908,7 @@ mod regression_tests {
         }
     }
 
-    /// Guards the existing plain-offset behaviour against regression: this is
-    /// the form every mux has always produced and it must not change.
+    /// The plain-offset form every mux has always produced must not change.
     #[test]
     fn sync_value_is_a_plain_offset_when_no_stretch_is_set() {
         assert_eq!(format_sync_value(1, -0.088, None), "1:-88");
@@ -4005,14 +3916,12 @@ mod regression_tests {
         assert_eq!(format_sync_value(2, 0.0, None), "2:0");
     }
 
-    /// The extended form carries the ratio after the offset, and only when a
-    /// ratio is actually set -- a stretch applied by accident would drift the
-    /// whole file.
+    /// The extended form carries the ratio only when one is actually set -- an
+    /// accidental stretch would drift the whole file.
     #[test]
     fn sync_value_includes_the_ratio_only_when_a_stretch_is_set() {
-        // PAL-timed audio on a film-rate video: short, so it is slowed by
-        // 25025/24000. Written the way it now reaches this function, since the
-        // reciprocal is a real mistake someone could copy out of a test.
+        // PAL-timed audio on a film-rate video is short, so it's slowed by
+        // 25025/24000 -- not the reciprocal, an easy mistake to copy from here.
         let stretch = StretchSetting {
             num: 25025.0,
             den: 24000.0,
@@ -4044,8 +3953,7 @@ mod regression_tests {
     }
 
     /// The value the frontend computes must survive the conversion main.rs
-    /// performs. This is the Rust half of the round-trip proved in
-    /// delayConversion.test.ts.
+    /// performs; the Rust half of the round-trip in delayConversion.test.ts.
     #[test]
     fn sync_offset_matches_the_frontend_rounding() {
         // engineMsToDelaySeconds(87.7) == -0.088
@@ -4057,9 +3965,7 @@ mod regression_tests {
     }
 
     /// Whole-millisecond delays whose binary representation falls just short
-    /// of the integer. `as i64` truncated these to one millisecond less than
-    /// the field showed; the measured Snatch delay of -4.178 s is one of them
-    /// in spirit, and 1.001 s is the smallest.
+    /// of the integer; `as i64` would truncate them one millisecond short.
     #[test]
     fn sync_offset_is_rounded_not_truncated() {
         assert_eq!(format_sync_value(1, 1.001, None), "1:1001");

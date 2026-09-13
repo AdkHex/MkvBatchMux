@@ -52,8 +52,7 @@ describe("areVideoFilesEquivalent", () => {
 
 describe("areVideoListsEquivalent", () => {
   it("ignores ids, which the backend re-mints on every inspect", () => {
-    // The same file scanned twice arrives with a different id each time.
-    // Treating that as a change re-rendered the whole list on every chunk.
+    // Treating a re-minted id as a change would re-render the whole list on every chunk.
     expect(areVideoListsEquivalent([file()], [file({ id: "different" })])).toBe(true);
   });
 
@@ -70,9 +69,7 @@ describe("areVideoListsEquivalent", () => {
 
 describe("a scan that stubs then inspects", () => {
   it("ends with one row per file, not two", () => {
-    // Regression: a scan emits each file as a pending stub and again once
-    // inspected, with a fresh id. The page appended anything whose id it had
-    // not seen, so sixteen files became thirty-two.
+    // A scan emits each file twice: a pending stub, then the inspected version with a fresh id.
     const stub = file();
     const inspected = file({ id: "v2", status: "completed", fps: 23.976, duration: "01:05:03" });
 

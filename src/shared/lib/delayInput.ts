@@ -1,12 +1,4 @@
-/** Validation for the delay fields.
- *
- *  Every delay box in the app used to be read with `Number(value) || 0`, which
- *  turns anything unparseable into zero without saying so -- type "1,5" meaning
- *  one and a half seconds and the mux silently runs with no delay at all. The
- *  platform guidance is explicit that a field with a numeric-only domain has to
- *  tell people when what they typed is not one, so parsing returns the reason
- *  it failed and callers surface it instead of guessing.
- */
+/** Validation for the delay fields; returns a reason on failure instead of silently coercing to 0. */
 
 export interface DelayParse {
   /** Whether the text can be used as a delay. */
@@ -20,8 +12,7 @@ export interface DelayParse {
 /** Blank means "no delay", which is how an empty box has always behaved. */
 const EMPTY: DelayParse = { valid: true, value: 0 };
 
-/** Beyond this a value is a typo rather than a delay -- a day of offset is not
- *  something any track needs, and it usually means a stray digit. */
+/** Beyond this a value is a typo rather than a delay, not a real offset. */
 const MAX_ABS_SECONDS = 86_400;
 
 export function parseDelayInput(raw: string | number | null | undefined): DelayParse {
@@ -33,12 +24,10 @@ export function parseDelayInput(raw: string | number | null | undefined): DelayP
   const trimmed = raw.trim();
   if (trimmed === "") return EMPTY;
 
-  // A comma decimal separator is what a lot of keyboards and locales produce;
-  // accepting it costs nothing and silently zeroing it is the bug being fixed.
+  // Accept comma as a decimal separator (common on non-US keyboards/locales).
   const normalized = trimmed.replace(",", ".");
 
-  // Deliberately stricter than Number(): that accepts "0x10", "1e5" and
-  // whitespace-padded junk, none of which anyone means as a delay in seconds.
+  // Stricter than Number(): rejects "0x10", "1e5", and padded junk.
   if (!/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(normalized)) {
     return { valid: false, value: 0, error: "Enter a number of seconds, for example -1.5" };
   }

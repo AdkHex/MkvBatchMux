@@ -34,8 +34,7 @@ const audioTrack = (id: string, isDefault = false): Track => ({
 
 describe("buildMeasurementPlan", () => {
   it("pairs each audio with the video the mux would give it", () => {
-    // The whole point of reusing the matcher: a separate one could measure a
-    // different pairing than the mux performs. See plan §4.
+    // A separate matcher could measure a different pairing than the mux performs.
     const videos = [makeVideo("v1", "Show - 01.mkv"), makeVideo("v2", "Show - 02.mkv")];
     const audios = [makeAudio("a1", "Show - 02.HIN.aac"), makeAudio("a2", "Show - 01.HIN.aac")];
 
@@ -81,8 +80,7 @@ describe("buildMeasurementPlan", () => {
   });
 
   it("measures the movie case with no mode switch", () => {
-    // One audio explicitly assigned to one video is simply one pair; there is
-    // no movie/series distinction anywhere in this path. See plan §4.
+    // One audio explicitly assigned to one video is simply one pair; no movie/series distinction here.
     const videos = [makeVideo("v1", "Movie.2019.1080p.mkv"), makeVideo("v2", "Movie.2019.720p.mkv")];
     const audio = makeAudio("a1", "Movie.HIN.aac", { matchedVideoId: "v2" });
 
@@ -122,7 +120,6 @@ describe("buildMeasurementPlan", () => {
   });
 
   it("skips hand-typed delays, which measurement must never overwrite", () => {
-    // See plan §5.6.
     const videos = [makeVideo("v1", "Show - 01.mkv")];
     const audios = [makeAudio("a1", "Show - 01.aac", { delay: -0.5, delayProvenance: "manual" })];
 
@@ -157,11 +154,8 @@ describe("buildMeasurementPlan", () => {
   });
 
   it("measures a multi-track file once, not once per track", () => {
-    // Every track inside one external file shares that container's timeline,
-    // so they share an offset -- and the mux falls back to the file-level
-    // delay for any track without its own. Measuring each separately asked
-    // the correlator to match a dub against a different encode of the same
-    // language, which routinely found no peak at all.
+    // Every track in one file shares that container's timeline, so they share an offset,
+    // and the mux falls back to the file-level delay for any track without its own.
     const videos = [makeVideo("v1", "Show - 01.mkv")];
     const audios = [
       makeAudio("a1", "Show - 01.mka", {
@@ -182,9 +176,8 @@ describe("buildMeasurementPlan", () => {
   });
 
   it("measures against the video's first audio track, not its default-flagged one", () => {
-    // AudioSyncMaster measures audio stream 0 unless told otherwise. Following
-    // the default flag instead put the two apps on different tracks of the
-    // same remux, and tracks in one container need not share an offset.
+    // AudioSyncMaster measures audio stream 0 unless told otherwise; tracks in one container
+    // need not share an offset, so following the default flag instead would diverge from it.
     const video = makeVideo("v1", "Show - 01.mkv", [
       { id: "0", type: "video" },
       audioTrack("1"),
@@ -250,12 +243,8 @@ describe("choosing the reference track per external track", () => {
   });
 
   it("does not pick the video track by language", () => {
-    // A Korean dub against a [jpn, kor] video correlates far better against
-    // the Korean track -- and AudioSyncMaster still measures stream 0 unless
-    // the user chooses. Choosing here made the two apps measure different
-    // tracks of the same file and report different delays. The sharper
-    // pairing is still one click away, in both apps, through the reference
-    // picker.
+    // AudioSyncMaster measures stream 0 by default even when another track would correlate
+    // better; that choice is the user's via the reference picker, not automatic.
     const video = makeVideo("v1", "Ep01.mkv", [
       langTrack("0", "jpn"),
       langTrack("1", "kor"),
@@ -347,11 +336,8 @@ describe("re-running a bulk measurement", () => {
   };
 
   it("does not retry a file whose measurement was withheld", () => {
-    // Regression: a withheld result leaves delayProvenance at "none", so the
-    // next bulk pass measured it again -- and a correlator with no true peak
-    // returns a different arbitrary answer each time. One episode read
-    // +8695.9 ms at 90% and then -96.2 ms at 46% on identical files, which
-    // looked like the engine was unstable.
+    // A withheld result leaves delayProvenance at "none"; without also checking measuredDelay,
+    // a bulk pass would re-measure it, and a correlator with no true peak answers differently each time.
     const video = makeVideo("v1", "Ep01.mkv");
     const audio = makeAudio("a1", "Ep01.mka", {
       matchedVideoId: "v1",
@@ -391,10 +377,8 @@ describe("when the video carries no audio in the file's language", () => {
   });
 
   it("measures a lone track even when no language matches", () => {
-    // A Hindi .ec3 against a video carrying only Korean is still measurable:
-    // the dub is cut from the same master, and shares music, effects and room
-    // tone with the original. Whether it locked on is what the confidence
-    // figure reports -- withholding the answer helps nobody.
+    // The dub is cut from the same master and shares music, effects and room tone with the
+    // original, so it's still measurable; the confidence figure reports whether it locked on.
     const video = makeVideo("v1", "Ep01.mkv", [langTrack("1", "kor")]);
     const audio = makeAudio("a1", "Ep01.hin.ec3", {
       matchedVideoId: "v1",
@@ -447,11 +431,8 @@ describe("when nothing identifies which video track matches the dub", () => {
   });
 
   it("picks one pairing deterministically when nothing identifies a track", () => {
-    // This used to measure every combination and let confidence pick a winner.
-    // That made the answer depend on which pairing happened to correlate best
-    // -- a different video track per file, so a batch came back internally
-    // inconsistent and disagreed with AudioSyncMaster, which simply uses
-    // stream 0. One pairing, chosen the same way every time.
+    // Picks one pairing the same way every time, rather than by confidence, so results
+    // don't vary per file and diverge from AudioSyncMaster's fixed stream 0.
     const video = makeVideo("v1", "Ep01.mkv", [
       { id: "1", type: "audio" },
       { id: "2", type: "audio", isDefault: true },
@@ -509,10 +490,8 @@ describe("when nothing identifies which video track matches the dub", () => {
 
 describe("bounding how much extra work an ambiguous pair can cause", () => {
   it("caps the candidate sweep", () => {
-    // Candidates multiply across both sides, so a six-track REMUX against a
-    // six-track dub would otherwise be thirty-six full window passes for one
-    // episode. The list is ordered best-prior-first, so truncating keeps the
-    // likely answers and drops the implausible tail.
+    // Candidates multiply across both sides — a six-track REMUX against a six-track dub would
+    // otherwise be 36 full window passes; the list is ordered best-prior-first before truncating.
     const audioTracks = (n: number) =>
       Array.from({ length: n }, (_, i) => ({ id: String(i), type: "audio" as const }));
 
@@ -539,16 +518,6 @@ describe("which external track is measured", () => {
   });
 
   it("measures the muxed track against an explicit reference, not a shared one", () => {
-    // Underworld Evolution: an English DTS-HD video, a [Hindi + English Atmos]
-    // dub, English chosen as the reference, only Hindi muxed. AudioSyncMaster
-    // measures the muxed Hindi track against the video and reports -1849.8 ms
-    // at 100%; we reported +1064.5 ms at 48%.
-    //
-    // Two bugs stacked. The English reference was only honoured if a *muxed*
-    // track shared its language, which none did, so it fell through to a sweep
-    // of every combination. The sweep then preferred the file's English track
-    // because it correlated best -- but English is not the track being muxed,
-    // and the delay is applied to the Hindi one.
     const video = makeVideo("v1", "Underworld.Evolution.Remux.mkv", [
       langTrack("1", "eng"),
     ]);
@@ -573,10 +542,8 @@ describe("which external track is measured", () => {
   });
 
   it("never measures a track that is not being muxed", () => {
-    // Same shape without an explicit reference. The English track would
-    // correlate more sharply, which is exactly the temptation: its offset is
-    // not necessarily the Hindi track's once their codec delays differ, and
-    // the Hindi track is the one receiving the delay.
+    // The English track would correlate more sharply, but its offset isn't necessarily the
+    // Hindi track's once codec delays differ, and Hindi is the one receiving the delay.
     const video = makeVideo("v1", "Underworld.mkv", [langTrack("1", "eng")]);
     const audio = makeAudio("a1", "Underworld.dub.mkv", {
       matchedVideoId: "v1",
@@ -612,9 +579,8 @@ describe("which external track is measured", () => {
   });
 
   it("measures a lone track even when no language matches", () => {
-    // A Hindi .ec3 against an English-only video. Refusing this was wrong: the
-    // dub shares music, effects and room tone with the original, and the
-    // confidence figure reports whether it locked on.
+    // The dub shares music, effects and room tone with the original even without a language
+    // match; the confidence figure reports whether it locked on.
     const video = makeVideo("v1", "Ep01.mkv", [langTrack("1", "eng")]);
     const audio = makeAudio("a1", "Ep01.hin.ec3", {
       matchedVideoId: "v1",

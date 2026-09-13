@@ -75,9 +75,8 @@ export interface ExternalFile {
   /** The user picked this file's video pairing by hand. Automatic positional
    *  pairing leaves it alone from then on. */
   isManuallyLinked?: boolean;
-  /** What a measurement produced for this file, kept so the row can keep
-   *  explaining itself after a reload. Every field below is optional: sessions
-   *  and presets saved before measurement existed must still load. */
+  /** What a measurement produced for this file. Fields are optional so
+   *  sessions/presets saved before measurement existed still load. */
   measuredDelay?: MeasuredDelay;
   /** Where `delay` came from. Absent is treated as 'none'. */
   delayProvenance?: DelayProvenance;

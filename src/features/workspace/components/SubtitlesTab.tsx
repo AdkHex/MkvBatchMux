@@ -750,9 +750,8 @@ export function SubtitlesTab({
       matchedVideoId: targetVideo.id,
       tracks: mergedTracks,
       includedTrackIds: mergedIncludedTrackIds,
-      // Carry any per-stream edits through as track overrides, keyed by track
-      // id so the mux job picks them up the same way manual edits do. Without
-      // this every imported stream would silently take the tab's shared delay.
+      // Carry per-stream edits through as track overrides, keyed by track id,
+      // so the mux job picks them up the same way manual edits do.
       trackOverrides: (() => {
         const overrides: NonNullable<ExternalFile["trackOverrides"]> = {
           ...(existingAtTarget?.trackOverrides ?? {}),

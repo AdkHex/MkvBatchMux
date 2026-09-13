@@ -172,11 +172,8 @@ const WorkspacePage = () => {
     );
   }, [activeSubtitleTrack]);
 
-  // Deleting a track has to take its files with it. These maps are keyed by
-  // track, and the mux reads every key, so a track removed from the tab strip
-  // while its files stayed behind would keep muxing files nobody can see.
-  // Pruning here rather than in the delete handler covers every way a track can
-  // disappear, not just the delete button.
+  // A track removed from the tab strip must take its files with it, or the
+  // mux would still pick them up by their old track key.
   useEffect(() => {
     setAudioFilesByTrack((prev) => pruneFilesByTrack(prev, audioTracks));
   }, [audioTracks]);
@@ -213,8 +210,6 @@ const WorkspacePage = () => {
     useMkvpropedit: false,
   });
 
-  // Refs to access current state inside event listeners without stale closures
-  // Apply theme
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add("dark");
@@ -668,10 +663,8 @@ const WorkspacePage = () => {
   );
 
   const handleStartMuxing = useCallback(() => {
-    // The button only disables once a job reports "processing", which is a
-    // round trip away, so a second click can land before that. The backend
-    // refuses the duplicate, but its rejection would otherwise be read as "the
-    // batch failed to start" and mark the running batch's jobs as errored.
+    // The button only disables once a job reports "processing", a round trip
+    // away, so a second click can land before that and must be ignored.
     if (muxStartPendingRef.current) return;
     if (externalLinkIssues.length > 0) {
       toast({
@@ -792,9 +785,8 @@ const WorkspacePage = () => {
   }, [reportControlFailure]);
 
   const handleStopMuxing = useCallback(() => {
-    // The jobs are only marked stopped once the backend confirms it: claiming
-    // they stopped while mkvmerge is still running would be a lie the UI has no
-    // way to take back.
+    // Jobs are only marked stopped once the backend confirms it, so the UI
+    // never claims a job stopped while mkvmerge is still running.
     stopMuxing()
       .then(() => {
         setJobs((prev) =>
@@ -808,9 +800,8 @@ const WorkspacePage = () => {
       .catch((error) => reportControlFailure("stop", error));
   }, [reportControlFailure]);
 
-  // Checked in the background rather than only when Settings is opened. The
-  // offer is a toast with an action, never a modal: an install restarts the
-  // app, and a batch can be many minutes from finishing.
+  // Offered as a toast, never a modal: an install restarts the app and a
+  // running batch can be minutes from finishing.
   const muxIsRunning = useMemo(
     () => jobs.some((job) => job.status === "processing" || job.status === "queued"),
     [jobs],
@@ -888,15 +879,9 @@ const WorkspacePage = () => {
     }));
   }, []);
 
-  /** Smart video file change handler for add, remove, and modify updates. */
-  // The caller already merged by file identity (path, then name+size), so the
-  // list it hands over is authoritative and simply replaces state.
-  //
-  // This used to diff by `id` and append anything whose id was unseen. A scan
-  // emits each file twice -- once as a pending stub, then again once inspected
-  // -- and the backend mints a fresh id each time. mergeVideoFiles collapses
-  // the pair and keeps the *first* id, so every inspected file read as "added"
-  // and was appended: 16 files became 32.
+  /** Applies add/remove/modify updates to the video file list. */
+  // The caller already merged by file identity (path, then name+size), so
+  // the list it hands over is authoritative and simply replaces state.
   const handleVideoFilesChange = useCallback((newFiles: VideoFile[]) => {
     setVideoFiles((prev) => (areVideoListsEquivalent(prev, newFiles) ? prev : newFiles));
   }, []);
@@ -1003,7 +988,6 @@ const WorkspacePage = () => {
     [],
   );
 
-  // Keyboard shortcuts
   useKeyboardShortcuts({
     onOpenOptions: () => setIsOptionsOpen(true),
     onModifyTracks: () => setIsModifyTracksOpen(true),

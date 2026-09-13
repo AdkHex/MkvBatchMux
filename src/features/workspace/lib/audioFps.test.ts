@@ -161,9 +161,7 @@ describe("audioFpsFor", () => {
   });
 
   it("falls back to the measurement's own copy of the video rate", () => {
-    // A video whose fps never made it into state still has one; the engine
-    // reports what it measured against, and without it the badge could only
-    // say half the sentence.
+    // A video whose fps never made it into state still has one via the measurement.
     const file = makeAudio({
       measuredDelay: makeMeasured({
         isRateMismatch: true,

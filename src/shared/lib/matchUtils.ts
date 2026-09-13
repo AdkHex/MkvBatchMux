@@ -1,10 +1,5 @@
 /**
- * Episode-aware filename matching utilities.
- *
- * Matches external audio/subtitle files to video files by:
- *   1. Episode number (S01E05, EP05, " - 05 ", [05], standalone numbers)
- *   2. Filename word similarity (common tokens)
- *   3. Positional fallback (index-based, same as old behaviour)
+ * Episode-aware filename matching: episode number, then word overlap, then position.
  */
 import type { ExternalFile, VideoFile } from "@/shared/types";
 
@@ -19,50 +14,30 @@ const EPISODE_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Numbers that are never a plausible episode number on their own.
- * Deliberately limited to resolutions and codec identifiers.
- *
- * Frame rates and small values (10, 24, 25, 30, 50, 60...) are NOT listed:
- * they are extremely common episode numbers, and excluding them made episodes
- * 10/24/25/30/50/60 unmatchable. Frame-rate and resolution tokens are instead
- * rejected contextually by TECHNICAL_TOKEN below, which looks at the suffix
- * attached to the number (1080p, x264, 23.976fps, 5.1ch ...).
+ * Numbers that are never a plausible episode number on their own (resolutions/codecs).
+ * Frame rates like 24/25/30 are common episode numbers too, so those are excluded via TECHNICAL_TOKEN instead.
  */
 const NON_EPISODE_NUMBERS = new Set([
   240, 360, 480, 540, 720, 1080, 1440, 2160, 4096, 4320, 264, 265,
 ]);
 
-/**
- * Matches a number that is part of a technical tag rather than an episode
- * number, e.g. "1080p", "x264", "H.265", "23.976fps", "10bit", "5.1ch",
- * "AAC2.0", "8bit". Applied to the raw filename around a candidate number.
- */
+/** Matches a technical tag (resolution/codec/framerate/bitdepth) rather than an episode number. */
 const TECHNICAL_TOKEN =
   /(?:^|[^a-z0-9])(?:x|h|hevc|avc)[\s._-]?\d{3,4}|\d+(?:\.\d+)?\s*(?:p|i|fps|hz|bit|ch|khz|kbps|mbps)(?:$|[^a-z0-9])/i;
 
-/**
- * True when the number at `matchIndex` in `name` is glued to a technical
- * suffix/prefix (resolution, codec, frame rate, channel count).
- */
+/** True when the number at `matchIndex` is glued to a technical suffix/prefix. */
 function isTechnicalContext(name: string, matchIndex: number, raw: string): boolean {
-  // Look at a small window around the match so "1080p"/"x264"/"23.976fps" are
-  // recognised while a bare " - 24 " episode marker is not.
   const start = Math.max(0, matchIndex - 6);
   const window = name.slice(start, matchIndex + raw.length + 5);
   return TECHNICAL_TOKEN.test(window);
 }
 
-/**
- * Extract the episode/sequence number from a filename.
- * Returns null when no reliable episode number can be found.
- */
+/** Extract the episode/sequence number from a filename, or null if none is found. */
 export function extractEpisodeNumber(filename: string): number | null {
-  // Strip file extension
   const name = filename.replace(/\.[^.]+$/, "");
 
-  // Try explicit patterns first (unambiguous). These carry their own episode
-  // marker (S01E24, "EP24", "第24話"), so a technical-context check is not
-  // needed and would wrongly reject e.g. "S01E24.1080p".
+  // Explicit patterns carry their own episode marker, so a technical-context
+  // check isn't needed and would wrongly reject e.g. "S01E24.1080p".
   for (const pattern of EPISODE_PATTERNS) {
     const m = name.match(pattern);
     if (m?.[1]) {
@@ -73,9 +48,8 @@ export function extractEpisodeNumber(filename: string): number | null {
     }
   }
 
-  // Fallback: a standalone 2–3 digit number that is not a resolution/codec and
-  // is not glued to a technical suffix (1080p, x264, 23.976fps, 10bit, 5.1ch).
-  // Scan from the end -- trailing numbers are more likely to be episode numbers.
+  // Fallback: standalone 2-3 digit number, scanned from the end since trailing
+  // numbers are more likely to be episode numbers.
   const separator = /[\s._[\](){},-]+/;
   const parts = name.split(separator);
   for (let i = parts.length - 1; i >= 0; i -= 1) {
@@ -110,19 +84,7 @@ function wordOverlap(a: string, b: string): number {
   return b.split(" ").filter((w) => w.length >= 3 && setA.has(w)).length;
 }
 
-/**
- * Match each external file to a video file.
- *
- * Strategy (per file):
- *   1. Extract episode number from the external filename.
- *      If found, look for a video with the same episode number.
- *   2. Word-overlap similarity against all video filenames.
- *      Pick the video with the most shared words (ties → first match).
- *   3. Positional fallback: use the video at the same list index.
- *
- * Already-manually-assigned `matchedVideoId` values are preserved
- * as long as they still point to a valid video (opt-in via `respectExisting`).
- */
+/** Match each external file to a video by episode number, then word overlap, then position. */
 export function matchExternalToVideos(
   externalFiles: ExternalFile[],
   videoFiles: VideoFile[],
@@ -182,10 +144,7 @@ export function matchExternalToVideos(
         if (!assignedVideoIds.has(backward.id)) return backward.id;
       }
     }
-    // Every video is already claimed. Returning `preferred` here would hand the
-    // same video to two external files, so the extra file stays unmatched and
-    // surfaces in the UI as unlinked rather than silently muxing into the wrong
-    // episode.
+    // All videos claimed; stay unmatched rather than double-assign one video.
     return undefined;
   };
 
@@ -208,14 +167,7 @@ export function matchExternalToVideos(
   });
 }
 
-/**
- * Pair the nth external file with the nth video.
- *
- * Files past the end of the video list keep whatever link they already had.
- * Overwriting them with `undefined` silently unlinked every extra file -- and
- * because the relink runs whenever the lists differ, a batch with more audio
- * than video dropped those files from the mux with nothing on screen to say so.
- */
+/** Pair the nth external file with the nth video; extras past the video count keep their existing link. */
 export function linkExternalFilesByOrder(
   externalFiles: ExternalFile[],
   videoFiles: VideoFile[],

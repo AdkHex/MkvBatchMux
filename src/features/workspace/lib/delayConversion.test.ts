@@ -42,9 +42,7 @@ const asMkvmergeSyncMs = (delaySeconds: number) => Math.trunc(delaySeconds * 100
 
 describe("engineMsToDelaySeconds", () => {
   it("flips the sign: a positive engine delay becomes a negative field value", () => {
-    // The engine reports where the audio sits; mkvmerge's --sync asks how much
-    // delay to add to fix it. Piping the raw value through would leave every
-    // file out of sync by exactly twice the true offset. See plan §2.1.
+    // Piping the raw engine value through would double the error instead of fixing it.
     const value = engineMsToDelaySeconds(100);
     expect(value).toBeLessThan(0);
     expect(value).toBe(-0.1);
@@ -75,8 +73,7 @@ describe("engineMsToDelaySeconds", () => {
 
 describe("sourceDelayMs", () => {
   it("prefers delayAtStartMs over delayMs when both are present", () => {
-    // With drift, delayMs is the midpoint value but --sync applies from t=0,
-    // so using it over-shoots by half the total drift. See plan §2.3.
+    // delayMs is the midpoint value; --sync applies from t=0, so using it over-shoots by half the drift.
     const result = makeResult({ delayMs: 120, delayAtStartMs: 80 });
     expect(sourceDelayMs(result)).toBe(80);
     expect(engineMsToDelaySeconds(sourceDelayMs(result)!)).toBe(-0.08);
@@ -108,11 +105,6 @@ describe("round trip through the muxer's own arithmetic", () => {
 
 describe("against a real engine measurement", () => {
   it("pulls late audio earlier", () => {
-    // Verified end to end: a synthetic pair whose audio carried 250ms of
-    // leading silence measured as delayMs = +250.00007 at 99.99% confidence.
-    // The audio starts late, so the fix is to pull it earlier -- a negative
-    // --sync. Passing the engine value through unnegated would instead push it
-    // 250ms further late, doubling the error to half a second.
     const delaySeconds = engineMsToDelaySeconds(250.00006802243297);
     expect(delaySeconds).toBe(-0.25);
     expect(asMkvmergeSyncMs(delaySeconds)).toBe(-250);
@@ -121,8 +113,7 @@ describe("against a real engine measurement", () => {
 
 describe("isAutoFillable", () => {
   it("refuses to auto-fill a likely-cut result", () => {
-    // Different material: no single offset aligns the two files, so a number
-    // here would be a confident wrong answer. See plan §5.4.
+    // Different material: no single offset aligns the two files.
     expect(isAutoFillable(makeResult({ delayMs: 120, isLikelyCut: true }))).toBe(false);
   });
 
@@ -146,11 +137,8 @@ describe("isAutoFillable", () => {
   });
 
   it("refuses an offset too large to be a real delay", () => {
-    // Regression: a batch of already-synced episodes measured -26041 ms at
-    // 100% confidence. Confidence only says the sample windows agreed with
-    // each other, and a correlator locked onto a repeated musical phrase
-    // agrees with itself in every window. A dub is never 26 seconds out from
-    // its own episode, so the number is shown but never filled in.
+    // High confidence only means the sample windows agreed with each other; a correlator
+    // locked onto a repeated musical phrase agrees with itself in every window too.
     expect(isAutoFillable(makeResult({ delayMs: -26041 }))).toBe(false);
     expect(isAutoFillable(makeResult({ delayMs: -26041, confidence: 1 }))).toBe(false);
     expect(isImplausiblyLarge(makeResult({ delayMs: -26041 }))).toBe(true);
@@ -222,18 +210,14 @@ const makeMeasured = (
   ...overrides,
 });
 
-/** The engine reports an ffmpeg atempo speed factor: video rate over audio
- *  rate. Building the fixtures through it rather than by hand keeps the tests
- *  honest about which convention they are feeding in. */
+/** The engine reports an ffmpeg atempo factor: video rate over audio rate.
+ *  Building fixtures through it keeps tests honest about which convention they feed in. */
 const engineCorrectionRatio = (audioFps: number, videoFps: number) => videoFps / audioFps;
 
 describe("rateConversionFor", () => {
   it("stretches in the direction that slows fast-running audio", () => {
-    // The direction, stated physically so an inversion cannot pass. Audio timed
-    // at 25fps holds the same frames in less time than a 23.976fps video does,
-    // so it must be SLOWED to fit -- and mkvmerge multiplies timestamps by
-    // num/den, verified against the binary: muxing a 60.01s track with
-    // `--sync 0:0,25025/24000` produces a 62.57s one.
+    // Audio timed faster than the video holds the same frames in less time, so it must be
+    // slowed to fit — mkvmerge multiplies timestamps by num/den.
     const slowingDown = rateConversionFor(
       makeMeasured({ rateSourceFps: 25, rateTargetFps: 23.976 }),
     )!;
@@ -249,10 +233,8 @@ describe("rateConversionFor", () => {
   });
 
   it("does not hand mkvmerge the engine's atempo factor", () => {
-    // The engine's correctionRatio is a playback-speed factor and mkvmerge's is
-    // a timestamp multiplier, so they are reciprocals. Passing one straight
-    // through doubles the drift instead of removing it, which is what shipped
-    // before this test existed.
+    // The engine's correctionRatio is a playback-speed factor; mkvmerge's is a timestamp multiplier.
+    // They're reciprocals — passing one straight through doubles the drift instead of removing it.
     const conversion = rateConversionFor(
       makeMeasured({ correctionRatio: engineCorrectionRatio(25, 23.976) }),
     )!;
@@ -271,10 +253,8 @@ describe("rateConversionFor", () => {
   });
 
   it("gives 1001/1000 for the NTSC pair, not the 999/1000 a decimal implies", () => {
-    // 24 -> 23.976 was the case the app got wrong: with no table entry it
-    // approximated the atempo factor and offered 999/1000, which is both
-    // inverted and inexact. 23.976 is 24000/1001, so the true ratio is
-    // 1001/1000 and the audio has to be slowed, not sped up.
+    // 23.976 is 24000/1001, so the true ratio from 24 is 1001/1000, not the 999/1000
+    // a decimal approximation implies.
     expect(rateConversionFor(makeMeasured({ rateSourceFps: 24, rateTargetFps: 23.976 })))
       .toMatchObject({ num: 1001, den: 1000, basis: "named" });
     expect(rateConversionFor(makeMeasured({ rateSourceFps: 23.976, rateTargetFps: 24 })))
@@ -292,9 +272,8 @@ describe("rateConversionFor", () => {
   });
 
   it("does not confuse 23.976 with 24, which take different ratios", () => {
-    // These are 0.024 fps apart and map to 1001/960 versus 25/24. A tolerance
-    // wide enough to blur them would silently stretch by the wrong factor
-    // across the whole file.
+    // These are 0.024 fps apart and map to 1001/960 versus 25/24 — a tolerance
+    // wide enough to blur them would silently apply the wrong stretch.
     expect(rateConversionFor(makeMeasured({ rateSourceFps: 23.976, rateTargetFps: 25 })))
       .toMatchObject({ num: 960, den: 1001 });
     expect(rateConversionFor(makeMeasured({ rateSourceFps: 24, rateTargetFps: 25 })))
@@ -302,10 +281,8 @@ describe("rateConversionFor", () => {
   });
 
   it("names a standard conversion the engine did not, from the speed alone", () => {
-    // The engine only names a pair when it recognises both rates; a container
-    // frame rate (31.25 for AC-3) defeats that. The speed it measured is still
-    // a standard conversion, and naming it is what turns an opaque ratio into
-    // an instruction.
+    // A container frame rate (31.25 for AC-3) defeats the engine's own name-matching,
+    // but the measured speed is still a standard conversion worth naming.
     const conversion = rateConversionFor(
       makeMeasured({
         correctionRatio: engineCorrectionRatio(25, 23.976),
@@ -318,9 +295,8 @@ describe("rateConversionFor", () => {
   });
 
   it("uses the video's own rate to separate conversions of equal speed", () => {
-    // 24 -> 23.976, 30 -> 29.97 and 60 -> 59.94 are all 1001/1000, so the
-    // measurement cannot tell them apart. The video can: only one of them
-    // converts to the rate this video actually runs at.
+    // 24→23.976, 30→29.97 and 60→59.94 are all 1001/1000, so the measurement alone
+    // can't tell them apart; the video's own rate can.
     const conversion = rateConversionFor(
       makeMeasured({
         correctionRatio: engineCorrectionRatio(24, 24000 / 1001),
@@ -336,9 +312,8 @@ describe("rateConversionFor", () => {
   });
 
   it("still applies the shared ratio when nothing can name the pair", () => {
-    // Without the video's rate, 24 -> 23.976 and 30 -> 29.97 are the same
-    // answer. Refusing the stretch would throw away a ratio that is exact for
-    // all of them; naming one of them would be a guess.
+    // Without the video's rate, 24→23.976 and 30→29.97 give the same ratio;
+    // applying it is still exact even though naming either pair would be a guess.
     const conversion = rateConversionFor(
       makeMeasured({ correctionRatio: engineCorrectionRatio(24, 24000 / 1001) }),
     )!;
@@ -348,9 +323,7 @@ describe("rateConversionFor", () => {
   });
 
   it("does not dress up a factor that fits nothing as a named conversion", () => {
-    // Nothing in the table is this close to another entry, so the guard is
-    // asserted through the tolerance rather than through a real pair: a factor
-    // that fits nothing at all must not be dressed up as a named conversion.
+    // No table entry is this close, so nothing should be named.
     expect(rateConversionFor(makeMeasured({ correctionRatio: 1 / 1.5 }))).toMatchObject({
       basis: "measured",
     });

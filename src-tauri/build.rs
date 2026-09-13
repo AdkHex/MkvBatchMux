@@ -1,8 +1,5 @@
 fn main() {
-    // The AudioSyncMaster release the engine is pinned to (package.json:
-    // audiosyncEngine.ref), compiled in so the app can tell whether the engine
-    // it finds at runtime is that release. Kept in package.json rather than
-    // here so one file holds the pin for the build script, CI and the app.
+    // Pinned engine ref lives in package.json so build script, CI and app share one source.
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let package_json = std::path::Path::new(&manifest_dir).join("..").join("package.json");
     println!("cargo:rerun-if-changed={}", package_json.display());

@@ -1,16 +1,11 @@
 /** Turning an engine result into an updated ExternalFile.
- *
- *  Kept separate from the UI so the rules that decide whether a delay is
- *  written at all -- cut detection, manual provenance -- are testable without
- *  rendering anything. See docs/AUDIOSYNC_INTEGRATION_PLAN.md §5.2, §5.4, §5.6.
- */
+ *  Kept separate from the UI so cut detection and manual provenance are testable without rendering anything. */
 
 import type { ExternalFile, MeasuredDelay } from "@/shared/types";
 import type { SyncResult } from "@/shared/types/audiosync";
 import { engineMsToDelaySeconds, isAutoFillable, sourceDelayMs } from "./delayConversion";
 
-/** Build the stored metadata for a result, independent of whether its delay is
- *  applied -- a cut row still displays its measurement and its warning. */
+/** Build the stored metadata for a result, independent of whether its delay is applied. */
 export function buildMeasuredDelay(
   result: SyncResult,
   referenceTrack: number,
@@ -50,11 +45,7 @@ export interface ApplyMeasurementInput {
   force?: boolean;
 }
 
-/** Apply one result to one file, returning the updated copy.
- *
- *  Returns the file unchanged when a rule forbids the write, so a caller can
- *  map over results without special-casing.
- */
+/** Apply one result to one file, returning the updated copy; returns it unchanged when a rule forbids the write. */
 export function applyMeasurement({
   file,
   result,
@@ -81,10 +72,8 @@ export function applyMeasurement({
   const engineMs = sourceDelayMs(result);
   const delay = writable && engineMs !== null ? engineMsToDelaySeconds(engineMs) : undefined;
 
-  // Measuring records what was found; it does not change the delay field.
-  // Filling it in automatically meant a wrong measurement silently became the
-  // number the mux used, and there was no moment at which the user agreed to
-  // it. `applyMeasuredDelay` is that moment.
+  // Measuring records the result but doesn't change the delay field;
+  // only an explicit `applyMeasuredDelay` call does that.
   const pending = writable && delay !== undefined ? delay : undefined;
 
   if (trackId === null) {
@@ -109,12 +98,7 @@ export function applyMeasurement({
   };
 }
 
-/** Commit a measured delay into the field the mux reads.
- *
- *  Separate from `applyMeasurement` so measuring and accepting are two
- *  decisions: the engine can be wrong, and a number that reaches the mux
- *  should be one the user chose.
- */
+/** Commit a measured delay into the field the mux reads; separate from `applyMeasurement` so accepting is a deliberate step. */
 export function applyMeasuredDelay(file: ExternalFile, trackId: number | null): ExternalFile {
   if (trackId === null) {
     if (file.pendingDelay === undefined) return file;
@@ -142,22 +126,8 @@ export function applyMeasuredDelay(file: ExternalFile, trackId: number | null): 
   };
 }
 
-/** Accept a measurement the rules withheld -- a likely cut, an implausible
- *  offset, a weak correlation -- and put it straight into the delay field.
- *
- *  This is the "Apply anyway" button, so it commits rather than stages: the
- *  click *is* the user's agreement, and staging behind it meant a toast said
- *  "applied" while the field still read 0.000 until a second click nobody was
- *  told about.
- *
- *  The stored record is kept exactly as it was. Only whether the value is
- *  accepted changes, not what was measured -- and rebuilding the record from
- *  the minimal result below would drop the frame-rate diagnosis the stretch
- *  control reads, so "Apply anyway" on a rate-converted track used to erase
- *  the very warning that made it worth reading.
- *
- *  Returns the file unchanged when there is no measurement to accept.
- */
+/** Accept a measurement the rules withheld (likely cut, implausible offset, weak correlation) straight into the delay field.
+ *  Keeps the original stored record rather than rebuilding it, so the frame-rate diagnosis fields aren't dropped. */
 export function acceptWithheldMeasurement(file: ExternalFile, trackId: number | null): ExternalFile {
   const measured =
     trackId === null ? file.measuredDelay : file.trackOverrides?.[trackId]?.measuredDelay;
@@ -225,10 +195,7 @@ export function applyAllPendingDelays(file: ExternalFile): ExternalFile {
 }
 
 /** Mark a delay as hand-typed, clearing the measurement it replaces.
- *
- *  The stale metadata must go: leaving it would have the row advertise a
- *  confidence and frame count for a number the user overwrote.
- */
+ *  Otherwise the row would advertise a confidence/frame count for a number the user overwrote. */
 export function markDelayAsManual(file: ExternalFile, trackId: number | null): ExternalFile {
   if (trackId === null) {
     const { measuredDelay: _discarded, ...rest } = file;

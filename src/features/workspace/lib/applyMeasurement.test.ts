@@ -51,8 +51,6 @@ const apply = (file: ExternalFile, result: SyncResult, extra = {}) =>
 
 describe("applyMeasurement", () => {
   it("stages the negated, rounded delay rather than writing it", () => {
-    // Measuring proposes; applying commits. Filling the field outright meant
-    // a wrong measurement silently became the number the mux used.
     const updated = apply(makeFile(), makeResult({ delayMs: 87.7 }));
     expect(updated.pendingDelay).toBe(-0.088);
     expect(updated.delay).toBeUndefined();
@@ -88,7 +86,7 @@ describe("applyMeasurement", () => {
   });
 
   it("never auto-fills a likely-cut result", () => {
-    // Different material: no single offset aligns the files. See plan §5.4.
+    // No single offset aligns the two files.
     const updated = apply(makeFile(), makeResult({ delayMs: 87.7, isLikelyCut: true }));
     expect(updated.delay).toBeUndefined();
     expect(updated.delayProvenance).not.toBe("measured");
@@ -104,7 +102,6 @@ describe("applyMeasurement", () => {
   });
 
   it("leaves a hand-typed delay untouched", () => {
-    // See plan §5.6: measurement must never overwrite manual input.
     const file = makeFile({ delay: -0.5, delayProvenance: "manual" });
     const updated = apply(file, makeResult({ delayMs: 87.7 }));
     expect(updated.delay).toBe(-0.5);
@@ -127,9 +124,7 @@ describe("applyMeasurement", () => {
   });
 
   it("does not stage a low-confidence result, but still records it", () => {
-    // 30% means the correlator found no distinct peak. Showing it is useful;
-    // queueing it for Apply-all is not, because nothing distinguishes it from
-    // a real measurement once it is sitting in the field.
+    // Low confidence means no distinct peak was found, so it's shown but not staged.
     const updated = apply(makeFile(), makeResult({ delayMs: 87.7, confidence: 0.3 }));
     expect(updated.pendingDelay).toBeUndefined();
     expect(updated.measuredDelay?.confidence).toBe(0.3);
@@ -298,8 +293,6 @@ describe("applyMeasurement, per track", () => {
 
 describe("markDelayAsManual", () => {
   it("clears the stale measurement when the user types a delay", () => {
-    // Otherwise the row advertises a confidence and frame count belonging to a
-    // number the user has since replaced.
     const file = makeFile({
       delay: -0.088,
       delayProvenance: "measured",
@@ -385,8 +378,7 @@ describe("a measurement pass over a mixed set", () => {
     // A cut has nothing to propose.
     expect(measured[2].pendingDelay).toBeUndefined();
 
-    // Applying everything fills only what was proposed. The manual delay is
-    // untouched because a measurement pass never staged one for it.
+    // The manual delay was never staged, so it stays untouched here too.
     const applied = measured.map(applyAllPendingDelays);
     expect(applied[0].delay).toBe(-0.5);
     expect(applied[0].delayProvenance).toBe("manual");

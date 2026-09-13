@@ -1,9 +1,5 @@
-/** Drives a delay-measurement run: builds the pairs, streams the engine's
- *  results back into the audio files, and reports progress.
- *
- *  Results are applied as they arrive rather than at the end, so a cancelled
- *  batch keeps everything it already measured.
- */
+/** Drives a delay-measurement run, applying results as they arrive so a
+ *  cancelled batch keeps everything it already measured. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/shared/hooks/use-toast";
@@ -48,10 +44,8 @@ export function useMeasureDelays({
   const [isMeasuring, setIsMeasuring] = useState(false);
   const [progress, setProgress] = useState<MeasureProgress | null>(null);
 
-  // The event handlers below outlive the render that created them, so the
-  // current file list and the run's plan are read through refs rather than
-  // captured -- otherwise a result arriving after any edit would write into a
-  // stale copy of the list and silently discard that edit.
+  // Event handlers outlive the render that created them, so state is read
+  // through refs to avoid writing into a stale copy of the file list.
   const audioFilesRef = useRef(audioFiles);
   audioFilesRef.current = audioFiles;
   const onChangeRef = useRef(onAudioFilesChange);
@@ -109,10 +103,8 @@ export function useMeasureDelays({
 
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
-    // Registration is async, so cleanup can run before any of the handles
-    // arrive. Without this the cleanup would iterate an empty array and the
-    // listeners it was meant to remove would attach a moment later and stay --
-    // one extra copy of every handler per remount, each firing its own toast.
+    // Registration is async, so cleanup can run before the handles arrive;
+    // track that with `disposed` and unlisten immediately once it does.
     let disposed = false;
     const collect = (un: () => void) => {
       if (disposed) un();
@@ -151,8 +143,7 @@ export function useMeasureDelays({
           description: "Delays measured before cancelling have been kept.",
         });
       } else {
-        // Measuring no longer writes the delay field, so say what to do next
-        // rather than implying the work is finished.
+        // Measuring only records results, not the delay field itself.
         toast({
           title: "Measurement complete",
           description: "Review the results, then Apply to fill in the delays.",
@@ -236,10 +227,8 @@ export function useMeasureDelays({
   const cancel = useCallback(async () => {
     try {
       await measureDelaysCancel();
-      // Deliberately "requested", not "cancelled": the engine's command loop
-      // does not read stdin while a batch is running, so the request lands
-      // when the current batch ends rather than interrupting it. Claiming it
-      // stopped would be a lie the progress bar immediately contradicts.
+      // Deliberately "requested", not "cancelled": the engine doesn't read
+      // stdin mid-batch, so this only takes effect once it ends.
       toast({
         title: "Cancellation requested",
         description:

@@ -1,57 +1,19 @@
-/** The frame rate an audio file was *timed* at, in 23.976 / 25.000 terms.
- *
- *  This is not a property of the audio file. A bare .ec3, .eac3, .aac or .dts
- *  elementary stream carries a sample rate and nothing else; PAL-speedup audio
- *  and film-rate audio are structurally identical and differ only in how long
- *  they run. mediainfo does report a `FrameRate` for audio tracks -- 31.250 for
- *  AC-3, 46.875 for AAC-LC -- but that is only `SamplingRate / SamplesPerFrame`,
- *  a constant per codec, and it does not change when audio is sped from 23.976
- *  to 25. It is the wrong number for `--sync` and is deliberately not used here.
- *
- *  So the rate has to be inferred by comparison against the video:
- *
- *   - Once a measurement exists, the engine has already done this properly, by
- *     correlating the two waveforms. Its answer is used verbatim.
- *   - Before then, the only signal is the ratio of the two durations, which is
- *     good enough to separate 25 from 23.976 (4.27% apart) but not 24 from
- *     23.976 (0.1% apart, inside normal padding noise). Those cases are
- *     reported as estimates and flagged ambiguous.
- */
+/** The frame rate audio was timed at; not stored anywhere, so it's inferred by comparing durations against the video.
+ *  mediainfo's audio `FrameRate` field is a per-codec constant (SamplingRate/SamplesPerFrame), not this — don't use it. */
 
 import type { ExternalFile, MeasuredDelay, VideoFile } from "@/shared/types";
 import { conversionBetween, type RateConversion } from "./delayConversion";
 
-/** Frame rates real releases actually use. The same set as `COMMON_RATES` in
- *  AudioSyncMaster's `audiosync/framerate.py` and `EXACT_RATES` in
- *  `delayConversion.ts`; keep the three in step.
- *
- *  Decimals are enough here and nowhere else: this matches against a rate
- *  derived from a duration ratio, where encoder padding and a trimmed logo are
- *  already worth 0.1%, so the 1e-6 between 23.976 and 24000/1001 is far below
- *  the noise. Anything that becomes a stretch ratio goes through
- *  `exactRateFor` in `delayConversion.ts`, which restores the rational. */
+/** Frame rates real releases actually use; keep in sync with `EXACT_RATES` in delayConversion.ts.
+ *  Decimals suffice here — matched against a duration ratio already noisier than the 1e-6 gap to the exact rational. */
 export const COMMON_RATES = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60];
 
-/** How far the duration-derived rate may sit from a common rate and still be
- *  named as it.
- *
- *  The engine uses 0.0004 because a correlation measures the speed ratio
- *  directly. A duration ratio cannot be held to that: encoder padding, trailing
- *  silence and a trimmed logo are each worth a second or two, and two seconds
- *  across a 24-minute episode is already 0.14%. The tolerance therefore has to
- *  be wide enough to survive that -- which means it is also wider than the
- *  0.1% gap between 23.976 and 24, so those two cannot be told apart this way.
- *  `ambiguous` says so rather than pretending otherwise.
- */
+/** How far a duration-derived rate may sit from a common rate and still be named as it.
+ *  Wide enough to absorb encoder padding and a trimmed logo — which also means 23.976 and 24 can't be told apart this way. */
 export const ESTIMATE_TOLERANCE = 0.005;
 
 /** How close a candidate must sit to the video's own rate to *be* that rate.
- *
- *  Deliberately far tighter than `ESTIMATE_TOLERANCE`, and matching
- *  `FPS_TOLERANCE` in `delayConversion.ts`: 23.976 and 24 are 0.024 apart, and
- *  identifying "the video's rate" is an exact question about a known number,
- *  not a noisy one about a measured ratio.
- */
+ *  Tighter than `ESTIMATE_TOLERANCE`: this compares to a known value, not a noisy measurement. */
 const VIDEO_MATCH_TOLERANCE = 0.01;
 
 export interface AudioFps {
@@ -69,16 +31,12 @@ export interface AudioFps {
   ambiguous: boolean;
 }
 
-/** True when the audio has to be resampled to sit on this video at all.
- *  Compared with the same tolerance that identifies the video's own rate, so a
- *  file that matches the video is never reported as needing a change. */
+/** True when the audio has to be resampled to sit on this video, using the same tolerance that identifies the video's own rate. */
 export function needsRateChange(value: AudioFps): boolean {
   return Math.abs(value.fps - value.videoFps) >= VIDEO_MATCH_TOLERANCE;
 }
 
-/** The exact stretch this file needs, when both rates are standard ones.
- *  Null when no change is needed, or when a rate is not one the ratio table can
- *  name -- in which case only a measurement can produce a trustworthy ratio. */
+/** The exact stretch this file needs when both rates are standard ones; null otherwise, since only a measurement can then be trusted. */
 export function rateChangeFor(value: AudioFps): RateConversion | null {
   if (!needsRateChange(value)) return null;
   return conversionBetween(value.fps, value.videoFps);
@@ -90,9 +48,7 @@ function usableMeasurement(measured: MeasuredDelay | undefined): boolean {
 
 /** The rate the engine concluded the audio was timed at, if it measured one. */
 function measuredFps(measured: MeasuredDelay, videoFps: number | undefined): AudioFps | null {
-  // Without the video's rate there is no "to" to name, and the answer would be
-  // half a sentence. The measurement carries its own copy of it for the cases
-  // where the video file's own rate never made it into state.
+  // Without the video's rate there's no "to" to name; fall back to the measurement's own copy.
   const against = videoFps ?? measured.rateTargetFps ?? measured.primaryFps ?? null;
   if (against === null) return null;
 
@@ -105,19 +61,13 @@ function measuredFps(measured: MeasuredDelay, videoFps: number | undefined): Aud
       ambiguous: false,
     };
   }
-  // No mismatch found. That is only informative when the pair actually lines
-  // up -- a likely-cut pair drifts for reasons that say nothing about rates, so
-  // concluding "same rate as the video" from it would be an invention.
+  // No mismatch found is only informative when the pair actually lines up;
+  // a likely-cut pair drifts for reasons unrelated to rate.
   if (measured.isRateMismatch || measured.isLikelyCut) return null;
   return { fps: against, videoFps: against, basis: "measured", ambiguous: false };
 }
 
-/** The rate implied by how long the audio runs against how long the video runs.
- *
- *  Content of N frames runs `N / fps` seconds, so
- *  `audioDuration / videoDuration = videoFps / audioFps`, and the audio's rate
- *  is `videoFps * videoDuration / audioDuration`.
- */
+/** The rate implied by how long the audio runs against how long the video runs (`videoFps * videoDuration / audioDuration`). */
 export function estimateFpsFromDurations(
   audioDurationS: number | undefined,
   videoDurationS: number | undefined,
@@ -137,12 +87,8 @@ export function estimateFpsFromDurations(
 
   if (withinTolerance.length === 0) return null;
 
-  // When the video's own rate is one of the candidates, prefer it. The
-  // overwhelmingly common case is audio that was never converted at all, and
-  // guessing 24 for a 23.976 video on the strength of a second of padding
-  // would turn a no-op into a wrong stretch. This is not flagged ambiguous
-  // even when 23.976 and 24 both fit: whichever of the two it is, it equals
-  // the video's rate, so the conclusion -- no conversion -- is the same.
+  // Prefer the video's own rate when it fits: the common case is unconverted audio.
+  // Not flagged ambiguous even if 24 also matches — both imply no conversion.
   const matchesVideo = withinTolerance.find(
     (candidate) => Math.abs(candidate.rate - videoFps) < VIDEO_MATCH_TOLERANCE,
   );

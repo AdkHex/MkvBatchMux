@@ -19,16 +19,8 @@ export const videoNameKey = (file: Pick<VideoFile, "name">) => normalizeVideoIde
 const videoPathSegments = (file: Pick<VideoFile, "path" | "name">) =>
   videoIdentityKey(file).split("/").filter(Boolean);
 
-/**
- * True when one path is a suffix of the other, i.e. the shorter path's segments
- * all match the tail of the longer one AND the longer path has extra leading
- * segments. This identifies the same file referred to by a relative/rooted path
- * pair (e.g. "Show/Ep.mkv" vs "/mnt/media/Show/Ep.mkv").
- *
- * Two paths of equal length are NOT a suffix match unless identical, which the
- * caller already tests via videoIdentityKey, so this deliberately requires a
- * strict length difference to avoid claiming unrelated siblings are the same.
- */
+/** True when the shorter path's segments match the tail of the longer one, identifying the same file
+ *  referred to by a relative/rooted pair (e.g. "Show/Ep.mkv" vs "/mnt/media/Show/Ep.mkv"). Equal-length paths never match here. */
 const sharePathSuffix = (
   a: Pick<VideoFile, "path" | "name">,
   b: Pick<VideoFile, "path" | "name">,
@@ -49,11 +41,8 @@ const sharePathSuffix = (
   return true;
 };
 
-/**
- * Sizes only "match" when both are known and equal. An unknown size is NOT
- * evidence of sameness -- treating it as a match previously collapsed distinct
- * files that merely shared a basename (e.g. /eng/Ep01.mkv and /jpn/Ep01.mkv).
- */
+/** Sizes only "match" when both are known and equal — an unknown size is not evidence of sameness
+ *  (distinct files can share a basename, e.g. /eng/Ep01.mkv and /jpn/Ep01.mkv). */
 const sizesMatch = (a?: number, b?: number) =>
   Number.isFinite(a) && Number.isFinite(b) && a === b;
 

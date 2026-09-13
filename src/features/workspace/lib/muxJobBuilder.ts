@@ -23,13 +23,7 @@ const normalizeName = (value: string) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
-/**
- * Resolve which video each external file belongs to.
- *
- * Exported because delay measurement pairs files with exactly this function:
- * a second matcher could measure one pairing while the mux performs another,
- * producing a silently wrong delay with nothing on screen to explain it.
- */
+/** Resolve which video each external file belongs to; exported so measurement reuses the same matcher instead of risking a different pairing. */
 export const buildStrictVideoMatcher = (videoFiles: VideoFile[]) => {
   const byId = new Map(videoFiles.map((video) => [video.id, video] as const));
   const episodeMap = new Map<number, string>();
@@ -75,14 +69,8 @@ export const buildStrictVideoMatcher = (videoFiles: VideoFile[]) => {
   return { byId, resolve };
 };
 
-/**
- * Rank used to order external tracks by their `muxAfter` placement.
- * Lower sorts earlier.
- *
- * Unrecognised values are reported rather than silently ranked as "video" --
- * a typo'd or newly-added placement previously sorted next to the video track
- * with no indication anything was wrong.
- */
+/** Rank used to order external tracks by their `muxAfter` placement; lower sorts earlier.
+ *  Unrecognised values are logged rather than silently ranked as "video". */
 const muxAfterRank = (value?: string) => {
   if (value === "subtitle-first") return -1;
   if (!value || value === "video") return 0;

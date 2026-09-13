@@ -1,16 +1,5 @@
-/** The frame rate an audio file was timed at, shown beside its name.
- *
- *  When that rate is not the video's, the badge names both — "25.000 → 23.976
- *  fps" — because the rate on its own is only half of what the user has to
- *  decide. The other half is the ratio it takes to get from one to the other,
- *  which is in the tooltip along with the fact that it takes a measurement to
- *  apply it.
- *
- *  Renders nothing when there is no answer -- an unmatched file, a video with
- *  no known rate, or a pair whose durations match no standard conversion. A
- *  blank is honest there; a fabricated rate would be read as fact and could be
- *  turned into a wrong `--sync` stretch.
- */
+/** The frame rate an audio file was timed at. Renders nothing rather than a
+ *  guess when the rate or its pairing is unknown. */
 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/shared/ui/tooltip";
 import { cn } from "@/shared/lib/utils";

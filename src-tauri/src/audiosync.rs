@@ -1,13 +1,5 @@
-//! Long-lived connection to the AudioSync analysis engine.
-//!
-//! Ported from AudioSyncMaster's `src-tauri/src/bridge.rs`, which is Tauri v2
-//! code; the differences here are v1's `emit_all`/`path_resolver` APIs, not a
-//! change of design.
-//!
-//! The engine is a Python process speaking newline-delimited JSON. It is kept
-//! alive across runs and spoken to line-by-line so that `cancel` reaches a
-//! batch in flight: killing the process instead would orphan every ffmpeg child
-//! it had spawned.
+//! Long-lived connection to the AudioSync analysis engine, a Python process
+//! speaking newline-delimited JSON, kept alive so `cancel` reaches a batch in flight.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -22,9 +14,8 @@ use tauri::{AppHandle, Manager};
 
 use crate::hidden_command;
 
-/// How long a shutdown waits for the engine to exit on its own before it is
-/// killed. Long enough for it to stop its ffmpeg children, short enough that
-/// quitting the app still feels immediate.
+/// How long shutdown waits before killing the engine -- long enough to stop its
+/// ffmpeg children, short enough that quitting still feels immediate.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_millis(2000);
 const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
@@ -33,9 +24,7 @@ static FFMPEG_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 static FFMPEG_ON_PATH: OnceLock<bool> = OnceLock::new();
 
 /// Directory holding the bundled ffmpeg/ffprobe, if this build shipped them.
-///
-/// The installer bundles them under `resources/ffmpeg` so delay measurement
-/// works on a machine that has never installed FFmpeg.
+/// Lets delay measurement work on a machine with no FFmpeg installed.
 fn bundled_ffmpeg_dir(app: &AppHandle) -> Option<PathBuf> {
     FFMPEG_DIR
         .get_or_init(|| {
@@ -46,22 +35,16 @@ fn bundled_ffmpeg_dir(app: &AppHandle) -> Option<PathBuf> {
             } else {
                 "ffprobe"
             };
-            // Only claim the directory when *both* tools are present: the engine
-            // needs ffprobe as much as ffmpeg, and a half-populated resource
-            // folder would fail later with a much more confusing error.
+            // Require both tools present; a half-populated resource dir would
+            // otherwise fail later with a more confusing error.
             (dir.join(exe).is_file() && dir.join(probe).is_file()).then_some(dir)
         })
         .clone()
 }
 
 /// Whether the user's own ffmpeg and ffprobe are on PATH.
-///
-/// When they are, they win over the bundled pair. AudioSyncMaster ships no
-/// ffmpeg and resolves both tools from PATH, and which build decodes the audio
-/// is part of the measurement: builds differ in whether they trim E-AC-3 and
-/// TrueHD decoder priming inside a container, which moved every delay by
-/// 15-40 ms against AudioSyncMaster's on the same files. Using the same
-/// binary it uses is the only way the two apps can report the same number.
+/// PATH wins over the bundled pair: different ffmpeg builds decode audio
+/// slightly differently, shifting measured delay by tens of ms.
 fn ffmpeg_on_path() -> bool {
     *FFMPEG_ON_PATH.get_or_init(|| {
         crate::tool_available("ffmpeg", "-version") && crate::tool_available("ffprobe", "-version")
@@ -106,12 +89,7 @@ pub struct EngineStatus {
     pub engine_available: bool,
     pub ffmpeg_available: bool,
     pub engine_path: Option<String>,
-    /// Which AudioSyncMaster build the engine is, e.g. "AudioSyncMaster v2.8.0
-    /// (8e53e8b)". The engine speaks no version of its own, so this is the
-    /// stamp `fetch-engine` wrote beside the bundled binary, or `git describe`
-    /// of the development checkout. Shown in Settings because two apps that
-    /// claim to share an engine can only be checked against each other if
-    /// each says which engine it has.
+    /// Version stamp for the engine build, e.g. "AudioSyncMaster v2.8.0 (8e53e8b)".
     pub engine_version: Option<String>,
     pub message: Option<String>,
 }
@@ -164,11 +142,8 @@ struct MeasureDoneEvent {
     error: Option<String>,
 }
 
-/// Engine stdin, shareable so a cancel can be written while a batch is running.
-///
-/// Held apart from the engine itself because a batch keeps the engine locked
-/// for its whole duration; a cancel that had to wait for that lock could only
-/// ever arrive after the run it was meant to stop.
+/// Engine stdin, held separately from the engine lock so a cancel isn't queued
+/// behind a batch that holds that lock for its whole duration.
 type SharedStdin = Arc<Mutex<ChildStdin>>;
 
 /// A running engine process plus the channel its stdout reader publishes to.
@@ -213,9 +188,8 @@ impl Engine {
 
         let (sender, receiver): (Sender<Value>, Receiver<Value>) = channel();
 
-        // stdout is drained on its own thread from the moment the process
-        // starts, so writing a large request can never deadlock against a full
-        // output pipe.
+        // Drained on its own thread from the start, so a large request write
+        // can never deadlock against a full output pipe.
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -276,10 +250,8 @@ impl Engine {
     pub fn shutdown(&mut self) {
         let _ = self.send(&serde_json::json!({ "command": "shutdown" }));
 
-        // The engine needs a moment to read that line, stop its ffmpeg
-        // children and exit. Checking immediately always found it still alive
-        // and killed it, which is exactly what orphans those children -- the
-        // thing the graceful path exists to avoid.
+        // Give the engine a moment to read the shutdown line and stop its
+        // ffmpeg children before killing it.
         let deadline = std::time::Instant::now() + SHUTDOWN_GRACE;
         loop {
             match self.child.try_wait() {
@@ -323,12 +295,8 @@ impl Drop for Engine {
     }
 }
 
-/// Shared handle so commands from different invocations reach the same process.
-///
-/// The engine and its stdin are guarded separately on purpose. `with` holds the
-/// engine lock for a whole batch, so anything that has to reach a *running*
-/// engine -- cancellation above all -- goes through `stdin` instead and never
-/// waits on that lock.
+/// Shared handle to the engine process; stdin is guarded separately from the
+/// engine lock so cancellation is never queued behind a running batch.
 #[derive(Clone, Default)]
 pub struct EngineHandle {
     engine: Arc<Mutex<Option<Engine>>>,
@@ -355,9 +323,8 @@ impl EngineHandle {
         match action(engine) {
             Ok(value) => Ok(value),
             Err(err) => {
-                // A failed exchange usually means the process died; drop it so
-                // the next call starts a healthy one rather than reusing a
-                // half-broken pipe.
+                // Drop a dead engine so the next call starts fresh instead of
+                // reusing a broken pipe.
                 *guard = None;
                 self.publish_stdin(None);
                 Err(err)
@@ -407,11 +374,8 @@ impl EngineHandle {
     }
 }
 
-/// Locate the packaged engine.
-///
-/// The engine ships as a PyInstaller *directory* build under
-/// `resources/engine/`, not a single-file executable: a onefile build
-/// re-extracts its whole payload to a temp directory on every launch.
+/// Locate the packaged engine, shipped as a PyInstaller directory build under
+/// `resources/engine/` (not onefile, which re-extracts on every launch).
 fn find_sidecar(app: &AppHandle) -> Option<PathBuf> {
     let exe_name = if cfg!(windows) {
         "audiosync-cli.exe"
@@ -485,12 +449,8 @@ const ENGINE_VERSION_FILE: &str = "ENGINE_VERSION";
 /// package.json via build.rs. Empty when the pin is missing there.
 const PINNED_ENGINE_REF: &str = env!("AUDIOSYNC_ENGINE_REF");
 
-/// Whether a version stamp names the pinned release exactly.
-///
-/// Bundled stamps read "AudioSyncMaster v2.8.0 (8e53e8b)"; a development
-/// checkout reads "AudioSyncMaster v2.8.0 (development checkout)" at the tag
-/// and "AudioSyncMaster v2.8.0-2-gf38ace9 (development checkout)" two commits
-/// past it, so the tag has to be followed by a space, not merely be a prefix.
+/// Whether a version stamp names the pinned release exactly. Must be followed
+/// by a space, not just prefix-matched, since a stamp past the tag also starts with it.
 fn is_pinned_release(version: &str) -> bool {
     if PINNED_ENGINE_REF.is_empty() {
         return true; // Nothing to compare against; do not cry wolf.
@@ -503,9 +463,8 @@ fn is_pinned_release(version: &str) -> bool {
 
 /// The stamp fetch-engine left beside a bundled sidecar.
 fn sidecar_version(sidecar: &std::path::Path) -> Option<String> {
-    // The stamp sits at the top of resources/engine, which is the sidecar's
-    // own directory -- or its parent when PyInstaller nested the binary one
-    // level down (see find_sidecar).
+    // Check the sidecar's own directory, then its parent, since PyInstaller
+    // may nest the binary one level down.
     let own = sidecar.parent()?;
     [Some(own), own.parent()]
         .into_iter()
@@ -517,9 +476,8 @@ fn sidecar_version(sidecar: &std::path::Path) -> Option<String> {
         })
 }
 
-/// `git describe` of a development checkout, so a dev build says which commit
-/// it is measuring with -- including whether that is the released engine or
-/// something on the way to the next one.
+/// `git describe` of a development checkout, so a dev build reports which
+/// commit it is measuring with.
 fn checkout_version(repo_root: &std::path::Path) -> Option<String> {
     let output = hidden_command("git")
         .arg("-C")
@@ -550,13 +508,8 @@ fn find_python(repo_root: &std::path::Path) -> PathBuf {
     PathBuf::from(if cfg!(windows) { "python" } else { "python3" })
 }
 
-/// Point the engine at the ffmpeg pair this app resolved.
-///
-/// The engine resolves the tools itself (`AUDIOSYNC_FFMPEG`/`AUDIOSYNC_FFPROBE`,
-/// then a bundled copy next to its own executable, then PATH), so it is told
-/// the exact binaries rather than left to repeat the search: with the user's
-/// pair on PATH that is what AudioSyncMaster's engine finds too, and only
-/// without one does the bundled pair step in.
+/// Point the engine at the ffmpeg pair this app resolved via env vars, rather
+/// than letting it repeat PATH/bundled-copy resolution itself.
 fn apply_ffmpeg_path(app: &AppHandle, command: &mut Command) {
     if ffmpeg_on_path() {
         return;
@@ -637,10 +590,8 @@ pub fn audiosync_engine_status(
         },
     };
 
-    // Release builds bundle both, so these only surface if something went
-    // wrong with the install -- or in a dev checkout, where the build command
-    // is the useful answer. Debug builds get the developer wording; installed
-    // users get something they can act on.
+    // These only surface when the install is broken or the dev build is missing.
+    // Debug builds get developer wording; installed users get something actionable.
     let message = if located.is_none() {
         Some(if cfg!(debug_assertions) {
             "The audio analysis engine is not built. Run `npm run fetch-engine`.".to_string()
@@ -660,10 +611,8 @@ pub fn audiosync_engine_status(
                 .to_string()
         })
     } else {
-        // Measuring still works with an unpinned engine; the results just
-        // cannot be expected to match AudioSyncMaster's. That is worth saying
-        // out loud: this exact situation went unnoticed once because nothing
-        // reported it.
+        // Measuring still works with an unpinned engine, but results may not
+        // match AudioSyncMaster's.
         version
             .as_deref()
             .filter(|found| !is_pinned_release(found))
@@ -730,17 +679,8 @@ pub fn list_reference_tracks(
     })
 }
 
-/// Consume the engine's startup handshake, if it is still pending.
-///
-/// The engine emits `ready` once, when it starts. A command issued against a
-/// freshly spawned engine must swallow it, or it arrives interleaved with that
-/// command's own response; a command issued against an established engine has
-/// nothing to swallow and must not block looking for one.
-///
-/// `handshake_done` distinguishes the two cases explicitly. Peeking at the
-/// channel instead would race: an empty queue means "already handshaken" and
-/// "process still starting" equally, and guessing wrong either eats a real
-/// event or hangs.
+/// Consume the engine's startup `ready` event before it interleaves with a
+/// command's response. `handshake_done` tracks this since an empty channel can't tell "done" from "starting".
 fn drain_ready(engine: &mut Engine) -> Result<(), String> {
     use std::time::Duration;
 
@@ -826,9 +766,8 @@ pub fn measure_delays_start(
     tauri::async_runtime::spawn_blocking(move || {
         let outcome = handle.with(&app_for_run, |engine| {
             drain_ready(engine)?;
-            // The engine's own view of ffmpeg is the authority once it is
-            // running; this app's PATH probe can disagree if the two resolve
-            // PATH differently.
+            // The engine's own ffmpeg check is authoritative once running;
+            // PATH resolution can differ from this app's probe.
             if !engine.ffmpeg_ready {
                 return Err(
                     "FFmpeg was not found by the analysis engine. Install FFmpeg and make \
@@ -873,7 +812,7 @@ pub fn measure_delays_start(
                         );
                     }
                     Some("result") => {
-                        // bridge.py flattens the result onto the event itself.
+                        // The engine flattens the result onto the event itself.
                         let primary = value
                             .get("primaryPath")
                             .and_then(Value::as_str)
@@ -947,28 +886,9 @@ pub fn measure_delays_start(
     Ok(())
 }
 
-/// Ask the engine to stop the batch in flight.
-///
-/// Cancellation is a message, not a kill: killing the process would orphan the
-/// ffmpeg children it spawned.
-///
-/// KNOWN LIMITATION (upstream, verified 2026-08-28): `bridge.py`'s command loop
-/// is single-threaded -- `for line in sys.stdin` does not run again until the
-/// current command returns -- so a `cancel` sent mid-`analyze` is not read
-/// until that batch has already finished. Measured directly: a `ping` sent 3s
-/// into a 17.6s batch went unanswered until the batch completed. The engine's
-/// own comments describe cancel as handled "ahead of the queue", which is true
-/// of the queue but not of a command already executing.
-///
-/// The message is still sent, so this starts working the moment the engine
-/// reads stdin on its own thread. Until then the UI reports cancellation as
-/// requested rather than as done, so the button never claims more than it can
-/// deliver. Fixing it belongs in AudioSyncMaster, which owns that file.
-///
-/// What *is* fixed here: this used to take the same lock a running batch holds
-/// for its whole duration, so the line could not even be written until the
-/// batch had finished. Engine stdin is now guarded separately, so the cancel
-/// reaches the pipe immediately and only the upstream read loop delays it.
+/// Ask the engine to stop the batch in flight. Sent as a message rather than a
+/// kill, so ffmpeg children aren't orphaned; the upstream engine only reads it
+/// once the current batch finishes, so the UI reports cancellation as requested rather than done.
 #[tauri::command]
 pub fn measure_delays_cancel(engine: tauri::State<'_, EngineHandle>) -> Result<(), String> {
     engine.send_now(&serde_json::json!({ "command": "cancel" }))

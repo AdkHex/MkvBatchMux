@@ -1,14 +1,5 @@
-/** Opt-in linear stretch for a frame-rate-converted track.
- *
- *  Defaults to off and stays off unless the user turns it on: a plain offset is
- *  merely imperfect on a rate-converted file, whereas a wrong stretch ratio
- *  actively drifts a file that was previously fine. See plan §5.5.
- *
- *  The label names both rates rather than only the ratio. "999/1000" is not
- *  something anyone can check; "24.000 → 23.976 fps" is the sentence the user
- *  already has in their head, and it is the one thing they can confirm against
- *  the release they downloaded.
- */
+/** Opt-in linear stretch for a frame-rate-converted track; defaults to off
+ *  since a wrong stretch ratio actively drifts a file that was otherwise fine. */
 
 import { useEffect, useRef } from "react";
 import { Checkbox } from "@/shared/ui/checkbox";
@@ -33,15 +24,8 @@ export function StretchToggle({ measured, value, onChange, id, disabled }: Stret
   const conversion = measured.isRateMismatch ? rateConversionFor(measured) : null;
   const enabled = Boolean(value);
 
-  // A ratio saved by an earlier build is not the ratio this one would set: the
-  // stored number was the engine's atempo factor, which is the reciprocal of
-  // what mkvmerge multiplies timestamps by, and conversions this build names
-  // exactly were approximated then. Re-storing it keeps the promise the
-  // checkbox makes -- that a tick means the ratio printed beside it -- instead
-  // of muxing a number the user cannot see and would not recognise.
-  //
-  // The ref is only so a fresh `onChange` closure on every render does not
-  // re-fire the effect; the correction depends on the ratio alone.
+  // Re-store the ratio if an earlier build saved the reciprocal (atempo factor)
+  // instead of mkvmerge's ratio. Ref avoids re-firing on every onChange identity change.
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const num = conversion?.num;

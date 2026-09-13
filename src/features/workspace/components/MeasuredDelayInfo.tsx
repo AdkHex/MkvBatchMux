@@ -1,15 +1,5 @@
-/** The measurement readout shown beside an audio row's delay field.
- *
- *  Four things the user asked to see: how confident the measurement is, the
- *  offset in frames, a warning when the file drifts or was rate-converted, and
- *  the original unrounded milliseconds so the rounding into the three-decimal
- *  field is visible rather than silent. See plan §5.3.
- *
- *  Every warning here goes through `WarningBadge`, which will not render
- *  without both halves of the answer: what caused it, and what to do about it.
- *  A badge that only names the problem sends the user back to the same guess
- *  they were making before they hovered it.
- */
+/** The measurement readout shown beside an audio row's delay field. Every
+ *  warning here goes through `WarningBadge`, which pairs a cause with a fix. */
 
 import { AlertTriangle, Gauge, RefreshCw, Scissors } from "lucide-react";
 import { Badge } from "@/shared/ui/badge";
@@ -48,9 +38,8 @@ interface MeasuredDelayInfoProps {
   onApplyAnyway?: () => void;
   /** True while this measurement is staged but not yet in the delay field. */
   pending?: boolean;
-  /** The reference track currently selected for this file's video. When it is
-   *  not the one the measurement used, the result no longer describes what the
-   *  next measurement would produce, and the row says so. */
+  /** When this differs from the track the measurement used, the result no
+   *  longer describes what the next measurement would produce. */
   currentReferenceTrack?: number;
 }
 
@@ -89,10 +78,7 @@ export function MeasuredDelayInfo({
     );
   }
 
-  // Changing the reference track changes the question, so a result measured
-  // against the old one is no longer an answer to the current one. Shown as an
-  // indicator in the row rather than an alert: it is information the user can
-  // act on when they choose to, not something to interrupt them for.
+  // Shown as an indicator rather than an alert; the user acts on it when ready.
   const referenceChanged =
     currentReferenceTrack !== undefined && currentReferenceTrack !== measured.referenceTrack;
 
@@ -115,13 +101,8 @@ export function MeasuredDelayInfo({
               {formatConfidence(measured.confidence)}
             </span>
           </TooltipTrigger>
-          {/* Confidence is a property of the comparison, not of the file, and
-              the comparison is against one particular track of the video. Two
-              tools measuring the same pair report the same delay and different
-              confidence when they reference different tracks -- the offset is
-              shared by everything in the container, the correlation sharpness
-              is not. Naming the track is what makes that difference readable
-              instead of looking like one of the two being wrong. */}
+          {/* Confidence is per comparison track, not per file: two tools can
+              report the same delay with different confidence if they reference different tracks. */}
           <TooltipContent className="max-w-xs">
             Measured against audio track {measured.referenceTrack + 1} of the video. Confidence
             says how distinct the correlation peak was against that track, so comparing it with
@@ -230,9 +211,7 @@ export function MeasuredDelayInfo({
           />
         )}
 
-        {/* A weak correlation means no distinct peak was found, so the number
-            beside it is not a measurement of anything. Ranked below the two
-            structural problems, which explain themselves more specifically. */}
+        {/* Ranked below the two structural problems, which explain themselves more specifically. */}
         {!implausible && !measured.isLikelyCut && weak && (
           <WarningBadge
             tone="blocking"

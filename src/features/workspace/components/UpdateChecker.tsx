@@ -14,14 +14,7 @@ type UpdateState =
   | { status: "ready" }
   | { status: "error"; message: string };
 
-/**
- * Check-for-updates control shown in Settings.
- *
- * Tauri's built-in updater dialog is disabled in tauri.conf.json so the flow
- * is visible here instead: a batch can run for several minutes, and a modal
- * that appears unprompted mid-run and offers to restart is the one thing this
- * app must never do.
- */
+/** Check-for-updates control shown in Settings; Tauri's own updater dialog is disabled. */
 export function UpdateChecker() {
   const [state, setState] = React.useState<UpdateState>({ status: "idle" });
 

@@ -1,9 +1,5 @@
 /** Types crossing the AudioSync engine boundary.
- *
- *  Field names match AudioSyncMaster's `src/lib/types.ts` and the Python
- *  engine exactly -- all layers speak camelCase across the wire, so renaming
- *  anything here silently turns a value into `undefined`.
- */
+ *  Field names match AudioSyncMaster's exactly — renaming any silently turns a value into `undefined`. */
 
 export interface AudioTrackInfo {
   index: number;
@@ -75,10 +71,8 @@ export interface SyncResult {
   cutUncertaintyS?: number | null;
   cutMagnitudeMs?: number | null;
   isRateMismatch?: boolean | null;
-  /** Playback-speed difference the engine undid during decoding so the two
-   *  could be correlated at all. 1.0 means the files were measured as they are;
-   *  a PAL-sped dub reads about 1.0427. Diagnostic only -- the drift and the
-   *  correction ratio already describe the pair as the user has it. */
+  /** Playback-speed the engine undid during decoding so the two could be correlated; 1.0 means unmodified, ~1.0427 for a PAL-sped dub.
+   *  Diagnostic only — drift and correctionRatio already describe the pair as the user has it. */
   speedCompensation?: number | null;
   codecDelayMs?: number | null;
   primaryCodec?: string | null;
@@ -98,42 +92,21 @@ export interface MeasurePair {
   secondaryTrack: number;
 }
 
-/** Beyond this, a "delay" is not a delay.
- *
- *  This app measures a dub against the video it will be muxed into, so a real
- *  offset is container- and encoder-scale: milliseconds, occasionally a second
- *  or two. Ten seconds is already generous.
- *
- *  This is a gate on *applying* a result, not on searching for one. It was
- *  briefly both -- the engine's search was narrowed to this value to stop a
- *  correlator locking onto a repeated musical phrase. That made the search
- *  differ from AudioSyncMaster's and so made the two tools disagree, and it
- *  was treating the symptom: the wrong answers came from comparing two tracks
- *  that shared no material, which track selection now prevents. The search is
- *  upstream's again; an implausible result is still measured, shown, and kept
- *  out of the delay field unless the user applies it deliberately.
- */
+/** Beyond this, a "delay" is not a delay: real offsets here are container/encoder-scale (ms, maybe a couple seconds).
+ *  Gates applying a result, not searching for one — an implausible result is still measured and shown. */
 export const MAX_PLAUSIBLE_OFFSET_MS = 10000;
 
 export const ENGINE_DEFAULTS = {
-  // Identical to AudioSyncMaster's DEFAULT_SETTINGS (its src/lib/types.ts), on
-  // purpose: the engine is the same binary, so the only way the two tools can
-  // report different delays for the same files is by asking it different
-  // questions.
+  // Identical to AudioSyncMaster's defaults on purpose: since it's the same engine binary, the only
+  // way the two tools can report different delays is by asking it different questions.
   //
-  // windowCount is the one that bites. plan_windows() spreads the sample
-  // points with step = (last - first) / (count - 1), so changing the count
-  // moves every window; the result is the median of whatever those windows
-  // measured. Sampling ten instead of six is not a more precise version of the
-  // same measurement, it is a different one -- worth tens of milliseconds on
-  // material whose offset wanders slightly across a film.
+  // windowCount changes where every window sits (step = (last-first)/(count-1)), so a different count
+  // isn't a more precise measurement — it's a different one, worth tens of ms on drifting material.
   windowSeconds: 45,
   windowCount: 6,
   maxOffsetMs: 60000,
-  // The only parameter that cannot change a result: it sizes the engine's
-  // thread pool (batch.py hands it straight to ThreadPoolExecutor) and each
-  // pair is analysed independently. Kept higher than upstream's 3 purely for
-  // throughput on a batch.
+  // The only parameter that cannot change a result: it just sizes the engine's thread pool, and each
+  // pair is analysed independently. Kept higher than upstream's 3 purely for throughput.
   maxWorkers: 4,
 } as const;
 
@@ -153,9 +126,8 @@ export interface EngineStatus {
   ffmpegAvailable: boolean;
   /** Where the engine was found, for the log and for diagnosing a bad build. */
   enginePath: string | null;
-  /** Which AudioSyncMaster build it is, e.g. "AudioSyncMaster v2.8.0 (8e53e8b)".
-   *  Null when the bundle carries no stamp. The two apps can only be expected
-   *  to agree while this matches the AudioSyncMaster release installed. */
+  /** Which AudioSyncMaster build it is, e.g. "AudioSyncMaster v2.8.0 (8e53e8b)"; null when unstamped.
+   *  The two apps can only be expected to agree while this matches the installed release. */
   engineVersion: string | null;
   message: string | null;
 }
@@ -181,9 +153,7 @@ export interface MeasureDoneEvent {
 }
 
 /** What a measurement produced, kept alongside the delay value it wrote.
- *
- *  Stored so the row can keep explaining itself after a reload, and so a value
- *  that was measured can be told apart from one that was typed. */
+ *  Stored so a row can keep explaining itself after a reload, and so measured can be told apart from typed. */
 export interface MeasuredDelay {
   /** Raw engine value, before negation -- kept so the display can show the
    *  unrounded figure and so a re-derivation never double-flips the sign. */

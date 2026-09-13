@@ -23,10 +23,7 @@ const badgeVariants = cva(
 export interface BadgeProps extends React.HTMLAttributes<HTMLDivElement>, VariantProps<typeof badgeVariants> {}
 
 // forwardRef because badges are used as tooltip triggers: Radix's `asChild`
-// hands the trigger's ref to whatever it wraps, and a plain function component
-// drops it. Without the ref the tooltip has nothing to anchor to, so the
-// explanation behind a warning badge never reliably appears on hover -- and
-// React only says so as a console warning.
+// needs the ref to anchor the tooltip.
 const Badge = React.forwardRef<HTMLDivElement, BadgeProps>(
   ({ className, variant, ...props }, ref) => (
     <div ref={ref} className={cn(badgeVariants({ variant }), className)} {...props} />

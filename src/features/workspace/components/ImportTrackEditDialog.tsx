@@ -24,13 +24,7 @@ interface ImportTrackEditDialogProps {
   kind: "audio" | "subtitle";
 }
 
-/**
- * Edits one imported stream's language, name and delay.
- *
- * Imports used to take the tab's shared settings for every stream, so a batch
- * that needed a different offset per track could not be expressed at all --
- * the delay had to be fixed afterwards, file by file.
- */
+/** Edits one imported stream's language, name and delay. */
 export function ImportTrackEditDialog({
   open,
   onOpenChange,

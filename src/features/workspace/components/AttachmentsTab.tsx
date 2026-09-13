@@ -107,9 +107,8 @@ export function AttachmentsTab({
   const scanRequestRef = useRef(0);
 
   const scanAttachments = async (folderPath: string) => {
-    // Scans of two folders can be in flight at once, and the slower one is not
-    // always the older one. Only the newest request is allowed to publish, so a
-    // late reply for a folder the user has already moved on from is discarded.
+    // Only the newest scan may publish: a slower reply for a folder the user
+    // has moved on from would otherwise overwrite the current listing.
     const requestId = ++scanRequestRef.current;
     if (!folderPath) {
       onAttachmentFilesChange([]);

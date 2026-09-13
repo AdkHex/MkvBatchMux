@@ -1,10 +1,5 @@
-/** A warning marker on an audio row, with the whole story behind it.
- *
- *  Every red or amber badge in this app raises the same two questions, and a
- *  label answers neither: why did this happen, and what do I do now. Having one
- *  component take both as required props is what stops a new warning shipping
- *  with only the first half -- the type will not compile without a fix.
- */
+/** A warning marker with required `cause`/`fix` props, so a new warning
+ *  cannot ship with only a label and no explanation. */
 
 import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
@@ -29,8 +24,7 @@ interface WarningBadgeProps {
   cause: ReactNode;
   /** The next action, concretely enough to carry out without guessing. */
   fix: ReactNode;
-  /** Filled rather than outlined. Reserved for the one warning on a row that
-   *  most needs reading first. */
+  /** Filled rather than outlined, for the one warning that most needs reading first. */
   solid?: boolean;
 }
 

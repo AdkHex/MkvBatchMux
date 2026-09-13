@@ -112,8 +112,6 @@ export function VideoFileEditDialog({
   const [importSourceVideoId, setImportSourceVideoId] = useState("");
   const [importSelectedTrackIds, setImportSelectedTrackIds] = useState<number[]>([]);
   // Per-stream language, name and delay for an import, keyed by track id.
-  // Without these every imported stream took the source's own metadata and a
-  // zero delay, and there was no way to change any of it before importing.
   const [importOverrides, setImportOverrides] = useState<
     Record<number, ImportTrackOverride>
   >({});
@@ -558,9 +556,8 @@ export function VideoFileEditDialog({
       .filter((track) => importSelectedTrackIds.includes(Number(track.id)))
       .map((track, idx) => {
         const numericId = Number(track.id);
-        // What the user typed in the per-stream editor wins over the source
-        // file's own metadata; each stream becomes its own ExternalFile, so
-        // these belong at file level rather than in trackOverrides.
+        // Each imported stream becomes its own ExternalFile, so overrides
+        // belong at file level rather than in trackOverrides.
         const override = Number.isFinite(numericId) ? importOverrides[numericId] : undefined;
         const trackLabel =
           override?.trackName ||

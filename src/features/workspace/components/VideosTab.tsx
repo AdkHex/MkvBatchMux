@@ -126,10 +126,8 @@ export function VideosTab({
     return filtered;
   }, [externalFilesByVideoId, files, filterValue, normalizedSearch, sortValue]);
 
-  // Cleared when the visible set changes, not just when the search does. A
-  // filter hides rows without deselecting them, and the bulk Delete acts on the
-  // selection -- so a file scrolled out of sight by a filter change could be
-  // deleted with no sign it was ever included.
+  // Cleared on filter change too, not just search: a hidden row stays selected
+  // otherwise, so bulk Delete could remove a file with no sign it was included.
   useEffect(() => {
     setSelectedFileIds([]);
     setSelectedFileId(null);

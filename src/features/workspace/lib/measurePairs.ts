@@ -1,14 +1,5 @@
 /** Deriving measurement pairs from the pairing the mux is about to perform.
- *
- *  There is deliberately no movie/series mode here. The mux already resolves
- *  which external audio belongs to which video, and measuring anything other
- *  than that resolved mapping would let the app measure pair A while muxing
- *  pair B. The movie case falls out of this for free: one audio bulk-applied to
- *  many videos becomes one pair per video, each measured separately, which is
- *  correct because a dub's offset can differ per release.
- *
- *  See docs/AUDIOSYNC_INTEGRATION_PLAN.md §4.
- */
+ *  No movie/series mode: measuring anything other than the mux's resolved mapping risks measuring pair A while muxing pair B. */
 
 import type { ExternalFile, VideoFile } from "@/shared/types";
 import type { MeasurePair } from "@/shared/types/audiosync";
@@ -66,18 +57,10 @@ export interface BuildMeasurementPlanInput {
 
 
 /** The video audio stream measured against when the user has not chosen one.
- *
- *  Index is *among the video's audio tracks*, not among all its tracks: the
- *  engine counts audio streams. Stream 0 regardless of default flags, because
- *  that is AudioSyncMaster's default and the two apps must agree.
- */
+ *  Index is among the video's audio tracks, not all tracks — the engine counts audio streams from zero, same as AudioSyncMaster's default. */
 export const DEFAULT_REFERENCE_TRACK = 0;
 
-/** The video audio track the next measurement of this file would use.
- *
- *  The same answer `buildMeasurementPlan` will reach, exported so a row can say
- *  whether a stored measurement is still answering the current question.
- */
+/** The video audio track the next measurement of this file would use; matches what `buildMeasurementPlan` will reach. */
 export function plannedReferenceTrack(
   video: VideoFile,
   referenceTrackByVideoId: Record<string, number> = {},
@@ -91,11 +74,8 @@ function shouldSkip(file: ExternalFile): boolean {
   if (file.delayProvenance === "manual") return true;
   // Already measured: re-measuring is an explicit, separate action.
   if (file.delayProvenance === "measured") return true;
-  // Already attempted and withheld -- a failure, a cut, or a result too large
-  // to be a delay. Retrying changes nothing about the files, but a correlator
-  // with no true peak to find returns a different arbitrary answer each time,
-  // so pressing the button again looked like the engine was unstable. The
-  // per-row re-measure still forces a retry.
+  // Already attempted and withheld (failure, cut, or too-large result). A correlator with no true
+  // peak returns a different arbitrary answer each retry, so leave it be; per-row re-measure still forces one.
   if (file.measuredDelay) return true;
   return false;
 }
@@ -132,18 +112,8 @@ export function buildMeasurementPlan({
 
     const includedTracks = includedAudioTrackIndices(file);
 
-    // One measurement per file, not per track.
-    //
-    // Every audio track inside an external file was muxed into that container
-    // on one timeline, so they all sit at the same offset from the video --
-    // and main.rs falls back to the file-level delay for any track without its
-    // own, so a single answer already covers them all.
-    //
-    // Measuring each track separately asked a much harder question than
-    // necessary: a Korean dub against a *different encode* of the same Korean
-    // audio shares no waveform detail, and produced "no distinct correlation
-    // peak" or a confident wrong answer, while the easy Hindi-against-Hindi
-    // comparison that answers the question was never surfaced.
+    // One measurement per file, not per track: every track in a container shares the video's
+    // timeline offset, and main.rs falls back to the file-level delay for any track without its own.
     const chosen = chooseMeasurementTracks(video, includedTracks, referenceTrackByVideoId);
 
     measurements.push({
@@ -168,20 +138,7 @@ export function buildMeasurementPlan({
 }
 
 /** Pick the one track pair a file's measurement should be taken from.
- *
- *  Identical to AudioSyncMaster's choice, on purpose: it measures audio stream
- *  0 of the video unless the user picks otherwise (`Index.tsx`:
- *  `trackChoicesRef.current[path] ?? 0`). Two tracks in one container do not
- *  necessarily sit at the same offset, so any smarter default here -- the
- *  default-flagged track, or one sharing the dub's language -- produced a
- *  different delay from AudioSyncMaster on the same files, by tens of
- *  milliseconds, on every multi-track release. A track that correlates more
- *  sharply is still the user's to choose, in both apps, through the reference
- *  picker.
- *
- *  The external side is not a choice at all: the delay is applied to the track
- *  being muxed, so that is the track to measure.
- */
+ *  Defaults to audio stream 0, matching AudioSyncMaster, since a smarter per-track default would silently diverge from it. */
 function chooseMeasurementTracks(
   video: VideoFile,
   includedTracks: Array<{ trackId: number; streamIndex: number }>,

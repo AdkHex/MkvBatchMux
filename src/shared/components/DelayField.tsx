@@ -13,15 +13,7 @@ interface DelayFieldProps {
   hint?: React.ReactNode;
 }
 
-/**
- * A delay input that says so when the value cannot be used.
- *
- * Same markup and metrics as the plain inputs it replaces -- this adds the
- * error state those were missing, it does not restyle the field. The message
- * lives under the field rather than in an alert: the guidance is to keep alerts
- * for things that are actionable and interrupting, and a mistyped number is
- * neither once the field itself points at it.
- */
+/** A delay input that shows an inline error instead of an alert when the value cannot be used. */
 export function DelayField({
   value,
   onChange,
