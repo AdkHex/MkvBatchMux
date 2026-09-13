@@ -223,7 +223,32 @@ and where to get its source.
 - Ionicboy (AdkHex)
 
 ## Screenshots
-![Videos](docs/screenshots/VideoTab.png)
-![Audio Tracks](docs/screenshots/AudioTab.png)
+
+<details>
+<summary>Show screenshots</summary>
+
+**Subtitles**
+
 ![Subtitles](docs/screenshots/SubtitleTab.png)
+
+**Attachments**
+
+![Attachments](docs/screenshots/AttachmentsTab.png)
+
+**Mux Settings**
+
 ![Mux Settings](docs/screenshots/MuxSettings.png)
+
+**Videos**
+
+![Videos](docs/screenshots/VideoTab.png)
+
+**Audio Tracks**
+
+![Audio Tracks](docs/screenshots/AudioTab.png)
+
+**Chapters**
+
+![Chapters](docs/screenshots/ChaptersTab.png)
+
+</details>
