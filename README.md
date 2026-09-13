@@ -15,9 +15,25 @@ A desktop app for scanning MKV collections and batch muxing with a premium, focu
 - Queue management, validation, and progress tracking
 - Advanced mux settings (chapters, attachments, tags, safety checks)
 - Calm dark UI with a live dependency and update panel in Settings
-- Tauri desktop app (Windows/macOS/Linux)
+- Tauri desktop app. Installers are published for **Windows x64**; macOS and
+  Linux build from source but are not shipped or tested yet
 
-## Requirements
+## Install (Windows)
+
+Download the latest `MKVBatchMux_<version>_x64-setup.exe` from
+[Releases](https://github.com/AdkHex/MkvBatchMux/releases/latest) and run it.
+
+The installer is not yet code-signed, so Windows SmartScreen shows
+"Windows protected your PC" on first run. Click **More info → Run anyway**.
+The download itself can be verified: every release lists the installer's
+SHA-256 in its notes, and once installed the app only accepts updates signed
+with the key in `src-tauri/tauri.conf.json`.
+
+MKVToolNix and MediaInfo are not bundled; the app offers to download them from
+their official sites the first time it finds them missing (Settings →
+Dependencies). FFmpeg and the delay-measurement engine are bundled.
+
+## Requirements (building from source)
 - Node.js 20+
 - Rust (stable toolchain)
 - MKVToolNix (for `mkvmerge` / `mkvpropedit`)
@@ -165,14 +181,18 @@ The installer will be located under:
 src-tauri/target/release/bundle/nsis/
 ```
 
-## GitHub Actions (manual build)
-This repo ships a manual workflow for building installers. It does not run on every push.
+## GitHub Actions
 
-1) Go to the Actions tab  
-2) Select **Build installers**  
-3) Click **Run workflow**
+Every push to `main` runs **Build installers**: it bumps the minor version,
+builds the Windows installer with the bundled FFmpeg and analysis engine,
+signs the updater bundle, and publishes a GitHub release marked *latest*.
+Installed apps pick that release up automatically, so **a push to `main` is a
+public release**. The release notes are generated from the commit subjects
+since the previous release, which is why they are written as behaviour
+changes.
 
-Artifacts will be attached to the workflow run.
+The same workflow can be run by hand from the Actions tab (**Run workflow**)
+without pushing.
 
 ---
 
@@ -189,8 +209,18 @@ scripts/      Project maintenance scripts
 
 ---
 
+## License
+
+MKVBatchMux is free software under the [GNU GPL v3](LICENSE).
+Copyright (c) 2026 Ionicboy (AdkHex).
+
+The installer bundles FFmpeg (GPL) and the AudioSync analysis engine, and can
+download MKVToolNix (GPL) and MediaInfo (BSD) on request. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for each component's license
+and where to get its source.
+
 ## Credits
-- Ionicboy (AdkHexx)
+- Ionicboy (AdkHex)
 
 ## Screenshots
 ![Videos](docs/screenshots/VideoTab.png)

@@ -667,6 +667,12 @@ fn register_tools_on_path(app: &AppHandle) {
     }
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Download a dependency and make it runnable.
 ///
 /// Windows-only in practice: it is the platform where these tools are not
@@ -681,14 +687,22 @@ fn install_dependency(app: AppHandle, id: String) -> Result<String, String> {
         Installer,
     }
 
-    let (url, kind, probe) = match id.as_str() {
+    // Each URL is pinned to a release and to that release's SHA-256, so what
+    // runs is exactly the file that was checked when the pin was made -- an
+    // installer runs elevated, and HTTPS alone says nothing about a mirror
+    // that was swapped out upstream. To move to a newer release, change the
+    // URL and the digest together; MKVToolNix publishes a `.sha256` next to
+    // every installer, MediaInfo's is taken from the download itself.
+    let (url, sha256, kind, probe) = match id.as_str() {
         "mediainfo" => (
-            "https://mediaarea.net/download/binary/mediainfo/24.06/MediaInfo_CLI_24.06_Windows_x64.zip",
+            "https://mediaarea.net/download/binary/mediainfo/26.05/MediaInfo_CLI_26.05_Windows_x64.zip",
+            "f7f80620ce6d14f4995f0de6f98e3ef18ad29496db01899571152ee3311229f9",
             Kind::Zip,
             "mediainfo",
         ),
         "mkvtoolnix" => (
-            "https://mkvtoolnix.download/windows/releases/84.0/mkvtoolnix-64-bit-84.0-setup.exe",
+            "https://mkvtoolnix.download/windows/releases/101.0/mkvtoolnix-64-bit-101.0-setup.exe",
+            "2a170a71da6d1aecaf513c88ca7da38f8c9877790674c4df667a7c28d52dd418",
             Kind::Installer,
             "mkvmerge",
         ),
@@ -708,6 +722,15 @@ fn install_dependency(app: AppHandle, id: String) -> Result<String, String> {
     let bytes = response
         .bytes()
         .map_err(|err| format!("Download failed: {err}"))?;
+
+    let actual = sha256_hex(&bytes);
+    if actual != sha256 {
+        return Err(format!(
+            "The downloaded {id} did not match the expected checksum, so it was not \
+             installed. Expected {sha256}, got {actual}. Install it manually from \
+             the official site or try again later."
+        ));
+    }
 
     match kind {
         Kind::Zip => {
@@ -3668,6 +3691,18 @@ fn open_log_file(app: AppHandle, state: State<AppState>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sha256_hex_matches_the_standard_test_vector() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 
     fn track(id: &str, track_type: &str, is_default: Option<bool>) -> TrackInfo {
         TrackInfo {

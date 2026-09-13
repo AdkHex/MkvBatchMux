@@ -34,6 +34,9 @@
     },
     "bundle": {
       "identifier": "com.ionicboy.mkvbatchmuxingtool",
+      "publisher": "Ionicboy (AdkHex)",
+      "copyright": "Copyright (c) 2026 Ionicboy (AdkHex). Licensed under the GNU GPL v3.",
+      "shortDescription": "Batch mux MKV files with MKVToolNix",
       "targets": [
         "nsis",
         "updater"
@@ -44,7 +47,9 @@
       ],
       "resources": [
         "resources/engine",
-        "resources/ffmpeg"
+        "resources/ffmpeg",
+        "../LICENSE",
+        "../THIRD_PARTY_NOTICES.md"
       ],
       "active": true,
       "windows": {
@@ -52,7 +57,8 @@
           "installMode": "perMachine",
           "languages": [
             "English"
-          ]
+          ],
+          "license": "../LICENSE"
         }
       }
     },
