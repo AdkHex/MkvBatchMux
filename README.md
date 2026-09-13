@@ -106,9 +106,10 @@ report the **same number** for the same files:
 - FFmpeg decodes the audio, and the build matters: builds differ in whether
   they trim E-AC3 / AC-3 / TrueHD decoder priming inside a container, which
   shifts every delay on such a track by a constant tens of milliseconds.
-  AudioSyncMaster uses the FFmpeg on your PATH, so this app does too whenever
-  `ffmpeg` and `ffprobe` are both found there; the bundled copy is only used
-  on a machine without one.
+  AudioSyncMaster uses the FFmpeg installed on your machine, so this app does
+  too: it searches your PATH, the registry PATH and the winget/Chocolatey/Scoop
+  locations, and only falls back to the bundled copy when none is found.
+  Settings → Dependencies shows which `ffmpeg.exe` is in use.
 
 <details>
 <summary>The one deliberate difference from AudioSyncMaster</summary>

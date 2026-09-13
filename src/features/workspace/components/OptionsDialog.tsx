@@ -522,6 +522,11 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                     <div className="text-xs text-muted-foreground truncate">
                       {item.available && item.version ? item.version : item.purpose}
                     </div>
+                    {item.available && item.path ? (
+                      <div className="text-[11px] text-muted-foreground/70 truncate" title={item.path}>
+                        {item.path}
+                      </div>
+                    ) : null}
                   </div>
                   {!item.available && !item.bundled ? (
                     <Button

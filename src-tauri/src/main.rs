@@ -607,6 +607,8 @@ pub struct DependencyStatus {
     pub version: Option<String>,
     /// True when the app ships it, so the user has nothing to install.
     pub bundled: bool,
+    /// Where the tool was found, when that is worth showing.
+    pub path: Option<String>,
     /// Whether the app still works without it.
     pub required: bool,
     /// Official download page, opened by the Install button.
@@ -771,6 +773,7 @@ fn dependency_status(app: AppHandle) -> Vec<DependencyStatus> {
             available: tool_available("mkvmerge", "-V"),
             version: tool_version("mkvmerge", "-V"),
             bundled: false,
+            path: None,
             required: true,
             download_url: "https://mkvtoolnix.download/downloads.html".into(),
         },
@@ -781,6 +784,7 @@ fn dependency_status(app: AppHandle) -> Vec<DependencyStatus> {
             available: tool_available("mediainfo", "--Version"),
             version: tool_version("mediainfo", "--Version"),
             bundled: false,
+            path: None,
             required: true,
             download_url: "https://mediaarea.net/en/MediaInfo/Download/Windows".into(),
         },
@@ -791,6 +795,7 @@ fn dependency_status(app: AppHandle) -> Vec<DependencyStatus> {
             available: audiosync::ffmpeg_available_for(&app),
             version: tool_version(&audiosync::ffmpeg_tool(&app, "ffmpeg"), "-version"),
             bundled: ffmpeg_bundled,
+            path: audiosync::ffmpeg_pair(&app).map(|pair| pair.ffmpeg.to_string_lossy().to_string()),
             required: false,
             download_url: "https://www.gyan.dev/ffmpeg/builds/".into(),
         },
@@ -803,6 +808,7 @@ fn dependency_status(app: AppHandle) -> Vec<DependencyStatus> {
             // apps must show the same one to be expected to agree.
             version: engine.engine_version.clone(),
             bundled: engine.engine_available,
+            path: None,
             required: false,
             download_url: "https://github.com/AdkHex/AudioSyncMaster".into(),
         },

@@ -211,6 +211,7 @@ export interface DependencyStatus {
   version: string | null;
   /** Shipped with the app, so there is nothing for the user to install. */
   bundled: boolean;
+  path: string | null;
   /** False for tools whose absence only disables one feature. */
   required: boolean;
   downloadUrl: string;

@@ -19,68 +19,156 @@ use crate::hidden_command;
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_millis(2000);
 const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
-static FFMPEG_AVAILABLE: OnceLock<bool> = OnceLock::new();
-static FFMPEG_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-static FFMPEG_ON_PATH: OnceLock<bool> = OnceLock::new();
+static FFMPEG: OnceLock<Option<FfmpegPair>> = OnceLock::new();
 
-/// Directory holding the bundled ffmpeg/ffprobe, if this build shipped them.
-/// Lets delay measurement work on a machine with no FFmpeg installed.
-fn bundled_ffmpeg_dir(app: &AppHandle) -> Option<PathBuf> {
-    FFMPEG_DIR
+/// The ffmpeg/ffprobe pair measurement runs on.
+#[derive(Debug, Clone)]
+pub struct FfmpegPair {
+    pub ffmpeg: PathBuf,
+    pub ffprobe: PathBuf,
+    pub bundled: bool,
+}
+
+fn exe(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
+}
+
+fn pair_in(dir: &std::path::Path, bundled: bool) -> Option<FfmpegPair> {
+    let ffmpeg = dir.join(exe("ffmpeg"));
+    let ffprobe = dir.join(exe("ffprobe"));
+    (ffmpeg.is_file() && ffprobe.is_file()).then_some(FfmpegPair { ffmpeg, ffprobe, bundled })
+}
+
+/// Directories an installed FFmpeg may live in, beyond this process's PATH.
+/// A process started by the updater's installer can inherit a PATH without the
+/// user's entries, so the registry PATH and the common package-manager
+/// locations are searched too.
+fn extra_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        for (hive, key) in [
+            ("HKCU", r"Environment"),
+            ("HKLM", r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+        ] {
+            if let Some(value) = registry_path(&format!("{hive}\\{key}")) {
+                dirs.extend(std::env::split_paths(&expand_env(&value)));
+            }
+        }
+        let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+        if let Some(local) = var("LOCALAPPDATA") {
+            dirs.push(local.join("Microsoft").join("WinGet").join("Links"));
+        }
+        if let Some(program_data) = var("ProgramData") {
+            dirs.push(program_data.join("chocolatey").join("bin"));
+        }
+        if let Some(home) = var("USERPROFILE") {
+            dirs.push(home.join("scoop").join("shims"));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+            dirs.push(PathBuf::from(dir));
+        }
+    }
+    dirs
+}
+
+#[cfg(target_os = "windows")]
+fn registry_path(key: &str) -> Option<String> {
+    let output = hidden_command("reg")
+        .args(["query", key, "/v", "Path"])
+        .output()
+        .ok()?;
+    parse_reg_query(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn parse_reg_query(text: &str) -> Option<String> {
+    // Output line: "    Path    REG_EXPAND_SZ    C:\...;C:\..."
+    let line = text.lines().map(str::trim).find(|line| line.starts_with("Path"))?;
+    let rest = line.strip_prefix("Path")?.trim_start();
+    let (_, value) = rest.split_once(char::is_whitespace)?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn expand_env(value: &str) -> String {
+    let mut out = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        match rest[start + 1..].find('%') {
+            Some(len) => {
+                let name = &rest[start + 1..start + 1 + len];
+                match std::env::var(name) {
+                    Ok(v) => out.push_str(&v),
+                    Err(_) => out.push_str(&rest[start..start + len + 2]),
+                }
+                rest = &rest[start + len + 2..];
+            }
+            None => {
+                out.push_str(&rest[start..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn runs(binary: &std::path::Path) -> bool {
+    crate::tool_available(&binary.to_string_lossy(), "-version")
+}
+
+/// Resolve the pair once. An installed FFmpeg wins over the bundled one:
+/// AudioSyncMaster measures with the installed one, and different builds
+/// decode E-AC-3/TrueHD priming differently, so only the same binary gives
+/// the same delay.
+pub fn ffmpeg_pair(app: &AppHandle) -> Option<FfmpegPair> {
+    FFMPEG
         .get_or_init(|| {
+            let process_path = std::env::var_os("PATH").unwrap_or_default();
+            let candidates = std::env::split_paths(&process_path)
+                .chain(extra_search_dirs())
+                .filter(|dir| !dir.as_os_str().is_empty());
+            for dir in candidates {
+                if let Some(pair) = pair_in(&dir, false) {
+                    if runs(&pair.ffmpeg) && runs(&pair.ffprobe) {
+                        return Some(pair);
+                    }
+                }
+            }
             let dir = app.path_resolver().resolve_resource("resources/ffmpeg")?;
-            let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-            let probe = if cfg!(windows) {
-                "ffprobe.exe"
-            } else {
-                "ffprobe"
-            };
-            // Require both tools present; a half-populated resource dir would
-            // otherwise fail later with a more confusing error.
-            (dir.join(exe).is_file() && dir.join(probe).is_file()).then_some(dir)
+            pair_in(&dir, true).filter(|pair| runs(&pair.ffmpeg) && runs(&pair.ffprobe))
         })
         .clone()
 }
 
-/// Whether the user's own ffmpeg and ffprobe are on PATH.
-/// PATH wins over the bundled pair: different ffmpeg builds decode audio
-/// slightly differently, shifting measured delay by tens of ms.
-fn ffmpeg_on_path() -> bool {
-    *FFMPEG_ON_PATH.get_or_init(|| {
-        crate::tool_available("ffmpeg", "-version") && crate::tool_available("ffprobe", "-version")
-    })
-}
-
-/// Whether measurement will run on the bundled ffmpeg pair rather than the
-/// user's own.
 pub fn ffmpeg_is_bundled(app: &AppHandle) -> bool {
-    !ffmpeg_on_path() && bundled_ffmpeg_dir(app).is_some()
+    ffmpeg_pair(app).map(|pair| pair.bundled).unwrap_or(false)
 }
 
-/// The bare name when the tool is on PATH, else the bundled tool's absolute
-/// path, else the bare name so the failure names the missing tool.
+/// Absolute path of the resolved tool, else the bare name so the failure
+/// names the missing tool.
 pub fn ffmpeg_tool(app: &AppHandle, tool: &str) -> String {
-    if ffmpeg_on_path() {
-        return tool.to_string();
-    }
-    let name = if cfg!(windows) {
-        format!("{tool}.exe")
-    } else {
-        tool.to_string()
-    };
-    match bundled_ffmpeg_dir(app) {
-        Some(dir) => dir.join(&name).to_string_lossy().to_string(),
+    match ffmpeg_pair(app) {
+        Some(pair) => {
+            let path = if tool == "ffprobe" { pair.ffprobe } else { pair.ffmpeg };
+            path.to_string_lossy().to_string()
+        }
         None => tool.to_string(),
     }
 }
 
-/// Mirrors `mediainfo_available()` / `mkvmerge_available()` in main.rs, but
-/// falls back to the bundled copies so a fresh install reports available.
 pub fn ffmpeg_available_for(app: &AppHandle) -> bool {
-    *FFMPEG_AVAILABLE.get_or_init(|| {
-        crate::tool_available(&ffmpeg_tool(app, "ffmpeg"), "-version")
-            && crate::tool_available(&ffmpeg_tool(app, "ffprobe"), "-version")
-    })
+    ffmpeg_pair(app).is_some()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -511,20 +599,18 @@ fn find_python(repo_root: &std::path::Path) -> PathBuf {
 /// Point the engine at the ffmpeg pair this app resolved via env vars, rather
 /// than letting it repeat PATH/bundled-copy resolution itself.
 fn apply_ffmpeg_path(app: &AppHandle, command: &mut Command) {
-    if ffmpeg_on_path() {
-        return;
-    }
-    let Some(dir) = bundled_ffmpeg_dir(app) else {
+    let Some(pair) = ffmpeg_pair(app) else {
         return;
     };
-    let exe = if cfg!(windows) { ".exe" } else { "" };
-    command.env("AUDIOSYNC_FFMPEG", dir.join(format!("ffmpeg{exe}")));
-    command.env("AUDIOSYNC_FFPROBE", dir.join(format!("ffprobe{exe}")));
-    let existing = std::env::var_os("PATH").unwrap_or_default();
-    let mut entries = vec![dir];
-    entries.extend(std::env::split_paths(&existing));
-    if let Ok(joined) = std::env::join_paths(entries) {
-        command.env("PATH", joined);
+    command.env("AUDIOSYNC_FFMPEG", &pair.ffmpeg);
+    command.env("AUDIOSYNC_FFPROBE", &pair.ffprobe);
+    if let Some(dir) = pair.ffmpeg.parent() {
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut entries = vec![dir.to_path_buf()];
+        entries.extend(std::env::split_paths(&existing));
+        if let Ok(joined) = std::env::join_paths(entries) {
+            command.env("PATH", joined);
+        }
     }
 }
 
@@ -729,6 +815,17 @@ pub fn measure_delays_start(
     let run_id = request.run_id.clone();
     let total = request.pairs.len();
 
+    if let Some(pair) = ffmpeg_pair(&app) {
+        let _ = app.emit_all(
+            "audiosync-log",
+            format!(
+                "Decoding with {}{}",
+                pair.ffmpeg.display(),
+                if pair.bundled { " (bundled)" } else { "" }
+            ),
+        );
+    }
+
     // Map the engine's per-result paths back to the key the frontend sent, so
     // write-back never has to re-derive the pairing.
     let mut keys_by_pair: std::collections::HashMap<(String, String), String> =
@@ -897,6 +994,22 @@ pub fn measure_delays_cancel(engine: tauri::State<'_, EngineHandle>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reg_query_output_yields_the_path_value() {
+        let out = "\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    C:\\Tools\\ffmpeg\\bin;%USERPROFILE%\\bin\r\n\r\n";
+        assert_eq!(
+            parse_reg_query(out).as_deref(),
+            Some("C:\\Tools\\ffmpeg\\bin;%USERPROFILE%\\bin")
+        );
+        assert_eq!(parse_reg_query("ERROR: The system was unable to find the specified registry key or value."), None);
+    }
+
+    #[test]
+    fn env_references_are_expanded_and_unknown_ones_kept() {
+        std::env::set_var("MBM_TEST_DIR", "C:\\X");
+        assert_eq!(expand_env("%MBM_TEST_DIR%\\bin;%MBM_NOPE%\\y;plain"), "C:\\X\\bin;%MBM_NOPE%\\y;plain");
+    }
 
     /// The stamp is read from beside the binary in both layouts PyInstaller
     /// produces, and its absence is reported as such rather than invented.
