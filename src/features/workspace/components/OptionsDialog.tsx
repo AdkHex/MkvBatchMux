@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { FolderOpen, Settings, Info, RotateCcw, Download, Moon, X, SlidersHorizontal, Folder, FileType2, Languages, Plug, RefreshCw } from "lucide-react";
+import { FolderOpen, Settings, Info, RotateCcw, Download, Moon, X, SlidersHorizontal, Folder, FileType2, Languages, Plug, RefreshCw, Gauge } from "lucide-react";
 import { Button } from "@/shared/ui/button";
 import { Select, SelectItem, SelectValue } from "@/shared/ui/select";
-import type { OptionsData, Preset } from "@/shared/types";
+import type { MeasurementSettings, OptionsData, Preset } from "@/shared/types";
+import { ENGINE_DEFAULTS } from "@/shared/types/audiosync";
 import {
   pickDirectory,
   dependencyStatus,
@@ -16,6 +17,12 @@ import { LanguageSelect } from "@/features/workspace/components/LanguageSelect";
 import { cn } from "@/shared/lib/utils";
 import { toast } from "@/shared/hooks/use-toast";
 import { UpdateChecker } from "./UpdateChecker";
+
+function clampInt(raw: string, min: number, max: number, fallback: number): number {
+  const value = Math.round(Number(raw));
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
 
 interface OptionsDialogProps {
   open: boolean;
@@ -40,6 +47,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
   const [chapterExtensions, setChapterExtensions] = useState("xml");
   const [subtitleLanguage, setSubtitleLanguage] = useState("eng");
   const [audioLanguage, setAudioLanguage] = useState("hin");
+  const [measurement, setMeasurement] = useState<MeasurementSettings>({ ...ENGINE_DEFAULTS });
   const [dependencies, setDependencies] = useState<DependencyStatus[]>([]);
   const [dependenciesLoading, setDependenciesLoading] = useState(false);
   const [installingId, setInstallingId] = useState<string | null>(null);
@@ -88,6 +96,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
     setPresetIndex(index);
     setAskForPreset(Boolean(options.Choose_Preset_On_Startup));
     setDarkMode(Boolean(options.Dark_Mode));
+    setMeasurement({ ...ENGINE_DEFAULTS, ...options.Measurement });
     hydrateFromPreset(preset);
   }, [options]);
 
@@ -202,6 +211,12 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                 FavoritePresetId: presetIndex,
                 Choose_Preset_On_Startup: askForPreset,
                 Dark_Mode: darkMode,
+                Measurement: {
+                  windowCount: clampInt(String(measurement.windowCount), 2, 12, ENGINE_DEFAULTS.windowCount),
+                  windowSeconds: clampInt(String(measurement.windowSeconds), 10, 180, ENGINE_DEFAULTS.windowSeconds),
+                  maxOffsetMs:
+                    clampInt(String(measurement.maxOffsetMs / 1000), 5, 300, ENGINE_DEFAULTS.maxOffsetMs / 1000) * 1000,
+                },
               });
               onOpenChange(false);
             }}
@@ -457,6 +472,77 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
               <span className="text-xs text-muted-foreground">Audio:</span>
               <LanguageSelect value={audioLanguage} onChange={setAudioLanguage} className="w-40 h-[30px]" />
             </div>
+          </div>
+        </section>
+
+        <section className="fluent-surface--flat p-3 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Gauge className="w-4 h-4 text-muted-foreground" />
+                <h3 className="text-xs font-semibold text-muted-foreground">Delay measurement</h3>
+              </div>
+              <p className="text-xs text-muted-foreground/70 mt-1">
+                Same parameters as AudioSyncMaster's Settings. Keep them identical in both apps to get
+                identical delays.
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-foreground shrink-0"
+              onClick={() => setMeasurement({ ...ENGINE_DEFAULTS })}
+            >
+              <RotateCcw className="w-3.5 h-3.5 mr-1" />
+              Defaults
+            </Button>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <label className="space-y-1">
+              <span className="text-xs text-muted-foreground">Sample windows</span>
+              <TextField
+                type="number"
+                min={2}
+                max={12}
+                step={1}
+                value={measurement.windowCount}
+                onChange={(e) => setMeasurement((m) => ({ ...m, windowCount: Number(e.target.value) }))}
+                onBlur={(e) =>
+                  setMeasurement((m) => ({ ...m, windowCount: clampInt(e.target.value, 2, 12, ENGINE_DEFAULTS.windowCount) }))
+                }
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-muted-foreground">Window length (s)</span>
+              <TextField
+                type="number"
+                min={10}
+                max={180}
+                step={5}
+                value={measurement.windowSeconds}
+                onChange={(e) => setMeasurement((m) => ({ ...m, windowSeconds: Number(e.target.value) }))}
+                onBlur={(e) =>
+                  setMeasurement((m) => ({ ...m, windowSeconds: clampInt(e.target.value, 10, 180, ENGINE_DEFAULTS.windowSeconds) }))
+                }
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-muted-foreground">Maximum offset (s)</span>
+              <TextField
+                type="number"
+                min={5}
+                max={300}
+                step={5}
+                value={Math.round(measurement.maxOffsetMs / 1000)}
+                onChange={(e) => setMeasurement((m) => ({ ...m, maxOffsetMs: Number(e.target.value) * 1000 }))}
+                onBlur={(e) =>
+                  setMeasurement((m) => ({
+                    ...m,
+                    maxOffsetMs: clampInt(e.target.value, 5, 300, ENGINE_DEFAULTS.maxOffsetMs / 1000) * 1000,
+                  }))
+                }
+              />
+            </label>
           </div>
         </section>
 

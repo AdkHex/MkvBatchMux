@@ -88,9 +88,29 @@ impl Default for Preset {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MeasurementSettings {
+    window_seconds: f64,
+    window_count: u32,
+    max_offset_ms: f64,
+}
+
+impl Default for MeasurementSettings {
+    fn default() -> Self {
+        Self {
+            window_seconds: 45.0,
+            window_count: 6,
+            max_offset_ms: 60000.0,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct OptionsData {
     #[serde(rename = "Presets")]
     presets: Vec<Preset>,
+    #[serde(rename = "Measurement", default)]
+    measurement: MeasurementSettings,
     #[serde(rename = "FavoritePresetId")]
     favorite_preset_id: usize,
     #[serde(rename = "Dark_Mode")]
@@ -105,6 +125,7 @@ impl Default for OptionsData {
     fn default() -> Self {
         Self {
             presets: vec![Preset::default()],
+            measurement: MeasurementSettings::default(),
             favorite_preset_id: 0,
             dark_mode: false,
             attachment_expert_mode_info_message_show: true,

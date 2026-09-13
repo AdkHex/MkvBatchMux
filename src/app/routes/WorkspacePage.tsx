@@ -1028,6 +1028,7 @@ const WorkspacePage = () => {
             onVideoFilesChange={handleVideoFilesChange}
             onAddTrack={handleNewTrack}
             preset={activePreset}
+            measurement={options?.Measurement}
             searchValue={searchValue}
             filterValue={fileFilter}
             sortValue={fileSort}

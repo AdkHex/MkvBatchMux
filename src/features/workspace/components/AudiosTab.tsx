@@ -22,7 +22,7 @@ import {
   type ImportTrackOverride,
 } from "./ImportTrackEditDialog";
 import { cn } from "@/shared/lib/utils";
-import type { VideoFile, ExternalFile, Preset, StretchSetting } from "@/shared/types";
+import type { VideoFile, ExternalFile, MeasurementSettings, Preset, StretchSetting } from "@/shared/types";
 import { pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { plannedReferenceTrack } from "@/features/workspace/lib/measurePairs";
@@ -129,6 +129,7 @@ export function AudiosTab({
   onVideoFilesChange,
   onAddTrack,
   preset,
+  measurement,
   searchValue = "",
   filterValue = "all",
   sortValue = "loaded",

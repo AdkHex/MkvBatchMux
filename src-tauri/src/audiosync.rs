@@ -819,9 +819,12 @@ pub fn measure_delays_start(
         let _ = app.emit_all(
             "audiosync-log",
             format!(
-                "Decoding with {}{}",
+                "Decoding with {}{} · {} windows × {} s, max offset {} s",
                 pair.ffmpeg.display(),
-                if pair.bundled { " (bundled)" } else { "" }
+                if pair.bundled { " (bundled)" } else { "" },
+                request.window_count,
+                request.window_seconds,
+                request.max_offset_ms / 1000.0
             ),
         );
     }

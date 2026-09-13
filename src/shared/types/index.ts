@@ -125,8 +125,15 @@ export interface Preset {
   Default_Favorite_Audio_Languages: string[];
 }
 
+export interface MeasurementSettings {
+  windowSeconds: number;
+  windowCount: number;
+  maxOffsetMs: number;
+}
+
 export interface OptionsData {
   Presets: Preset[];
+  Measurement?: MeasurementSettings;
   FavoritePresetId: number;
   Dark_Mode: boolean;
   Attachment_Expert_Mode_Info_Message_Show: boolean;

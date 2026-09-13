@@ -99,8 +99,11 @@ report the **same number** for the same files:
 
 - The engine is pinned to an AudioSyncMaster **release** (`v2.8.0`), never to
   its `main` branch. Settings → *Audio analysis engine* shows the stamp.
-- The measurement parameters are AudioSyncMaster's defaults, and the request
-  is the one it sends.
+- The measurement parameters (sample windows, window length, maximum offset)
+  default to AudioSyncMaster's and are editable in Settings → *Delay
+  measurement*. If you changed them in AudioSyncMaster, set the same values
+  here — a different window count samples different points in the film and
+  gives a different number.
 - The reference track defaults to the video's **first audio stream**, as in
   AudioSyncMaster. Choose another in the *Reference audio track* panel.
 - FFmpeg decodes the audio, and the build matters: builds differ in whether

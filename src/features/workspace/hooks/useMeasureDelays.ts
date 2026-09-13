@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/shared/hooks/use-toast";
-import type { ExternalFile, VideoFile } from "@/shared/types";
+import type { ExternalFile, MeasurementSettings, VideoFile } from "@/shared/types";
 import type { EngineStatus, SyncResult } from "@/shared/types/audiosync";
 import { ENGINE_DEFAULTS } from "@/shared/types/audiosync";
 import {
@@ -32,12 +32,15 @@ interface UseMeasureDelaysInput {
   audioFiles: ExternalFile[];
   onAudioFilesChange: (files: ExternalFile[]) => void;
   referenceTrackByVideoId: Record<string, number>;
+  /** Engine parameters; must match AudioSyncMaster's settings for the two to agree. */
+  measurement?: MeasurementSettings;
 }
 
 export function useMeasureDelays({
   videoFiles,
   audioFiles,
   onAudioFilesChange,
+  measurement,
   referenceTrackByVideoId,
 }: UseMeasureDelaysInput) {
   const [engine, setEngine] = useState<EngineStatus | null>(null);
@@ -209,6 +212,7 @@ export function useMeasureDelays({
           runId,
           pairs: plan.measurements.map((m) => m.pair),
           ...ENGINE_DEFAULTS,
+          ...measurement,
         });
       } catch (error) {
         setIsMeasuring(false);
@@ -221,7 +225,7 @@ export function useMeasureDelays({
         });
       }
     },
-    [engine, isMeasuring, referenceTrackByVideoId, videoFiles],
+    [engine, isMeasuring, referenceTrackByVideoId, videoFiles, measurement],
   );
 
   const cancel = useCallback(async () => {
