@@ -1,20 +1,6 @@
 /**
  * Build (or copy) the AudioSync analysis engine into src-tauri/resources/engine.
- *
- * The engine is not vendored into this repo: it is under active development in
- * AudioSyncMaster, and a duplicated copy of the Python source would silently
- * diverge from the fixes that make its measurements accurate. This script
- * builds it from that checkout instead.
- *
- * Which revision gets built is pinned in package.json under `audiosyncEngine`,
- * and it is the release the AudioSyncMaster app itself ships. That pin is the
- * whole reason the two apps agree: they only measure the same delay for the
- * same files when they run the same engine code, and "whatever AudioSyncMaster's
- * main branch held at build time" is not the same engine as "the AudioSyncMaster
- * release installed on the user's machine". Building from an unreleased commit
- * once shipped an engine that flagged cuts and drift on files the released one
- * measured cleanly, and the two apps disagreed by tens of milliseconds -- with
- * nothing in either app to say why.
+ * The revision built is pinned in package.json's `audiosyncEngine.ref`, matching the AudioSyncMaster release.
  *
  * Usage:
  *   npm run fetch-engine                    # build from the sibling checkout
@@ -35,13 +21,10 @@ import path from "node:path";
 const root = process.cwd();
 const destination = path.join(root, "src-tauri", "resources", "engine");
 
-/** Stamped beside the built engine and read back by the app, so Settings can
- *  show which engine build is measuring -- the one fact that was missing when
- *  the two apps disagreed. Must match ENGINE_VERSION_FILE in audiosync.rs. */
+/** Stamped beside the built engine and read back by the app. Must match ENGINE_VERSION_FILE in audiosync.rs. */
 const VERSION_FILE = "ENGINE_VERSION";
 
-/** Fail with something the reader can act on. A silently engine-less build is
- *  the one outcome this script exists to prevent. */
+/** Fail with something the reader can act on. */
 function fail(message, hint) {
   console.error(`\nfetch-engine: ${message}\n`);
   if (hint) console.error(`${hint}\n`);
@@ -72,9 +55,8 @@ function resolveRepo() {
     return explicit;
   }
 
-  // A sibling checkout, at this level or any above it -- the same walk the
-  // app's own development fallback makes (audiosync.rs: dev_bridge_script),
-  // so the two find the same checkout.
+  // A sibling checkout, at this level or above -- matches the walk in
+  // audiosync.rs's dev fallback, so both find the same checkout.
   const tried = [];
   for (let dir = root; ; dir = path.dirname(dir)) {
     const candidate = path.join(path.dirname(dir), "AudioSyncMaster");
@@ -101,10 +83,7 @@ function git(repo, args) {
 
 /**
  * Confirm the checkout is at the pinned revision with a clean engine tree.
- *
- * Returns the version string to stamp on the build. Refuses anything else
- * unless AUDIOSYNC_ALLOW_UNPINNED is set -- and then says so in the stamp, so a
- * build made that way can never be mistaken for a release engine.
+ * Returns the version string to stamp on the build.
  */
 function verifyCheckout(repo, pin) {
   const allowUnpinned = process.env.AUDIOSYNC_ALLOW_UNPINNED === "1";
@@ -122,10 +101,8 @@ function verifyCheckout(repo, pin) {
 
   const described = git(repo, ["describe", "--tags", "--always", "--dirty"]) ?? head.slice(0, 7);
   const pinned = git(repo, ["rev-parse", "--verify", "--quiet", `${pin.ref}^{commit}`]);
-  // Only the engine's own files matter: an edit to the AudioSyncMaster UI does
-  // not change what this build measures. Untracked files do not either -- a
-  // venv or __pycache__ is not a source change, and a new module can only be
-  // reached through an edit to a tracked one, which does show up here.
+  // Only engine source files matter; untracked files (venv, __pycache__)
+  // aren't source changes.
   const dirty = git(repo, [
     "status",
     "--porcelain",
@@ -210,8 +187,7 @@ function verify() {
     // PyInstaller sets this itself, but a copied tree can lose the bit.
     fs.chmodSync(found, 0o755);
   }
-  // An engine that cannot import its dependencies is the most common
-  // packaging failure, and it is invisible until a user presses Measure.
+  // Catches a missing dependency before a user hits Measure.
   const ping = spawnSync(found, [], { input: '{"command":"ping"}\n', encoding: "utf8" });
   if (ping.error || !String(ping.stdout).includes('"pong"')) {
     fail(
@@ -274,14 +250,9 @@ console.log(`fetch-engine: using ${python}`);
 const buildDir = path.join(repo, "build", "mkvbatchmux-pyi");
 const distDir = path.join(repo, "build", "mkvbatchmux-engine");
 
-// These flags are AudioSyncMaster's own release workflow's, verbatim (its
-// .github/workflows, "Build the analysis engine"), so the bundle here is built
-// the way the bundle in the AudioSyncMaster installer is. In particular
-// --onedir, NOT --onefile: a onefile build re-extracts itself to a temp
-// directory on every launch, which for an engine spawned per batch is both
-// slow and a reliable source of antivirus false positives. The hidden imports
-// are what let the frozen engine find its own package: without --paths the
-// build only worked because `python -m` happened to put the cwd on sys.path.
+// --onedir, not --onefile: a onefile build re-extracts to a temp directory on
+// every launch, which is slow and trips antivirus. Hidden imports let the
+// frozen build find its own package without relying on `python -m`'s cwd.
 const result = spawnSync(
   python,
   [

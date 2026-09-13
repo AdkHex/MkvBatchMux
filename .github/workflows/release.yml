@@ -1,0 +1,253 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: npm ci
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" != "v$version" ]]; then
+            echo "::error::Tag ${{ github.ref_name }} does not match package.json version $version."
+            exit 1
+          fi
+
+      - name: Resolve the analysis engine
+        id: engine
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref=$(node -p "require('./package.json').audiosyncEngine.ref")
+          repo=$(node -p "require('./package.json').audiosyncEngine.repository")
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          latest=$(gh release view --repo "$repo" --json tagName -q .tagName 2>/dev/null || true)
+          if [ -n "$latest" ] && [ "$latest" != "$ref" ]; then
+            echo "::warning title=Engine pin behind::$repo's latest release is $latest; this build pins $ref."
+          fi
+
+      - name: Check out AudioSyncMaster
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.engine.outputs.repo }}
+          ref: ${{ steps.engine.outputs.ref }}
+          path: AudioSyncMaster
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Fetch FFmpeg
+        run: npm run fetch-ffmpeg
+
+      - name: Build the analysis engine
+        shell: bash
+        env:
+          AUDIOSYNC_REPO: ${{ github.workspace }}/AudioSyncMaster
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          for req in requirements-dev.txt requirements.txt; do
+            [ -f "$AUDIOSYNC_REPO/python/$req" ] && python -m pip install -r "$AUDIOSYNC_REPO/python/$req"
+          done
+          npm run fetch-engine
+
+      - name: Smoke-test the engine
+        shell: bash
+        env:
+          AUDIOSYNC_REPO: ${{ github.workspace }}/AudioSyncMaster
+          PINNED: ${{ steps.engine.outputs.ref }}
+        run: |
+          set -euo pipefail
+          stamp=$(cat src-tauri/resources/engine/ENGINE_VERSION)
+          echo "Bundled engine: $stamp"
+          case "$stamp" in
+            "AudioSyncMaster $PINNED ("*) ;;
+            *) echo "::error::Bundled engine is '$stamp', not the pinned $PINNED."; exit 1 ;;
+          esac
+
+          ENGINE=""
+          for candidate in src-tauri/resources/engine/audiosync-cli.exe \
+                           src-tauri/resources/engine/audiosync-cli/audiosync-cli.exe; do
+            [ -f "$candidate" ] && ENGINE="$PWD/$candidate" && break
+          done
+          [ -n "$ENGINE" ] || { echo "::error::No audiosync-cli binary to test."; exit 1; }
+          for f in ffmpeg.exe ffprobe.exe; do
+            [ -f "src-tauri/resources/ffmpeg/$f" ] || { echo "::error::Missing $f."; exit 1; }
+          done
+
+          export PATH="$PWD/src-tauri/resources/ffmpeg:$PATH"
+          (cd "$AUDIOSYNC_REPO" && python tests/make_fixtures.py)
+          python - "$ENGINE" "$AUDIOSYNC_REPO" <<'CHECK'
+          import json, os, subprocess, sys
+          engine, repo = sys.argv[1], sys.argv[2]
+          fixture = lambda name: os.path.join(repo, "tests", "fixtures", name)
+          request = {
+              "command": "analyze",
+              "pairs": [{
+                  "primaryPath": fixture("offset_500ms_primary.wav"),
+                  "secondaryPath": fixture("offset_500ms_secondary.wav"),
+                  "key": "smoke", "method": "mkvbatchmux", "score": 1,
+                  "primaryTrack": 0, "secondaryTrack": 0,
+              }],
+              "windowSeconds": 8, "windowCount": 3, "maxOffsetMs": 60000, "maxWorkers": 1,
+          }
+          out = subprocess.run(
+              [engine], input=json.dumps(request) + "\n" + json.dumps({"command": "shutdown"}) + "\n",
+              capture_output=True, text=True, timeout=300,
+          )
+          delay = None
+          for line in out.stdout.splitlines():
+              try:
+                  event = json.loads(line)
+              except ValueError:
+                  continue
+              if event.get("type") == "result":
+                  delay = event.get("delayMs")
+          if delay is None or abs(delay - 500.0) > 5.0:
+              sys.stderr.write(out.stderr)
+              raise SystemExit(f"engine measured {delay!r} ms for a 500 ms fixture")
+          print(f"engine measured {delay:.2f} ms for a 500 ms fixture")
+          CHECK
+
+      - name: Build installer
+        timeout-minutes: 20
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        run: npm run tauri:build -- --bundles nsis updater
+
+      - name: Collect bundles
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $setup = Get-ChildItem -Path "src-tauri/target/release" -Filter "*-setup.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          $upd = Get-ChildItem -Path "src-tauri/target/release" -Include "*-setup.nsis.zip","*-setup.nsis.zip.sig" -Recurse -ErrorAction SilentlyContinue
+          if (-not $setup) { Write-Error "No -setup.exe produced."; exit 1 }
+          if (-not $upd) { Write-Error "No updater bundle produced; check TAURI_PRIVATE_KEY."; exit 1 }
+          $setup | Copy-Item -Destination artifacts -Force
+          $upd | Copy-Item -Destination artifacts -Force
+          Get-ChildItem -Path artifacts | Select-Object Name, Length | Format-Table
+
+      - name: Write updater manifest
+        shell: powershell
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $zip = Get-ChildItem -Path artifacts -Filter "*-setup.nsis.zip" | Select-Object -First 1
+          $sig = Get-ChildItem -Path artifacts -Filter "*-setup.nsis.zip.sig" | Select-Object -First 1
+          # GitHub replaces spaces in asset names with dots.
+          $assetName = $zip.Name -replace ' ', '.'
+          $manifest = [ordered]@{
+            version   = $env:VERSION
+            notes     = "MKVBatchMux $env:TAG"
+            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = (Get-Content $sig.FullName -Raw).Trim()
+                url       = "https://github.com/${{ github.repository }}/releases/download/$env:TAG/$assetName"
+              }
+            }
+          }
+          # No BOM: the updater's JSON parser rejects one.
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD "artifacts/latest.json"),
+            ($manifest | ConvertTo-Json -Depth 5),
+            (New-Object System.Text.UTF8Encoding $false)
+          )
+          Get-Content artifacts/latest.json
+
+      - name: Write release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          prev=$(gh release view --repo "${{ github.repository }}" --json tagName -q .tagName 2>/dev/null || true)
+          {
+            if [ -n "$prev" ] && git rev-parse -q --verify "refs/tags/$prev" >/dev/null; then
+              changes=$(git log --no-merges --pretty='- %s' "$prev..HEAD" | grep -v '^- Release v' || true)
+              if [ -n "$changes" ]; then
+                echo "## Changes"
+                echo "$changes"
+                echo
+              fi
+            fi
+            echo "## Downloads"
+            echo
+            echo '| File | SHA-256 |'
+            echo '|---|---|'
+            for f in artifacts/*-setup.exe; do
+              printf '| `%s` | `%s` |\n' "$(basename "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"
+            done
+            echo
+            echo "Windows x64. The installer is not code-signed; SmartScreen will warn on first run."
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: MKVBatchMux ${{ steps.version.outputs.tag }}
+          body_path: release-notes.md
+          files: artifacts/**
+          make_latest: "true"
+
+      - name: Verify the published update
+        shell: powershell
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $endpoint = "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+          $manifest = $null
+          foreach ($attempt in 1..10) {
+            $response = Invoke-WebRequest -Uri $endpoint -UseBasicParsing
+            $raw = if ($response.Content -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($response.Content) } else { [string]$response.Content }
+            if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) { Write-Error "latest.json has a BOM."; exit 1 }
+            if ($raw -match '"version"') {
+              $candidate = $raw | ConvertFrom-Json
+              if ($candidate.version -eq $env:VERSION) { $manifest = $candidate; break }
+            }
+            Start-Sleep -Seconds 6
+          }
+          if (-not $manifest) { Write-Error "Published manifest never advanced to $env:VERSION."; exit 1 }
+          $url = $manifest.platforms.'windows-x86_64'.url
+          $status = (Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing).StatusCode
+          if ($status -ne 200) { Write-Error "Update URL returned $status."; exit 1 }
+          if (-not $manifest.platforms.'windows-x86_64'.signature) { Write-Error "Manifest has no signature."; exit 1 }
+          Write-Host "Update manifest verified: $url"

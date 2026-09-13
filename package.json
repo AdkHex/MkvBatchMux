@@ -19,7 +19,9 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "fetch-engine": "node scripts/fetch-engine.mjs",
-    "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs"
+    "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs",
+    "release": "node scripts/release.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
