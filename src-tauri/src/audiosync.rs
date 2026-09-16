@@ -19,6 +19,12 @@ use crate::hidden_command;
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_millis(2000);
 const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
+/// At this search range the survey re-decodes the file around every window and
+/// a season takes minutes per episode; the engine's fast route (one long window
+/// plus an end check) finds the same offset in two decodes, so large searches
+/// ask for it automatically.
+const FAST_OFFSET_THRESHOLD_MS: f64 = 120000.0;
+
 static FFMPEG: OnceLock<Option<FfmpegPair>> = OnceLock::new();
 
 /// The ffmpeg/ffprobe pair measurement runs on.
@@ -819,12 +825,17 @@ pub fn measure_delays_start(
         let _ = app.emit_all(
             "audiosync-log",
             format!(
-                "Decoding with {}{} · {} windows × {} s, max offset {} s",
+                "Decoding with {}{} · {} windows × {} s, max offset {} s{}",
                 pair.ffmpeg.display(),
                 if pair.bundled { " (bundled)" } else { "" },
                 request.window_count,
                 request.window_seconds,
-                request.max_offset_ms / 1000.0
+                request.max_offset_ms / 1000.0,
+                if request.max_offset_ms >= FAST_OFFSET_THRESHOLD_MS {
+                    " · fast pass"
+                } else {
+                    ""
+                }
             ),
         );
     }
@@ -856,6 +867,7 @@ pub fn measure_delays_start(
         "windowCount": request.window_count,
         "maxOffsetMs": request.max_offset_ms,
         "maxWorkers": request.max_workers,
+        "fast": request.max_offset_ms >= FAST_OFFSET_THRESHOLD_MS,
     });
 
     let handle = (*engine).clone();
