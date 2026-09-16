@@ -92,19 +92,22 @@ export interface MeasurePair {
   secondaryTrack: number;
 }
 
-/** Beyond this, a "delay" is not a delay: real offsets here are container/encoder-scale (ms, maybe a couple seconds).
- *  Gates applying a result, not searching for one — an implausible result is still measured and shown. */
-export const MAX_PLAUSIBLE_OFFSET_MS = 10000;
+/** Beyond this, a "delay" is not a delay: real offsets here are container/encoder-scale or a
+ *  dub that skips the video's intro, which reaches minutes. Matches the maxOffsetMs search
+ *  ceiling; gates applying a result, not searching for one — an implausible result is still
+ *  measured and shown. */
+export const MAX_PLAUSIBLE_OFFSET_MS = 300000;
 
 export const ENGINE_DEFAULTS = {
-  // Identical to AudioSyncMaster's defaults on purpose: since it's the same engine binary, the only
-  // way the two tools can report different delays is by asking it different questions.
+  // AudioSyncMaster's window defaults, with a wider search than upstream's 60s: a dub that
+  // lacks the video's recap needs offsets of a minute or two, and the engine cannot see
+  // past maxOffsetMs no matter how good the correlation is.
   //
   // windowCount changes where every window sits (step = (last-first)/(count-1)), so a different count
   // isn't a more precise measurement — it's a different one, worth tens of ms on drifting material.
   windowSeconds: 45,
   windowCount: 6,
-  maxOffsetMs: 60000,
+  maxOffsetMs: 300000,
   // The only parameter that cannot change a result: it just sizes the engine's thread pool, and each
   // pair is analysed independently. Kept higher than upstream's 3 purely for throughput.
   maxWorkers: 4,

@@ -4,7 +4,7 @@
   "version": "1.67.0",
   "audiosyncEngine": {
     "repository": "AdkHex/AudioSyncMaster",
-    "ref": "v2.8.0"
+    "ref": "v2.8.1"
   },
   "type": "module",
   "scripts": {

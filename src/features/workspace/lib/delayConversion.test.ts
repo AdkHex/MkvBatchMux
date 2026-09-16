@@ -139,9 +139,9 @@ describe("isAutoFillable", () => {
   it("refuses an offset too large to be a real delay", () => {
     // High confidence only means the sample windows agreed with each other; a correlator
     // locked onto a repeated musical phrase agrees with itself in every window too.
-    expect(isAutoFillable(makeResult({ delayMs: -26041 }))).toBe(false);
-    expect(isAutoFillable(makeResult({ delayMs: -26041, confidence: 1 }))).toBe(false);
-    expect(isImplausiblyLarge(makeResult({ delayMs: -26041 }))).toBe(true);
+    expect(isAutoFillable(makeResult({ delayMs: -360041 }))).toBe(false);
+    expect(isAutoFillable(makeResult({ delayMs: -360041, confidence: 1 }))).toBe(false);
+    expect(isImplausiblyLarge(makeResult({ delayMs: -360041 }))).toBe(true);
   });
 
   it("accepts offsets within the plausible range", () => {
@@ -154,7 +154,7 @@ describe("isAutoFillable", () => {
   it("judges plausibility on the value it would actually apply", () => {
     // With drift the start value is what gets written, so that is the one
     // the guard has to test.
-    expect(isAutoFillable(makeResult({ delayMs: 120, delayAtStartMs: -26041 }))).toBe(false);
+    expect(isAutoFillable(makeResult({ delayMs: 120, delayAtStartMs: -360041 }))).toBe(false);
   });
 
   it("accepts an ordinary result", () => {

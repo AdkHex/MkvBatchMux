@@ -100,7 +100,7 @@ impl Default for MeasurementSettings {
         Self {
             window_seconds: 45.0,
             window_count: 6,
-            max_offset_ms: 60000.0,
+            max_offset_ms: 300000.0,
         }
     }
 }

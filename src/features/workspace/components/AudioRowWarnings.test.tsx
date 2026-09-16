@@ -121,7 +121,7 @@ describe("MeasuredDelayInfo", () => {
   it("offers Apply anyway on a withheld result, so the user is never stuck", () => {
     render(
       <MeasuredDelayInfo
-        measured={ntscMeasured({ engineDelayMs: -14989.1, confidence: 0.29 })}
+        measured={ntscMeasured({ engineDelayMs: -360041, confidence: 0.29 })}
         onApplyAnyway={vi.fn()}
       />,
     );
@@ -165,7 +165,7 @@ describe("hovering a warning", () => {
     {
       badge: "Implausible",
       measured: ntscMeasured({
-        engineDelayMs: -14989.1,
+        engineDelayMs: -360041,
         confidence: 0.94,
         isRateMismatch: false,
       }),
