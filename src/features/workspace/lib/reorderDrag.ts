@@ -45,3 +45,16 @@ export function getAutoScrollDelta({
   }
   return 0;
 }
+
+export interface DragStartInput {
+  start: { x: number; y: number };
+  current: { x: number; y: number };
+  threshold?: number;
+}
+
+// A press only becomes a drag once the pointer has travelled a little. Grabbing
+// the pointer on the press itself would redirect the click and dblclick to the
+// row, so a double-click on a track name would never reach it.
+export function hasDragStarted({ start, current, threshold = 4 }: DragStartInput) {
+  return Math.hypot(current.x - start.x, current.y - start.y) >= threshold;
+}

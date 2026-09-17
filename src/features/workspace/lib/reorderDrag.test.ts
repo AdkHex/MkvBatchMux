@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getAutoScrollDelta, getReorderIndexFromPointer } from "./reorderDrag";
+import { getAutoScrollDelta, getReorderIndexFromPointer, hasDragStarted } from "./reorderDrag";
 
 describe("reorderDrag helpers", () => {
   it("computes top insertion index when pointer is above the first row", () => {
@@ -49,5 +49,17 @@ describe("getAutoScrollDelta", () => {
 
   it("does not scroll while the pointer is inside the container", () => {
     expect(getAutoScrollDelta({ containerRect, pointerY: 300 })).toBe(0);
+  });
+});
+
+describe("hasDragStarted", () => {
+  it("does not treat a click or a slight wobble as a drag", () => {
+    expect(hasDragStarted({ start: { x: 10, y: 10 }, current: { x: 10, y: 10 } })).toBe(false);
+    expect(hasDragStarted({ start: { x: 10, y: 10 }, current: { x: 12, y: 12 } })).toBe(false);
+  });
+
+  it("starts the drag once the pointer has moved past the threshold in any direction", () => {
+    expect(hasDragStarted({ start: { x: 10, y: 10 }, current: { x: 10, y: 15 } })).toBe(true);
+    expect(hasDragStarted({ start: { x: 10, y: 10 }, current: { x: 5, y: 10 } })).toBe(true);
   });
 });

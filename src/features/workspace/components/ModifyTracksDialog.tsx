@@ -22,7 +22,7 @@ import {
   moveTrackRow,
   type TrackRowDraft,
 } from "@/features/workspace/lib/modifyTracks";
-import { getAutoScrollDelta, getReorderIndexFromPointer } from "@/features/workspace/lib/reorderDrag";
+import { getAutoScrollDelta, getReorderIndexFromPointer, hasDragStarted } from "@/features/workspace/lib/reorderDrag";
 
 interface ModifyTracksDialogProps {
   open: boolean;
@@ -222,6 +222,8 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
   const pointerIdRef = useRef<number | null>(null);
   const pointerYRef = useRef(0);
   const autoScrollFrameRef = useRef<number | null>(null);
+  // A press on a row that has not travelled far enough to be a drag yet.
+  const pendingDrag = useRef<{ row: HTMLElement; pointerId: number; index: number; x: number; y: number } | null>(null);
 
   const updateDragTarget = useCallback(
     (pointerY: number) => {
@@ -261,22 +263,16 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
     setDragOverIndex(null);
   }, [setCurrentTracks]);
 
-  const startPointerDrag = (event: React.PointerEvent, index: number) => {
-    event.preventDefault();
-    pointerDragActive.current = true;
-    pointerIdRef.current = event.pointerId;
-    pointerYRef.current = event.clientY;
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    dragItem.current = index;
-    dragOverItem.current = index;
-    setDraggedIndex(index);
-    setDragOverIndex(index);
-  };
-
   const handleRowPointerDown = (event: React.PointerEvent, index: number, trackId: string) => {
     setSelectedTrackId(trackId);
     if (isNoDragTarget(event.target)) return;
-    startPointerDrag(event, index);
+    pendingDrag.current = {
+      row: event.currentTarget as HTMLElement,
+      pointerId: event.pointerId,
+      index,
+      x: event.clientX,
+      y: event.clientY,
+    };
   };
 
   useEffect(() => {
@@ -302,12 +298,26 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
     };
 
     const handlePointerMove = (event: PointerEvent) => {
+      const pending = pendingDrag.current;
+      if (pending && pending.pointerId === event.pointerId) {
+        if (!hasDragStarted({ start: pending, current: { x: event.clientX, y: event.clientY } })) return;
+        pendingDrag.current = null;
+        pointerDragActive.current = true;
+        pointerIdRef.current = pending.pointerId;
+        pending.row.setPointerCapture(pending.pointerId);
+        dragItem.current = pending.index;
+        dragOverItem.current = pending.index;
+        setDraggedIndex(pending.index);
+        setDragOverIndex(pending.index);
+        autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
+      }
       if (!pointerDragActive.current || pointerIdRef.current !== event.pointerId) return;
       pointerYRef.current = event.clientY;
       updateDragTarget(event.clientY);
     };
 
     const handlePointerUp = (event: PointerEvent) => {
+      if (pendingDrag.current?.pointerId === event.pointerId) pendingDrag.current = null;
       if (!pointerDragActive.current || pointerIdRef.current !== event.pointerId) return;
       pointerDragActive.current = false;
       pointerIdRef.current = null;
@@ -317,7 +327,6 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
     window.addEventListener("pointercancel", handlePointerUp);
-    autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
@@ -495,10 +504,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
                   )}
                 >
                   <ReorderableTableCell className="center">
-                    <ReorderHandle
-                      className="flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity touch-none"
-                      onPointerDown={(event) => startPointerDrag(event, index)}
-                    >
+                    <ReorderHandle className="flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity touch-none">
                       <GripVertical className="w-4 h-4" />
                     </ReorderHandle>
                   </ReorderableTableCell>
