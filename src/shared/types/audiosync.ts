@@ -93,24 +93,31 @@ export interface MeasurePair {
 }
 
 /** Beyond this, a "delay" is not a delay: real offsets here are container/encoder-scale or a
- *  dub that skips the video's intro, which reaches minutes. Matches the maxOffsetMs search
- *  ceiling; gates applying a result, not searching for one — an implausible result is still
- *  measured and shown. */
+ *  dub that skips the video's intro, which reaches minutes. Gates applying a result, not
+ *  searching for one — an implausible result is still measured and shown. */
 export const MAX_PLAUSIBLE_OFFSET_MS = 300000;
 
 export const ENGINE_DEFAULTS = {
-  // AudioSyncMaster's window defaults, with a wider search than upstream's 60s: a dub that
-  // lacks the video's recap needs offsets of a minute or two, and the engine cannot see
-  // past maxOffsetMs no matter how good the correlation is.
+  // AudioSyncMaster's own defaults, so an untouched install measures what AudioSyncMaster does.
+  // A larger maxOffsetMs pads every window with that much audio, which changes the correlation
+  // peaks and so the result; offsets beyond a minute are the timeline scan's job, which
+  // searches the whole runtime regardless of this.
   //
   // windowCount changes where every window sits (step = (last-first)/(count-1)), so a different count
   // isn't a more precise measurement — it's a different one, worth tens of ms on drifting material.
   windowSeconds: 45,
   windowCount: 6,
-  maxOffsetMs: 300000,
+  maxOffsetMs: 60000,
   // The only parameter that cannot change a result: it just sizes the engine's thread pool, and each
   // pair is analysed independently. Kept higher than upstream's 3 purely for throughput.
   maxWorkers: 4,
+} as const;
+
+/** AudioSyncMaster's Settings limits for the same three fields, so any value set there can be set here. */
+export const ENGINE_LIMITS = {
+  windowCount: { min: 1, max: 20 },
+  windowSeconds: { min: 5, max: 600 },
+  maxOffsetSeconds: { min: 1, max: 600 },
 } as const;
 
 export interface MeasureStartRequest {
@@ -129,7 +136,7 @@ export interface EngineStatus {
   ffmpegAvailable: boolean;
   /** Where the engine was found, for the log and for diagnosing a bad build. */
   enginePath: string | null;
-  /** Which AudioSyncMaster build it is, e.g. "AudioSyncMaster v2.8.0 (8e53e8b)"; null when unstamped.
+  /** Which AudioSyncMaster build it is, e.g. "AudioSyncMaster v2.13.0 (9c400ce)"; null when unstamped.
    *  The two apps can only be expected to agree while this matches the installed release. */
   engineVersion: string | null;
   message: string | null;
@@ -172,6 +179,13 @@ export interface MeasuredDelay {
   rateSourceFps: number | null;
   rateTargetFps: number | null;
   rateExplanation: string | null;
+  /** Where the quick measurement found the offset jumping, on the video's timeline, and by how
+   *  much. Optional so records stored before these existed still load. */
+  cutPositionS?: number | null;
+  cutUncertaintyS?: number | null;
+  cutMagnitudeMs?: number | null;
+  /** The full-timeline scan that followed this measurement, when one ran. */
+  timeline?: TimelineScan;
   /** Which of the video's audio tracks this was measured against. */
   referenceTrack: number;
   primaryFps: number | null;
@@ -187,4 +201,94 @@ export type DelayProvenance = "manual" | "measured" | "none";
 export interface StretchSetting {
   num: number;
   den: number;
+}
+
+/** One piece of AudioSyncMaster's Dub sync plan, on the video's timeline. */
+export interface TimelineSegment {
+  kind: "dub" | "fill";
+  startS: number;
+  endS: number;
+  sourceStartS: number;
+  /** Dub time minus video time, in seconds, for "dub" pieces: the engine's delay convention. */
+  offsetS: number | null;
+  match: number | null;
+  note: string;
+  /** For a fill, why the video's own audio plays there: "head", "tail", "cut", "silent",
+   *  "unmatched" or "draft". */
+  reason?: string;
+  uncertaintyS: number;
+}
+
+/** The engine's Dub sync plan, as far as the timeline scan reads it. */
+export interface TimelinePlan {
+  speed: number;
+  videoDurationS: number;
+  dubDurationS: number;
+  videoFps: number | null;
+  dubRate: number | null;
+  rateConfirmed?: boolean | null;
+  segments: TimelineSegment[];
+  warnings: string[];
+  error: string | null;
+  summary?: { dubUsedShare: number | null } | null;
+}
+
+/** Where the offset changes between two stretches of dub. */
+export interface TimelineCut {
+  /** Position on the video's timeline. */
+  atS: number;
+  /** How far the offset moves there, engine convention: negative when the dub lacks material. */
+  jumpMs: number;
+  /** Seconds of the video the dub has nothing for at this cut. */
+  missingS: number;
+  uncertaintyS: number;
+  /** The offset from here to the next cut, engine convention. */
+  offsetAfterMs: number;
+}
+
+/** What the full-timeline scan found for one pair, kept compact enough to store with the session. */
+export interface TimelineScan {
+  scannedAt: string;
+  error: string | null;
+  /** Offset of the first stretch of dub, engine convention: the delay at the start, measured
+   *  from that stretch alone at the planner's 2 ms resolution. */
+  startOffsetMs: number | null;
+  cuts: TimelineCut[];
+  /** Spans where the dub was audible but did not correlate, so sync there is unconfirmed. */
+  unverified: Array<{ startS: number; endS: number }>;
+  /** Seconds at the end of the video the dub does not reach. */
+  tailS: number;
+  videoFps: number | null;
+  /** The frame rate the dub was mastered at; differs from videoFps on a frame-rate conversion. */
+  dubRate: number | null;
+  /** Playback speed the dub needed to line up; 1 when it runs at the video's speed. */
+  speed: number;
+  rateConfirmed: boolean | null;
+  dubUsedShare: number | null;
+  videoDurationS: number;
+  /** The engine's own table of the plan, for the details view. */
+  description: string | null;
+}
+
+export interface TimelineScanRequest {
+  runId: string;
+  pairs: MeasurePair[];
+  maxWorkers: number;
+}
+
+export interface TimelineScanProgressEvent {
+  runId: string;
+  key: string | null;
+  percent: number;
+  stage: string | null;
+  processed: number;
+  total: number;
+}
+
+export interface TimelineScanResultEvent {
+  runId: string;
+  key: string | null;
+  plan: TimelinePlan | null;
+  description: string | null;
+  error: string | null;
 }

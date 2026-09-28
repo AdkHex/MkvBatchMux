@@ -3844,6 +3844,7 @@ fn main() {
             audiosync::list_reference_tracks,
             audiosync::measure_delays_start,
             audiosync::measure_delays_cancel,
+            audiosync::scan_timeline_start,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

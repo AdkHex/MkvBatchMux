@@ -37,7 +37,7 @@ function readPin() {
   if (!pin || typeof pin.ref !== "string" || !pin.ref) {
     fail(
       "package.json has no audiosyncEngine.ref.",
-      'Add { "audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.8.0" } }.',
+      'Add { "audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.13.0" } }.',
     );
   }
   return pin;
@@ -253,6 +253,9 @@ const distDir = path.join(repo, "build", "mkvbatchmux-engine");
 // --onedir, not --onefile: a onefile build re-extracts to a temp directory on
 // every launch, which is slow and trips antivirus. Hidden imports let the
 // frozen build find its own package without relying on `python -m`'s cwd.
+// The flags mirror AudioSyncMaster's own release build, so both apps ship the
+// same engine; voiceworker.py is started as a script by the voice tools, so it
+// travels as data rather than as an import.
 const result = spawnSync(
   python,
   [
@@ -281,7 +284,13 @@ const result = spawnSync(
       "audiosync.matching",
       "audiosync.media",
       "audiosync.mux",
+      "audiosync.dubsync",
+      "audiosync.dubrender",
+      "audiosync.voicefix",
+      "audiosync.voicetools",
     ].flatMap((module) => ["--hidden-import", module]),
+    "--add-data",
+    `${path.join(repo, "audiosync", "voiceworker.py")}${path.delimiter}audiosync`,
     "--collect-all",
     "numpy",
     ...["scipy", "matplotlib", "tkinter", "PIL", "pandas", "pytest"].flatMap((module) => [

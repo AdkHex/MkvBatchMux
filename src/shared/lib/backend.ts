@@ -9,6 +9,9 @@ import type {
   MeasureResultEvent,
   MeasureStartRequest,
   TrackListing,
+  TimelineScanProgressEvent,
+  TimelineScanRequest,
+  TimelineScanResultEvent,
 } from "@/shared/types/audiosync";
 
 export interface AppPaths {
@@ -250,6 +253,22 @@ export function listenMeasureDelaysResult(handler: (payload: MeasureResultEvent)
 
 export function listenMeasureDelaysDone(handler: (payload: MeasureDoneEvent) => void) {
   return listen<MeasureDoneEvent>("measure-delays-done", (event) => handler(event.payload));
+}
+
+export async function scanTimelineStart(request: TimelineScanRequest) {
+  return invoke<void>("scan_timeline_start", { request });
+}
+
+export function listenTimelineScanProgress(handler: (payload: TimelineScanProgressEvent) => void) {
+  return listen<TimelineScanProgressEvent>("timeline-scan-progress", (event) => handler(event.payload));
+}
+
+export function listenTimelineScanResult(handler: (payload: TimelineScanResultEvent) => void) {
+  return listen<TimelineScanResultEvent>("timeline-scan-result", (event) => handler(event.payload));
+}
+
+export function listenTimelineScanDone(handler: (payload: MeasureDoneEvent) => void) {
+  return listen<MeasureDoneEvent>("timeline-scan-done", (event) => handler(event.payload));
 }
 
 export function listenAudiosyncLog(handler: (line: string) => void) {

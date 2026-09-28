@@ -129,6 +129,9 @@ export interface MeasurementSettings {
   windowSeconds: number;
   windowCount: number;
   maxOffsetMs: number;
+  /** Follow each measurement with a full-timeline scan for cuts and frame-rate changes.
+   *  Optional so settings saved before it existed load; absent means on. */
+  scanTimeline?: boolean;
 }
 
 export interface OptionsData {

@@ -19,12 +19,6 @@ use crate::hidden_command;
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_millis(2000);
 const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// At this search range the survey re-decodes the file around every window and
-/// a season takes minutes per episode; the engine's fast route (one long window
-/// plus an end check) finds the same offset in two decodes, so large searches
-/// ask for it automatically.
-const FAST_OFFSET_THRESHOLD_MS: f64 = 120000.0;
-
 static FFMPEG: OnceLock<Option<FfmpegPair>> = OnceLock::new();
 
 /// The ffmpeg/ffprobe pair measurement runs on.
@@ -183,7 +177,7 @@ pub struct EngineStatus {
     pub engine_available: bool,
     pub ffmpeg_available: bool,
     pub engine_path: Option<String>,
-    /// Version stamp for the engine build, e.g. "AudioSyncMaster v2.8.0 (8e53e8b)".
+    /// Version stamp for the engine build, e.g. "AudioSyncMaster v2.13.0 (9c400ce)".
     pub engine_version: Option<String>,
     pub message: Option<String>,
 }
@@ -825,17 +819,12 @@ pub fn measure_delays_start(
         let _ = app.emit_all(
             "audiosync-log",
             format!(
-                "Decoding with {}{} · {} windows × {} s, max offset {} s{}",
+                "Decoding with {}{} · {} windows × {} s, max offset {} s",
                 pair.ffmpeg.display(),
                 if pair.bundled { " (bundled)" } else { "" },
                 request.window_count,
                 request.window_seconds,
                 request.max_offset_ms / 1000.0,
-                if request.max_offset_ms >= FAST_OFFSET_THRESHOLD_MS {
-                    " · fast pass"
-                } else {
-                    ""
-                }
             ),
         );
     }
@@ -867,7 +856,8 @@ pub fn measure_delays_start(
         "windowCount": request.window_count,
         "maxOffsetMs": request.max_offset_ms,
         "maxWorkers": request.max_workers,
-        "fast": request.max_offset_ms >= FAST_OFFSET_THRESHOLD_MS,
+        // No `fast`: AudioSyncMaster never sends it, and its route (one long
+        // window plus an end check) gives a different answer than the survey.
     });
 
     let handle = (*engine).clone();
@@ -998,6 +988,234 @@ pub fn measure_delays_start(
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineScanRequest {
+    pub run_id: String,
+    pub pairs: Vec<MeasurePair>,
+    pub max_workers: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TimelineScanProgressEvent {
+    run_id: String,
+    key: Option<String>,
+    percent: u64,
+    stage: Option<String>,
+    processed: usize,
+    total: usize,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TimelineScanResultEvent {
+    run_id: String,
+    key: Option<String>,
+    plan: Option<Value>,
+    description: Option<String>,
+    error: Option<String>,
+}
+
+/// The engine's dub sync batch, told to stop once each pair is planned. The
+/// options are AudioSyncMaster's own defaults for its Dub sync mode, so a plan
+/// here matches the one it shows there; the voice check is left out because
+/// it only moves voices while writing, and nothing is written here.
+fn timeline_scan_payload(request: &TimelineScanRequest) -> Value {
+    serde_json::json!({
+        "command": "dubsyncBatch",
+        "jobs": request.pairs.iter().map(|pair| serde_json::json!({
+            "videoPath": pair.primary_path,
+            "dubPath": pair.secondary_path,
+            "videoTrack": pair.primary_track,
+            "dubTrack": pair.secondary_track,
+        })).collect::<Vec<_>>(),
+        "planOnly": true,
+        "fixVoices": false,
+        "fillUnmatched": false,
+        "maxWorkers": request.max_workers,
+    })
+}
+
+/// Map every cut, gap and frame-rate change across each pair's whole runtime,
+/// with the engine's Dub sync planner. Reports only: nothing is written.
+#[tauri::command]
+pub fn scan_timeline_start(
+    app: AppHandle,
+    engine: tauri::State<'_, EngineHandle>,
+    request: TimelineScanRequest,
+) -> Result<(), String> {
+    if !ffmpeg_available_for(&app) {
+        return Err(
+            "FFmpeg was not found. Install FFmpeg and make sure ffmpeg and ffprobe are on your PATH."
+                .to_string(),
+        );
+    }
+    if request.pairs.is_empty() {
+        return Err("There is nothing to scan.".to_string());
+    }
+
+    let run_id = request.run_id.clone();
+    let total = request.pairs.len();
+    // The engine numbers jobs in the order they were sent.
+    let keys: Vec<String> = request.pairs.iter().map(|pair| pair.key.clone()).collect();
+    let payload = timeline_scan_payload(&request);
+    let _ = app.emit_all(
+        "audiosync-log",
+        format!("Scanning the full timeline of {total} pair(s) for cuts and frame-rate changes"),
+    );
+
+    let handle = (*engine).clone();
+    let app_for_run = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let key_of = |value: &Value| {
+            value
+                .get("job")
+                .and_then(Value::as_u64)
+                .and_then(|job| keys.get(job as usize).cloned())
+        };
+        let outcome = handle.with(&app_for_run, |engine| {
+            drain_ready(engine)?;
+            if !engine.ffmpeg_ready {
+                return Err(
+                    "FFmpeg was not found by the analysis engine. Install FFmpeg and make \
+                     sure ffmpeg and ffprobe are on your PATH."
+                        .to_string(),
+                );
+            }
+            engine.send(&payload)?;
+
+            use std::time::Duration;
+            // The planner reports progress every few seconds while it decodes,
+            // so this long a silence means the engine is wedged.
+            let idle_limit = Duration::from_secs(600);
+            let mut processed = 0usize;
+            let mut fatal: Option<String> = None;
+
+            loop {
+                let value = match engine.events().recv_timeout(idle_limit) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return Err("The analysis engine stopped responding.".to_string());
+                    }
+                };
+
+                match value.get("type").and_then(Value::as_str) {
+                    Some("dubsyncJobProgress") => {
+                        let _ = app_for_run.emit_all(
+                            "timeline-scan-progress",
+                            TimelineScanProgressEvent {
+                                run_id: run_id.clone(),
+                                key: key_of(&value),
+                                percent: value.get("percent").and_then(Value::as_u64).unwrap_or(0),
+                                stage: value
+                                    .get("stage")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                processed,
+                                total,
+                            },
+                        );
+                    }
+                    Some("dubsyncJobPlan") => {
+                        let _ = app_for_run.emit_all(
+                            "timeline-scan-result",
+                            TimelineScanResultEvent {
+                                run_id: run_id.clone(),
+                                key: key_of(&value),
+                                plan: value.get("plan").cloned(),
+                                description: value
+                                    .get("description")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                error: None,
+                            },
+                        );
+                    }
+                    Some("dubsyncJobDone") => {
+                        processed += 1;
+                        // A plan was already reported by dubsyncJobPlan; only a
+                        // job that failed before planning needs reporting here.
+                        let failed_before_plan = value.get("plan").map_or(true, Value::is_null);
+                        let error = value.get("error").and_then(Value::as_str);
+                        if failed_before_plan && error.is_some() {
+                            let _ = app_for_run.emit_all(
+                                "timeline-scan-result",
+                                TimelineScanResultEvent {
+                                    run_id: run_id.clone(),
+                                    key: key_of(&value),
+                                    plan: None,
+                                    description: None,
+                                    error: error.map(str::to_string),
+                                },
+                            );
+                        }
+                        let _ = app_for_run.emit_all(
+                            "timeline-scan-progress",
+                            TimelineScanProgressEvent {
+                                run_id: run_id.clone(),
+                                key: key_of(&value),
+                                percent: 100,
+                                stage: None,
+                                processed,
+                                total,
+                            },
+                        );
+                    }
+                    Some("dubsyncJobLog") | Some("log") => {
+                        if let Some(message) = value.get("message").and_then(Value::as_str) {
+                            let _ = app_for_run.emit_all("audiosync-log", message.to_string());
+                        }
+                    }
+                    Some("error") => {
+                        let message = value
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("The analysis engine reported an error.")
+                            .to_string();
+                        let _ = app_for_run.emit_all("audiosync-log", message.clone());
+                        if value.get("fatal").and_then(Value::as_bool).unwrap_or(false) {
+                            fatal = Some(message);
+                        }
+                    }
+                    Some("dubsyncBatchDone") => {
+                        let cancelled = value
+                            .get("cancelled")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        let error = fatal.clone().or_else(|| {
+                            value.get("error").and_then(Value::as_str).map(str::to_string)
+                        });
+                        let _ = app_for_run.emit_all(
+                            "timeline-scan-done",
+                            MeasureDoneEvent {
+                                run_id: run_id.clone(),
+                                cancelled,
+                                error,
+                            },
+                        );
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        if let Err(err) = outcome {
+            let _ = app_for_run.emit_all(
+                "timeline-scan-done",
+                MeasureDoneEvent {
+                    run_id: request.run_id.clone(),
+                    cancelled: false,
+                    error: Some(err),
+                },
+            );
+        }
+    });
+
+    Ok(())
+}
+
 /// Ask the engine to stop the batch in flight. Sent as a message rather than a
 /// kill, so ffmpeg children aren't orphaned; the upstream engine only reads it
 /// once the current batch finishes, so the UI reports cancellation as requested rather than done.
@@ -1080,6 +1298,32 @@ mod tests {
         )));
         assert!(!is_pinned_release("AudioSyncMaster v0.0.1 (0000000)"));
         assert!(!is_pinned_release("unknown (prebuilt copy from /x; pin is v2.8.0)"));
+    }
+
+    /// The scan must only plan: a request without planOnly would render and
+    /// write a synced track beside the user's video.
+    #[test]
+    fn timeline_scan_only_plans_each_pair_in_order() {
+        let pair = |key: &str, video: &str, track: i64| MeasurePair {
+            primary_path: video.to_string(),
+            secondary_path: format!("{video}.hin.m4a"),
+            key: key.to_string(),
+            method: "mkvbatchmux".to_string(),
+            score: 1.0,
+            primary_track: track,
+            secondary_track: 0,
+        };
+        let payload = timeline_scan_payload(&TimelineScanRequest {
+            run_id: "scan-1".to_string(),
+            pairs: vec![pair("a", "/v/E01.mkv", 0), pair("b", "/v/E02.mkv", 1)],
+            max_workers: 4,
+        });
+        assert_eq!(payload["command"], "dubsyncBatch");
+        assert_eq!(payload["planOnly"], true);
+        assert_eq!(payload["fixVoices"], false);
+        assert_eq!(payload["jobs"][0]["videoPath"], "/v/E01.mkv");
+        assert_eq!(payload["jobs"][1]["videoTrack"], 1);
+        assert_eq!(payload["jobs"][1]["dubPath"], "/v/E02.mkv.hin.m4a");
     }
 
     #[test]

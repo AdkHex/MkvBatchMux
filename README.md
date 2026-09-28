@@ -97,13 +97,14 @@ the same analysis engine as
 [AudioSyncMaster](https://github.com/AdkHex/AudioSyncMaster), and is built to
 report the **same number** for the same files:
 
-- The engine is pinned to an AudioSyncMaster **release** (`v2.8.0`), never to
+- The engine is pinned to an AudioSyncMaster **release** (`v2.13.0`), never to
   its `main` branch. Settings → *Audio analysis engine* shows the stamp.
 - The measurement parameters (sample windows, window length, maximum offset)
-  default to AudioSyncMaster's and are editable in Settings → *Delay
-  measurement*. If you changed them in AudioSyncMaster, set the same values
-  here — a different window count samples different points in the film and
-  gives a different number.
+  default to AudioSyncMaster's (6 × 45 s, 60 s) and are editable in Settings →
+  *Delay measurement*, within the same limits. If you changed them in
+  AudioSyncMaster, set the same values here — a different window count samples
+  different points in the film and gives a different number. The request is
+  the one AudioSyncMaster sends: no fast pass, whatever the search range.
 - The reference track defaults to the video's **first audio stream**, as in
   AudioSyncMaster. Choose another in the *Reference audio track* panel.
 - FFmpeg decodes the audio, and the build matters: builds differ in whether
@@ -127,8 +128,34 @@ as *Applied from t=0*.
 </details>
 
 A result is measured and shown but **not filled in** when the engine flags a
-different cut, the offset is over 10 seconds, or the confidence is below 50 %.
+different cut, the offset is over five minutes, or the confidence is below 50 %.
 Each of those has an **Apply anyway** action once you've checked the files.
+
+### Timeline scan: cuts and frame-rate changes
+
+After measuring, each pair's **whole runtime** is scanned with
+AudioSyncMaster's *Dub sync* planner, run in plan-only mode with its own
+defaults, so nothing is written. The measurement samples six windows and can
+miss a cut between them, or a trim of a frame or two. The scan follows the dub
+through the entire video at 2 ms resolution and adds these to the row:
+
+- **N cuts**: every place the dub stops following the video, with its time
+  (`h:mm:ss.mmm`) and what happens there. The dub may lack part of a scene, carry
+  material the video lacks, or play a few milliseconds early or late from that
+  point on.
+- **FPS 25.000 → 23.976**: the dub was mastered at another frame rate and only
+  lines up played faster or slower. A plain delay drifts.
+- **Lip-sync check**: the scan's opening offset differs from the measured
+  delay by more than 45 ms, where lips visibly lead or trail the voice.
+  **Use timeline delay** writes the scan's value instead.
+- **Unconfirmed**, **Ends early**, or **No cuts** when the dub follows the video
+  in one piece. **Timeline details** shows the engine's full plan table, the
+  same one AudioSyncMaster shows.
+
+The scan takes roughly half a minute per hour of video, and longer where the
+dub and video share little. Turn it off in Settings → *Delay
+measurement*. It only warns: the delay written is still the measured one, so
+the two apps agree.
 
 ---
 
@@ -181,7 +208,7 @@ Both are build artifacts and are not committed.
 `package.json` names the AudioSyncMaster release the engine is built from:
 
 ```json
-"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.8.0" }
+"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.13.0" }
 ```
 
 CI checks that tag out, `fetch-engine` refuses a checkout at any other commit

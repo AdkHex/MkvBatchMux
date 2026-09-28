@@ -226,3 +226,68 @@ describe("hovering a warning", () => {
     expect(text).toMatch(/ffmpeg can decode/);
   });
 });
+
+describe("the full-timeline scan on a row", () => {
+  const clean: MeasuredDelay["timeline"] = {
+    scannedAt: "2026-09-28T00:00:00.000Z",
+    error: null,
+    startOffsetMs: -87.7,
+    cuts: [],
+    unverified: [],
+    tailS: 0,
+    videoFps: 23.976,
+    dubRate: 23.976,
+    speed: 1,
+    rateConfirmed: true,
+    dubUsedShare: 0.99,
+    videoDurationS: 3600,
+    description: "1 stretch of dub",
+  };
+  const matched = (timeline: MeasuredDelay["timeline"]) =>
+    ntscMeasured({ isRateMismatch: false, hasSignificantDrift: false, driftMsPerS: 0, timeline });
+
+  it("says a dub that follows the video in one piece has no cuts", () => {
+    render(<MeasuredDelayInfo measured={matched(clean)} />);
+    expect(hover(screen.getByText("No cuts"))).toMatch(/follows the video in one piece at \+87\.7 ms/);
+  });
+
+  it("lists every cut with where it is and what to do", () => {
+    render(
+      <MeasuredDelayInfo
+        measured={matched({
+          ...clean,
+          cuts: [
+            { atS: 1230, jumpMs: -7500, missingS: 7.5, uncertaintyS: 0, offsetAfterMs: -7587.7 },
+            { atS: 2400, jumpMs: 42, missingS: 0, uncertaintyS: 0, offsetAfterMs: -7545.7 },
+          ],
+        })}
+      />,
+    );
+    const text = hover(screen.getByText("2 cuts"));
+    expect(text).toMatch(/0:20:30\.000: the dub lacks 7\.5s of the video here/);
+    expect(text).toMatch(/0:40:00\.000: from here the dub plays 42 ms late/);
+    expect(text).toContain("What to do:");
+    expect(text).toMatch(/only lines up the part before 0:20:30\.000/);
+    expect(screen.queryByText("No cuts")).toBeNull();
+  });
+
+  it("names a frame-rate change by both rates", () => {
+    render(<MeasuredDelayInfo measured={matched({ ...clean, speed: 25 / 23.976, dubRate: 25 })} />);
+    const text = hover(screen.getByText("FPS 25.000 → 23.976"));
+    expect(text).toMatch(/video runs at 23\.976 fps, but the dub was mastered at 25\.000 fps/);
+    expect(text).toContain("What to do:");
+  });
+
+  it("offers the timeline's delay when it and the measurement are visibly apart", () => {
+    const onUse = vi.fn();
+    render(
+      <MeasuredDelayInfo
+        measured={matched({ ...clean, startOffsetMs: -2633 })}
+        onUseTimelineDelay={onUse}
+      />,
+    );
+    expect(hover(screen.getByText("Lip-sync check"))).toMatch(/2545 ms apart/);
+    fireEvent.click(screen.getByText(/Use timeline delay \(\+2633\.0 ms\)/));
+    expect(onUse).toHaveBeenCalledOnce();
+  });
+});

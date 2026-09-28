@@ -47,6 +47,7 @@ import {
   hasPendingDelay,
   markDelayAsManual,
 } from "@/features/workspace/lib/applyMeasurement";
+import { applyTimelineDelay } from "@/features/workspace/lib/timelineScan";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/shared/ui/tooltip";
 
 interface AudiosTabProps {
@@ -56,6 +57,8 @@ interface AudiosTabProps {
   onVideoFilesChange?: (files: VideoFile[]) => void;
   onAddTrack?: () => void;
   preset?: Preset | null;
+  /** Options → Delay measurement; the engine gets these, so they must match AudioSyncMaster's. */
+  measurement?: MeasurementSettings;
   searchValue?: string;
   filterValue?: string;
   sortValue?: string;
@@ -201,6 +204,7 @@ export function AudiosTab({
     audioFiles,
     onAudioFilesChange,
     referenceTrackByVideoId,
+    measurement,
   });
 
   const measurementAvailable = Boolean(
@@ -291,6 +295,22 @@ export function AudiosTab({
       toast({
         title: "Delay applied",
         description: "The measured delay is in the delay field despite the warning.",
+      });
+    },
+    [audioFiles, onAudioFilesChange],
+  );
+  const applyTimelineDelayFor = useCallback(
+    (fileId: string, trackId: number | null) => {
+      const file = audioFiles.find((candidate) => candidate.id === fileId);
+      if (!file) return;
+      const updated = applyTimelineDelay(file, trackId);
+      if (updated === file) return;
+      onAudioFilesChange(
+        audioFiles.map((candidate) => (candidate.id === fileId ? updated : candidate)),
+      );
+      toast({
+        title: "Timeline delay applied",
+        description: "The full-timeline scan's opening offset is in the delay field.",
       });
     },
     [audioFiles, onAudioFilesChange],
@@ -1086,7 +1106,10 @@ export function AudiosTab({
               <>
                 <span className="text-xs text-muted-foreground whitespace-nowrap">
                   {measureProgress
-                    ? `Measuring ${measureProgress.processed} of ${measureProgress.total}${
+                    ? `${measureProgress.phase === "scan" ? "Scanning for cuts" : "Measuring"} ${Math.min(
+                        measureProgress.processed + (measureProgress.phase === "scan" ? 1 : 0),
+                        measureProgress.total,
+                      )} of ${measureProgress.total}${
                         measureProgress.current ? ` — ${measureProgress.current}` : ""
                       }`
                     : "Measuring…"}
@@ -1462,6 +1485,7 @@ export function AudiosTab({
                                 ? () => applyCutDelayAnyway(file.id, null)
                                 : undefined
                             }
+                            onUseTimelineDelay={() => applyTimelineDelayFor(file.id, null)}
                           />
                           <div onClick={(event) => event.stopPropagation()}>
                             <StretchToggle
@@ -1490,6 +1514,7 @@ export function AudiosTab({
                                   ? () => applyCutDelayAnyway(file.id, trackId)
                                   : undefined
                               }
+                              onUseTimelineDelay={() => applyTimelineDelayFor(file.id, trackId)}
                             />
                             <div onClick={(event) => event.stopPropagation()}>
                               <StretchToggle

@@ -3,7 +3,7 @@ import { FolderOpen, Settings, Info, RotateCcw, Download, Moon, X, SlidersHorizo
 import { Button } from "@/shared/ui/button";
 import { Select, SelectItem, SelectValue } from "@/shared/ui/select";
 import type { MeasurementSettings, OptionsData, Preset } from "@/shared/types";
-import { ENGINE_DEFAULTS } from "@/shared/types/audiosync";
+import { ENGINE_DEFAULTS, ENGINE_LIMITS } from "@/shared/types/audiosync";
 import {
   pickDirectory,
   dependencyStatus,
@@ -23,6 +23,18 @@ function clampInt(raw: string, min: number, max: number, fallback: number): numb
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, value));
 }
+
+const clampWindowCount = (raw: string) =>
+  clampInt(raw, ENGINE_LIMITS.windowCount.min, ENGINE_LIMITS.windowCount.max, ENGINE_DEFAULTS.windowCount);
+const clampWindowSeconds = (raw: string) =>
+  clampInt(raw, ENGINE_LIMITS.windowSeconds.min, ENGINE_LIMITS.windowSeconds.max, ENGINE_DEFAULTS.windowSeconds);
+const clampMaxOffsetSeconds = (raw: string) =>
+  clampInt(
+    raw,
+    ENGINE_LIMITS.maxOffsetSeconds.min,
+    ENGINE_LIMITS.maxOffsetSeconds.max,
+    ENGINE_DEFAULTS.maxOffsetMs / 1000,
+  );
 
 interface OptionsDialogProps {
   open: boolean;
@@ -212,10 +224,10 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                 Choose_Preset_On_Startup: askForPreset,
                 Dark_Mode: darkMode,
                 Measurement: {
-                  windowCount: clampInt(String(measurement.windowCount), 2, 12, ENGINE_DEFAULTS.windowCount),
-                  windowSeconds: clampInt(String(measurement.windowSeconds), 10, 180, ENGINE_DEFAULTS.windowSeconds),
-                  maxOffsetMs:
-                    clampInt(String(measurement.maxOffsetMs / 1000), 5, 300, ENGINE_DEFAULTS.maxOffsetMs / 1000) * 1000,
+                  windowCount: clampWindowCount(String(measurement.windowCount)),
+                  windowSeconds: clampWindowSeconds(String(measurement.windowSeconds)),
+                  maxOffsetMs: clampMaxOffsetSeconds(String(measurement.maxOffsetMs / 1000)) * 1000,
+                  scanTimeline: measurement.scanTimeline ?? true,
                 },
               });
               onOpenChange(false);
@@ -502,46 +514,61 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
               <span className="text-xs text-muted-foreground">Sample windows</span>
               <TextField
                 type="number"
-                min={2}
-                max={12}
+                min={ENGINE_LIMITS.windowCount.min}
+                max={ENGINE_LIMITS.windowCount.max}
                 step={1}
                 value={measurement.windowCount}
                 onChange={(e) => setMeasurement((m) => ({ ...m, windowCount: Number(e.target.value) }))}
-                onBlur={(e) =>
-                  setMeasurement((m) => ({ ...m, windowCount: clampInt(e.target.value, 2, 12, ENGINE_DEFAULTS.windowCount) }))
-                }
+                onBlur={(e) => setMeasurement((m) => ({ ...m, windowCount: clampWindowCount(e.target.value) }))}
               />
             </label>
             <label className="space-y-1">
               <span className="text-xs text-muted-foreground">Window length (s)</span>
               <TextField
                 type="number"
-                min={10}
-                max={180}
+                min={ENGINE_LIMITS.windowSeconds.min}
+                max={ENGINE_LIMITS.windowSeconds.max}
                 step={5}
                 value={measurement.windowSeconds}
                 onChange={(e) => setMeasurement((m) => ({ ...m, windowSeconds: Number(e.target.value) }))}
-                onBlur={(e) =>
-                  setMeasurement((m) => ({ ...m, windowSeconds: clampInt(e.target.value, 10, 180, ENGINE_DEFAULTS.windowSeconds) }))
-                }
+                onBlur={(e) => setMeasurement((m) => ({ ...m, windowSeconds: clampWindowSeconds(e.target.value) }))}
               />
             </label>
             <label className="space-y-1">
               <span className="text-xs text-muted-foreground">Maximum offset (s)</span>
               <TextField
                 type="number"
-                min={5}
-                max={300}
+                min={ENGINE_LIMITS.maxOffsetSeconds.min}
+                max={ENGINE_LIMITS.maxOffsetSeconds.max}
                 step={5}
                 value={Math.round(measurement.maxOffsetMs / 1000)}
                 onChange={(e) => setMeasurement((m) => ({ ...m, maxOffsetMs: Number(e.target.value) * 1000 }))}
                 onBlur={(e) =>
-                  setMeasurement((m) => ({
-                    ...m,
-                    maxOffsetMs: clampInt(e.target.value, 5, 300, ENGINE_DEFAULTS.maxOffsetMs / 1000) * 1000,
-                  }))
+                  setMeasurement((m) => ({ ...m, maxOffsetMs: clampMaxOffsetSeconds(e.target.value) * 1000 }))
                 }
               />
+            </label>
+          </div>
+          {(measurement.windowCount !== ENGINE_DEFAULTS.windowCount ||
+            measurement.windowSeconds !== ENGINE_DEFAULTS.windowSeconds ||
+            measurement.maxOffsetMs !== ENGINE_DEFAULTS.maxOffsetMs) && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              These differ from AudioSyncMaster's defaults ({ENGINE_DEFAULTS.windowCount} windows ×{" "}
+              {ENGINE_DEFAULTS.windowSeconds} s, maximum offset {ENGINE_DEFAULTS.maxOffsetMs / 1000} s). The
+              two apps only agree if AudioSyncMaster uses these same values.
+            </p>
+          )}
+          <div className="flex items-start gap-2">
+            <CheckboxField
+              id="scan-timeline"
+              checked={measurement.scanTimeline ?? true}
+              onCheckedChange={(checked) => setMeasurement((m) => ({ ...m, scanTimeline: checked === true }))}
+              className="mt-0.5"
+            />
+            <label htmlFor="scan-timeline" className="text-xs text-muted-foreground cursor-pointer">
+              After measuring, scan each pair's full runtime for cuts and frame-rate changes. Uses
+              AudioSyncMaster's Dub sync analysis (plan only, nothing is written); roughly half a minute
+              per hour of video, longer where the dub and video share little.
             </label>
           </div>
         </section>

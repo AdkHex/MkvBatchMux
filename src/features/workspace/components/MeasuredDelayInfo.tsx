@@ -9,6 +9,8 @@ import { cn } from "@/shared/lib/utils";
 import type { MeasuredDelay } from "@/shared/types";
 import { MAX_PLAUSIBLE_OFFSET_MS } from "@/shared/types/audiosync";
 import { WarningBadge } from "@/features/workspace/components/WarningBadge";
+import { TimelineScanInfo } from "@/features/workspace/components/TimelineScanInfo";
+import { formatClock } from "@/features/workspace/lib/timelineScan";
 import {
   confidenceLevel,
   formatConfidence,
@@ -41,6 +43,8 @@ interface MeasuredDelayInfoProps {
   /** When this differs from the track the measurement used, the result no
    *  longer describes what the next measurement would produce. */
   currentReferenceTrack?: number;
+  /** Write the full-timeline scan's opening offset into the delay field. */
+  onUseTimelineDelay?: () => void;
 }
 
 export function MeasuredDelayInfo({
@@ -48,32 +52,37 @@ export function MeasuredDelayInfo({
   onApplyAnyway,
   pending,
   currentReferenceTrack,
+  onUseTimelineDelay,
 }: MeasuredDelayInfoProps) {
   const implausible = Math.abs(measured.engineDelayMs) > MAX_PLAUSIBLE_OFFSET_MS;
   if (measured.error) {
+    // The timeline scan can still place a dub the survey could not, so its findings stay visible.
     return (
       <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400 cursor-help">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              <span className="truncate">Measurement failed: {measured.error}</span>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-sm space-y-1.5">
-            <p>
-              The engine could not analyse this pair at all, so there is no offset to show:{" "}
-              {measured.error}
-            </p>
-            <p>
-              <span className="font-semibold">What to do: </span>
-              Check the file still exists at the path in the row and that it is a media file
-              ffmpeg can decode, then measure again. A failure on every row instead of this one
-              usually means the engine or ffmpeg is missing — the audio sync panel reports that
-              at the top.
-            </p>
-          </TooltipContent>
-        </Tooltip>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400 cursor-help">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">Measurement failed: {measured.error}</span>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-sm space-y-1.5">
+              <p>
+                The engine could not analyse this pair at all, so there is no offset to show:{" "}
+                {measured.error}
+              </p>
+              <p>
+                <span className="font-semibold">What to do: </span>
+                Check the file still exists at the path in the row and that it is a media file
+                ffmpeg can decode, then measure again. A failure on every row instead of this one
+                usually means the engine or ffmpeg is missing — the audio sync panel reports that
+                at the top.
+              </p>
+            </TooltipContent>
+          </Tooltip>
+          <TimelineScanInfo measured={measured} onUseTimelineDelay={onUseTimelineDelay} />
+        </div>
       </TooltipProvider>
     );
   }
@@ -91,6 +100,10 @@ export function MeasuredDelayInfo({
   const withheld = implausible || measured.isLikelyCut || weak;
   const frames = formatFrameOffset(measured.appliedMs, measured.primaryFps);
   const conversion = measured.isRateMismatch ? rateConversionFor(measured) : null;
+  // A completed timeline scan lists every cut with its position, which says more than
+  // the quick measurement's single split.
+  const scannedForCuts = Boolean(measured.timeline && !measured.timeline.error);
+  const cutAt = measured.cutPositionS ?? null;
 
   return (
     <TooltipProvider>
@@ -180,7 +193,7 @@ export function MeasuredDelayInfo({
           />
         )}
 
-        {!implausible && measured.isLikelyCut && (
+        {!implausible && measured.isLikelyCut && !scannedForCuts && (
           <WarningBadge
             tone="blocking"
             solid
@@ -188,13 +201,29 @@ export function MeasuredDelayInfo({
             label="Different cut"
             cause={
               <>
-                The offset does not stay put: it changes
-                {measured.driftMsPerS !== null
-                  ? ` by ${measured.driftMsPerS.toFixed(3)} ms every second (${driftPerHour(
-                      measured.driftMsPerS,
-                    )})`
-                  : ""}
-                , far faster than any frame-rate conversion can explain. That means the two files
+                {cutAt !== null ? (
+                  <>
+                    The offset jumps
+                    {measured.cutMagnitudeMs != null
+                      ? ` by ${(Math.abs(measured.cutMagnitudeMs) / 1000).toFixed(3)} s`
+                      : ""}{" "}
+                    at {formatClock(cutAt)}
+                    {measured.cutUncertaintyS != null && measured.cutUncertaintyS >= 0.5
+                      ? ` (±${measured.cutUncertaintyS.toFixed(0)} s)`
+                      : ""}
+                    : the delay before it is not the delay after it. That means the two files
+                  </>
+                ) : (
+                  <>
+                    The offset does not stay put: it changes
+                    {measured.driftMsPerS !== null
+                      ? ` by ${measured.driftMsPerS.toFixed(3)} ms every second (${driftPerHour(
+                          measured.driftMsPerS,
+                        )})`
+                      : ""}
+                    , far faster than any frame-rate conversion can explain. That means the two files
+                  </>
+                )}
                 do not hold the same material end to end — scenes added or removed, an extended
                 cut against a theatrical one, or recap footage only one of them has. Nothing was
                 filled in, because no single delay and no stretch can align them.
@@ -300,6 +329,8 @@ export function MeasuredDelayInfo({
             }
           />
         )}
+
+        <TimelineScanInfo measured={measured} onUseTimelineDelay={onUseTimelineDelay} />
 
         {withheld && onApplyAnyway && (
           <Button
