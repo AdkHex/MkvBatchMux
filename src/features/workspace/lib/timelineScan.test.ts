@@ -121,6 +121,22 @@ describe("summarizeTimeline", () => {
     expect(isRateChange(summarizeTimeline(plan([dub(0, 3600, 0)]), null, null, AT))).toBe(false);
   });
 
+  it("carries the engine's own edit list and frame-rate guide when it sends them", () => {
+    const edits = [{ index: 1, kind: "missing", severity: "moderate", description: "0:10:00.000: the dub is missing 5.000 s" }];
+    const rateGuide = { instruction: "Convert the dub from 25 fps to 23.976 fps" };
+    const scan = summarizeTimeline(
+      plan([dub(0, 600, 2.6), fill(600, 605, "cut"), dub(605, 1500, -2.4)], {
+        edits, rateGuide,
+      } as unknown as Partial<TimelinePlan>),
+      null, null, "t",
+    );
+    expect(scan.edits).toEqual(edits);
+    expect(scan.rateGuide).toEqual(rateGuide);
+    expect(scan.cuts).toHaveLength(1);
+    // An older plan without them reads exactly as before.
+    expect("edits" in summarizeTimeline(plan([dub(0, 600, 2.6)]), null, null, "t")).toBe(false);
+  });
+
   it("keeps an error from either the engine or the plan", () => {
     expect(summarizeTimeline(null, null, "ffprobe failed", AT).error).toBe("ffprobe failed");
     const failed = summarizeTimeline(plan([], { error: "the dub does not match" }), null, null, AT);

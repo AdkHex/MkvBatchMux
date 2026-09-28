@@ -31,6 +31,8 @@ export function buildMeasuredDelay(
     primaryFps: result.primaryFps ?? null,
     measuredAt,
     error: result.error ?? null,
+    ...(result.method ? { method: result.method } : {}),
+    ...(result.warnings && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
   };
 }
 

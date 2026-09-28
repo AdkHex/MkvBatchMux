@@ -10,6 +10,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import type { MeasuredDelay } from "@/shared/types";
+import type { TimelineEdit } from "@/shared/types/audiosync";
 import { MeasuredDelayInfo } from "./MeasuredDelayInfo";
 import { StretchToggle } from "./StretchToggle";
 import { AudioFpsBadge } from "./AudioFpsBadge";
@@ -276,6 +277,56 @@ describe("the full-timeline scan on a row", () => {
     const text = hover(screen.getByText("FPS 25.000 → 23.976"));
     expect(text).toMatch(/video runs at 23\.976 fps, but the dub was mastered at 25\.000 fps/);
     expect(text).toContain("What to do:");
+  });
+
+  it("lists the engine's own edits, graded, with the doubtful ones marked", () => {
+    const edit = (index: number, overrides: Partial<TimelineEdit>): TimelineEdit => ({
+      index, kind: "missing", severity: "moderate", videoS: 600, videoEndS: 605, dubS: 602.6, dubEndS: 602.6,
+      jumpMs: -5000, sizeMs: 5000, missingS: 5, extraS: 0, frames: 120, uncertaintyS: 0, offsetBeforeMs: 2600,
+      offsetAfterMs: -2400, shortestStretchS: 600, check: false, description: "", ...overrides,
+    });
+    render(
+      <MeasuredDelayInfo
+        measured={matched({
+          ...clean,
+          cuts: [{ atS: 600, jumpMs: -5000, missingS: 5, uncertaintyS: 0, offsetAfterMs: -2400 }],
+          edits: [
+            edit(1, { description: "0:10:00.000: the dub is missing 5.000 s (120 frames) of the video; from here it plays 5.000 s early." }),
+            edit(2, { severity: "major", videoS: 1400, check: true, description: "0:23:20.000: the dub is missing 39.445 s of the video." }),
+          ],
+        })}
+      />,
+    );
+    const text = hover(screen.getByText("2 edits · 1 major · 1 to check"));
+    expect(text).toContain("the dub is missing 5.000 s (120 frames) of the video; from here it plays 5.000 s early.");
+    expect(text).toContain("(check) 0:23:20.000: the dub is missing 39.445 s of the video.");
+    expect(text).toMatch(/only lines up the part before 0:10:00\.000/);
+  });
+
+  it("says which rate to convert the dub from and to, with the command and the delay after", () => {
+    const guide = {
+      videoFps: 23.976, dubFps: 25, fromFps: 25, toFps: 23.976, fromLabel: "25 fps (PAL)", toLabel: "23.976 fps (NTSC film)",
+      named: true, alternatives: [], confirmed: true, speed: 1001 / 960, stretch: { num: 1001, den: 960 },
+      tempo: 960 / 1001, tempoPercent: -4.096, lengthPercent: 4.271, pitchSemitones: -0.72, driftPerHourS: 147.5,
+      dubDurationS: 5400, convertedDurationS: 5630.6, delayWithStretchMs: 2600, sampleRate: 48000,
+      resampleFilter: "aresample=48048,asetrate=46080,aresample=48000", atempoFilter: "atempo=0.959040959",
+      ffmpegFilter: "aresample=48048,asetrate=46080,aresample=48000", pitchNote: "Resampling is sample-exact.",
+      stretchNote: "", instruction: "Convert the dub from 25 fps to 23.976 fps: slow it down by 4.096%.",
+    };
+    render(<MeasuredDelayInfo measured={matched({ ...clean, speed: 1001 / 960, dubRate: 25, rateGuide: guide })} />);
+    const text = hover(screen.getByText("FPS 25.000 → 23.976"));
+    expect(text).toContain("Convert the dub from 25 fps to 23.976 fps: slow it down by 4.096%.");
+    expect(text).toContain("-af aresample=48048,asetrate=46080,aresample=48000");
+    expect(text).toMatch(/then use a delay of -2600\.0 ms/);
+  });
+
+  it("shows the engine's notes on the measurement itself", () => {
+    render(
+      <MeasuredDelayInfo
+        measured={{ ...matched(clean), warnings: ["corrupt.mka is damaged: FFmpeg hit 5 decoding errors reading it."] }}
+      />,
+    );
+    expect(hover(screen.getByText("1 note"))).toContain("corrupt.mka is damaged");
   });
 
   it("offers the timeline's delay when it and the measurement are visibly apart", () => {

@@ -38,6 +38,10 @@ export function summarizeTimeline(
     dubUsedShare: plan?.summary?.dubUsedShare ?? null,
     videoDurationS: plan?.videoDurationS ?? 0,
     description,
+    // Engine builds that list the edits themselves send them; the cuts below are
+    // still derived from the segments, so older plans read the same as before.
+    ...(plan?.edits ? { edits: plan.edits } : {}),
+    ...(plan?.rateGuide ? { rateGuide: plan.rateGuide } : {}),
   };
   if (!plan || empty.error) return empty;
 

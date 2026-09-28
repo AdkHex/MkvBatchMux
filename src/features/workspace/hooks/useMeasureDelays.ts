@@ -72,6 +72,9 @@ export function useMeasureDelays({
   scanEnabledRef.current = measurement?.scanTimeline ?? true;
   const maxWorkersRef = useRef<number>(ENGINE_DEFAULTS.maxWorkers);
   const scansRef = useRef<TimelineScan[]>([]);
+  // Pairs the engine already laid along the whole timeline while measuring: their plan came
+  // back with the result, so scanning them again would only repeat the slowest work.
+  const scannedByMeasureRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -103,19 +106,30 @@ export function useMeasureDelays({
     const { audioFileId, trackId } = parseMeasurementKey(key);
 
     const measuredAt = new Date().toISOString();
+    const scan = result.timeline
+      ? summarizeTimeline(result.timeline, result.timelineDescription ?? null, null, measuredAt)
+      : null;
 
-    const next = audioFilesRef.current.map((file) =>
-      file.id === audioFileId
-        ? applyMeasurement({
-            file,
-            result,
-            trackId,
-            referenceTrack: planned.pair.primaryTrack,
-            measuredAt,
-            force: forcedRef.current,
-          })
-        : file,
-    );
+    // The measurement and the plan it came with go in as one update: attached separately, the
+    // second write would start from a list that does not have the first in it yet.
+    const next = audioFilesRef.current.map((file) => {
+      if (file.id !== audioFileId) return file;
+      const measured = applyMeasurement({
+        file,
+        result,
+        trackId,
+        referenceTrack: planned.pair.primaryTrack,
+        measuredAt,
+        force: forcedRef.current,
+      });
+      return scan ? attachTimelineScan(measured, trackId, scan) : measured;
+    });
+    if (scan) {
+      scansRef.current.push(scan);
+      scannedByMeasureRef.current.add(key);
+    }
+    // Results can arrive faster than the parent re-renders; the next one must start from this.
+    audioFilesRef.current = next;
     onChangeRef.current(next);
   }, []);
 
@@ -123,11 +137,32 @@ export function useMeasureDelays({
     if (!key || !planRef.current.has(key)) return;
     const { audioFileId, trackId } = parseMeasurementKey(key);
     scansRef.current.push(scan);
-    onChangeRef.current(
-      audioFilesRef.current.map((file) =>
-        file.id === audioFileId ? attachTimelineScan(file, trackId, scan) : file,
-      ),
+    const next = audioFilesRef.current.map((file) =>
+      file.id === audioFileId ? attachTimelineScan(file, trackId, scan) : file,
     );
+    audioFilesRef.current = next;
+    onChangeRef.current(next);
+  }, []);
+
+  /** Sum up what the timeline found across the run, as the closing toast. */
+  const reportFindings = useCallback((cancelled: boolean) => {
+    const scans = scansRef.current;
+    const withCuts = scans.filter((scan) => scan.cuts.length > 0).length;
+    const rateChanges = scans.filter((scan) => !scan.error && isRateChange(scan)).length;
+    const failed = scans.filter((scan) => scan.error).length;
+    const findings = [
+      withCuts > 0 ? `${withCuts} with cuts` : null,
+      rateChanges > 0 ? `${rateChanges} with a frame-rate change` : null,
+      failed > 0 ? `${failed} could not be scanned` : null,
+    ].filter(Boolean);
+    toast({
+      title: cancelled ? "Timeline scan cancelled" : "Measurement and timeline scan complete",
+      description:
+        findings.length > 0
+          ? `Of ${scans.length} pair(s): ${findings.join(", ")}. Check the warnings on those rows, then Apply.`
+          : `No cuts or frame-rate changes across ${scans.length} pair(s). Review the results, then Apply.`,
+      variant: withCuts > 0 || rateChanges > 0 || failed > 0 ? "destructive" : undefined,
+    });
   }, []);
 
   const finish = useCallback(() => {
@@ -139,9 +174,10 @@ export function useMeasureDelays({
   /** Follow a finished measurement with the full-timeline scan of the same pairs. Returns
    *  false when it could not start, so the caller reports the measurement as the end. */
   const startScan = useCallback(async (runId: string): Promise<boolean> => {
-    const pairs = [...planRef.current.values()].map((planned) => planned.pair);
+    const pairs = [...planRef.current.values()]
+      .map((planned) => planned.pair)
+      .filter((pair) => !scannedByMeasureRef.current.has(pair.key));
     if (pairs.length === 0) return false;
-    scansRef.current = [];
     setProgress({ phase: "scan", processed: 0, total: pairs.length, current: null });
     try {
       await scanTimelineStart({ runId, pairs, maxWorkers: maxWorkersRef.current });
@@ -198,6 +234,9 @@ export function useMeasureDelays({
           title: "Measurement cancelled",
           description: "Delays measured before cancelling have been kept.",
         });
+      } else if (scansRef.current.length > 0) {
+        // Every pair was laid along its timeline while measuring; there was nothing left to scan.
+        reportFindings(false);
       } else {
         // Measuring only records results, not the delay field itself.
         toast({
@@ -230,34 +269,18 @@ export function useMeasureDelays({
     listenTimelineScanDone((payload) => {
       if (payload.runId !== runIdRef.current) return;
       finish();
-      const scans = scansRef.current;
       if (payload.error) {
         toast({ title: "Timeline scan failed", description: payload.error, variant: "destructive" });
         return;
       }
-      const withCuts = scans.filter((scan) => scan.cuts.length > 0).length;
-      const rateChanges = scans.filter((scan) => !scan.error && isRateChange(scan)).length;
-      const failed = scans.filter((scan) => scan.error).length;
-      const findings = [
-        withCuts > 0 ? `${withCuts} with cuts` : null,
-        rateChanges > 0 ? `${rateChanges} with a frame-rate change` : null,
-        failed > 0 ? `${failed} could not be scanned` : null,
-      ].filter(Boolean);
-      toast({
-        title: payload.cancelled ? "Timeline scan cancelled" : "Measurement and timeline scan complete",
-        description:
-          findings.length > 0
-            ? `Of ${scans.length} pair(s): ${findings.join(", ")}. Check the warnings on those rows, then Apply.`
-            : `No cuts or frame-rate changes across ${scans.length} pair(s). Review the results, then Apply.`,
-        variant: withCuts > 0 || rateChanges > 0 || failed > 0 ? "destructive" : undefined,
-      });
+      reportFindings(payload.cancelled);
     }).then(collect);
 
     return () => {
       disposed = true;
       unlisteners.forEach((un) => un());
     };
-  }, [applyResult, applyScan, finish, startScan]);
+  }, [applyResult, applyScan, finish, reportFindings, startScan]);
 
   const start = useCallback(
     async (options: { onlyAudioFileIds?: string[]; force?: boolean } = {}) => {
@@ -301,6 +324,8 @@ export function useMeasureDelays({
       const runId = `measure-${Date.now()}`;
       runIdRef.current = runId;
       forcedRef.current = Boolean(options.force);
+      scansRef.current = [];
+      scannedByMeasureRef.current = new Set();
       planRef.current = new Map(plan.measurements.map((m) => [m.pair.key, m]));
 
       setIsMeasuring(true);

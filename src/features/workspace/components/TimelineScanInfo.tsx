@@ -8,6 +8,7 @@ import { Button } from "@/shared/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/shared/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/shared/ui/tooltip";
 import type { MeasuredDelay } from "@/shared/types";
+import type { TimelineEdit } from "@/shared/types/audiosync";
 import { WarningBadge } from "@/features/workspace/components/WarningBadge";
 import { formatFps, formatPlayerDelayMs } from "@/features/workspace/lib/delayConversion";
 import {
@@ -25,6 +26,16 @@ const LISTED_CUTS = 8;
 
 /** A dub ending this much earlier than the video is worth saying; less is a trailing silence. */
 const NOTABLE_TAIL_S = 5;
+
+/** "4 edits · 1 major, 2 to check": the count, the worst grade present, and how many need an ear. */
+function editsLabel(edits: TimelineEdit[]): string {
+  const major = edits.filter((edit) => edit.severity === "major").length;
+  const toCheck = edits.filter((edit) => edit.check).length;
+  const parts = [`${edits.length} ${edits.length === 1 ? "edit" : "edits"}`];
+  if (major > 0) parts.push(`${major} major`);
+  if (toCheck > 0) parts.push(`${toCheck} to check`);
+  return parts.join(" · ");
+}
 
 interface TimelineScanInfoProps {
   measured: MeasuredDelay;
@@ -59,37 +70,49 @@ export function TimelineScanInfo({ measured, onUseTimelineDelay }: TimelineScanI
   const disagreement = timelineDisagreementMs(measured);
   const lipSyncOff = disagreement !== null && disagreement > LIP_SYNC_VISIBLE_MS;
   const endsEarly = scan.tailS >= NOTABLE_TAIL_S;
-  const clean = scan.cuts.length === 0 && !rateChange && scan.unverified.length === 0 && !lipSyncOff;
+  // The engine's own list, when it sent one: each edit graded, placed on both timelines and
+  // marked when it rests on too little dub to be sure. Older plans only carry the segments.
+  const edits = scan.edits ?? null;
+  const editCount = edits ? edits.length : scan.cuts.length;
+  const clean = editCount === 0 && !rateChange && scan.unverified.length === 0 && !lipSyncOff;
   const opening = scan.startOffsetMs !== null ? formatPlayerDelayMs(scan.startOffsetMs) : null;
-  const firstCut = scan.cuts[0];
+  const firstAtS = edits?.[0]?.videoS ?? scan.cuts[0]?.atS ?? 0;
+  const guide = scan.rateGuide ?? null;
 
   return (
     <>
-      {scan.cuts.length > 0 && (
+      {editCount > 0 && (
         <WarningBadge
           tone="blocking"
           solid
           icon={Scissors}
-          label={`${scan.cuts.length} ${scan.cuts.length === 1 ? "cut" : "cuts"}`}
+          label={edits ? editsLabel(edits) : `${scan.cuts.length} ${scan.cuts.length === 1 ? "cut" : "cuts"}`}
           cause={
             <>
               Across the full runtime the dub does not follow the video in one piece. It starts at{" "}
               {opening ?? "an unknown offset"}, then:
-              {scan.cuts.slice(0, LISTED_CUTS).map((cut) => (
-                <span key={cut.atS} className="block pl-2">
-                  • {describeCut(cut)}
-                </span>
-              ))}
-              {scan.cuts.length > LISTED_CUTS && (
+              {edits
+                ? edits.slice(0, LISTED_CUTS).map((edit) => (
+                    <span key={edit.index} className="block pl-2">
+                      • {edit.check ? "(check) " : ""}
+                      {edit.description}
+                    </span>
+                  ))
+                : scan.cuts.slice(0, LISTED_CUTS).map((cut) => (
+                    <span key={cut.atS} className="block pl-2">
+                      • {describeCut(cut)}
+                    </span>
+                  ))}
+              {editCount > LISTED_CUTS && (
                 <span className="block pl-2">
-                  …and {scan.cuts.length - LISTED_CUTS} more (see Timeline details).
+                  …and {editCount - LISTED_CUTS} more (see Timeline details).
                 </span>
               )}
             </>
           }
           fix={
             <>
-              One delay only lines up the part before {formatClock(firstCut.atS)}; muxed as it is,
+              One delay only lines up the part before {formatClock(firstAtS)}; muxed as it is,
               everything after that is out of sync. Pair this audio with the release it was cut for
               (matching runtimes are the quick check), or re-lay it onto this video with
               AudioSyncMaster's Dub sync mode, which works from this same analysis.
@@ -108,23 +131,40 @@ export function TimelineScanInfo({ measured, onUseTimelineDelay }: TimelineScanI
               : "FPS change"
           }
           cause={
-            <>
-              {scan.dubRate !== null && scan.videoFps !== null
-                ? `The video runs at ${formatFps(scan.videoFps)} fps, but the dub was mastered at ${formatFps(scan.dubRate)} fps. `
-                : ""}
-              The dub only lines up played at {scan.speed.toFixed(6)}× its speed, so a plain delay drifts
-              by about {(Math.abs(scan.speed - 1) * 3600).toFixed(1)} s every hour.
-              {scan.rateConfirmed === false
-                ? " The audio did not confirm this rate sharply, so treat it as the likeliest explanation rather than a certainty."
-                : ""}
-            </>
+            guide ? (
+              <>
+                {guide.instruction} {guide.pitchNote}
+              </>
+            ) : (
+              <>
+                {scan.dubRate !== null && scan.videoFps !== null
+                  ? `The video runs at ${formatFps(scan.videoFps)} fps, but the dub was mastered at ${formatFps(scan.dubRate)} fps. `
+                  : ""}
+                The dub only lines up played at {scan.speed.toFixed(6)}× its speed, so a plain delay drifts
+                by about {(Math.abs(scan.speed - 1) * 3600).toFixed(1)} s every hour.
+                {scan.rateConfirmed === false
+                  ? " The audio did not confirm this rate sharply, so treat it as the likeliest explanation rather than a certainty."
+                  : ""}
+              </>
+            )
           }
           fix={
-            <>
-              Use <span className="font-medium">Correct frame rate</span> on this row when it is offered,
-              or convert the audio to {scan.videoFps !== null ? `${formatFps(scan.videoFps)} fps` : "the video's rate"}{" "}
-              before muxing. Check the last minutes of the file after either.
-            </>
+            guide ? (
+              <>
+                Best: convert the dub before muxing with FFmpeg{" "}
+                <code className="rounded bg-muted px-1">-af {guide.ffmpegFilter}</code>, then use a delay of{" "}
+                {guide.delayWithStretchMs !== null ? formatPlayerDelayMs(guide.delayWithStretchMs) : "a fresh measurement"}
+                . Or turn on <span className="font-medium">Correct frame rate</span> on this row: it stretches the
+                timestamps by {guide.stretch.num}/{guide.stretch.den} and scales the delay to match, which plays in sync
+                in players that follow the timestamps. Check the last minutes of the file after either.
+              </>
+            ) : (
+              <>
+                Use <span className="font-medium">Correct frame rate</span> on this row when it is offered,
+                or convert the audio to {scan.videoFps !== null ? `${formatFps(scan.videoFps)} fps` : "the video's rate"}{" "}
+                before muxing. Check the last minutes of the file after either.
+              </>
+            )
           }
         />
       )}

@@ -139,18 +139,29 @@ defaults, so nothing is written. The measurement samples six windows and can
 miss a cut between them, or a trim of a frame or two. The scan follows the dub
 through the entire video at 2 ms resolution and adds these to the row:
 
-- **N cuts**: every place the dub stops following the video, with its time
-  (`h:mm:ss.mmm`) and what happens there. The dub may lack part of a scene, carry
-  material the video lacks, or play a few milliseconds early or late from that
-  point on.
+- **N edits · 1 major · 2 to check**: every place the dub stops following the
+  video, however small (a one-frame trim to a ten-minute scene), with its time
+  (`h:mm:ss.mmm`), where it is in the dub, its size in ms and frames, and how
+  the sync moves from there. Each is graded minor (under 1 s), moderate (under
+  30 s) or major, and marked *(check)* when it rests on less than 30 s of dub,
+  which is also what a repeated music cue matched in the wrong place looks like.
 - **FPS 25.000 → 23.976**: the dub was mastered at another frame rate and only
-  lines up played faster or slower. A plain delay drifts.
+  lines up played faster or slower. A plain delay drifts. The warning says
+  which rate to convert from and to, gives the FFmpeg filter that converts it
+  sample-exactly, and the delay to use once it is converted.
+  **Correct frame rate** instead writes a timestamp stretch; mkvmerge stretches
+  first and shifts after, so the delay is scaled by the same ratio when muxed.
 - **Lip-sync check**: the scan's opening offset differs from the measured
   delay by more than 45 ms, where lips visibly lead or trail the voice.
   **Use timeline delay** writes the scan's value instead.
 - **Unconfirmed**, **Ends early**, or **No cuts** when the dub follows the video
   in one piece. **Timeline details** shows the engine's full plan table, the
   same one AudioSyncMaster shows.
+
+A pair the six windows cannot settle on their own (a window that found
+nothing, a step, a drift, a frame-rate change, a weak match) is measured along
+its whole timeline by the engine itself, and that plan becomes the row's scan,
+so it is not scanned twice.
 
 The scan takes roughly half a minute per hour of video, and longer where the
 dub and video share little. Turn it off in Settings → *Delay

@@ -254,12 +254,16 @@ fn delay_to_sync_ms(delay_seconds: f64) -> i64 {
 /// Render the `--sync` value for a track: a plain offset, or an offset with a
 /// linear stretch when one is set.
 ///
-/// The offset and the stretch are independent -- the stretch is applied about
-/// t=0, so the offset remains the start-referenced delay either way.
+/// mkvmerge stretches a track's timestamps first and adds the offset after
+/// (t' = t * num/den + offset; checked against its output packet timestamps).
+/// The delay field holds the offset on the audio's own clock, which is what a
+/// plain delay needs, so with a stretch it is scaled by the same ratio:
+/// unscaled, a 2.6 s delay on a 25 -> 23.976 conversion lands 107 ms off, and
+/// a 92 s one 3.8 s off.
 fn format_sync_value(track_id: u64, delay_seconds: f64, stretch: Option<StretchSetting>) -> String {
-    let offset_ms = delay_to_sync_ms(delay_seconds);
     match stretch {
         Some(ratio) if ratio.is_usable() => {
+            let offset_ms = delay_to_sync_ms(delay_seconds * ratio.num / ratio.den);
             format!(
                 "{}:{},{}/{}",
                 track_id,
@@ -268,7 +272,7 @@ fn format_sync_value(track_id: u64, delay_seconds: f64, stretch: Option<StretchS
                 format_ratio_part(ratio.den)
             )
         }
-        _ => format!("{}:{}", track_id, offset_ms),
+        _ => format!("{}:{}", track_id, delay_to_sync_ms(delay_seconds)),
     }
 }
 
@@ -3954,13 +3958,26 @@ mod regression_tests {
             num: 25025.0,
             den: 24000.0,
         };
+        // The offset is scaled with the timestamps: -88 ms on the audio's own
+        // clock is -91.76 ms once it runs 25025/24000 as long.
         assert_eq!(
             format_sync_value(1, -0.088, Some(stretch)),
-            "1:-88,25025/24000"
+            "1:-92,25025/24000"
         );
-        // The offset and the stretch are independent; a zero offset still
-        // carries the ratio.
+        // A zero offset still carries the ratio.
         assert_eq!(format_sync_value(1, 0.0, Some(stretch)), "1:0,25025/24000");
+    }
+
+    /// The stretch is applied before the offset, so the offset has to be the
+    /// one on the stretched clock. Measured on real mkvmerge output: a packet
+    /// at 29.995 s with --sync 0:10000,25025/24000 lands at 41.276 s, which is
+    /// 29.995 * 25025/24000 + 10.000 and not (29.995 + 10.000) * 25025/24000.
+    #[test]
+    fn a_stretched_delay_is_scaled_to_the_stretched_clock() {
+        let pal = StretchSetting { num: 1001.0, den: 960.0 };
+        // A PAL dub measured 2.493 s out on its own clock needs 2.600 s once stretched.
+        assert_eq!(format_sync_value(2, -2.4935, Some(pal)), "2:-2600,1001/960");
+        assert_eq!(format_sync_value(2, 88.235, Some(pal)), "2:92003,1001/960");
     }
 
     /// A malformed ratio must degrade to the plain offset rather than emitting

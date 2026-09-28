@@ -162,8 +162,12 @@ function emptyDestination() {
   }
 }
 
+/** verbatimSymlinks keeps PyInstaller's relative links relative. Without it
+ *  Node rewrites them to absolute paths into the build folder, so on macOS
+ *  `_internal/Python` pointed at a build that was later removed and the engine
+ *  could not load its own interpreter. */
 function copyTree(from, to) {
-  fs.cpSync(from, to, { recursive: true });
+  fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true });
 }
 
 function writeVersion(version) {
@@ -186,6 +190,16 @@ function verify() {
   if (process.platform !== "win32") {
     // PyInstaller sets this itself, but a copied tree can lose the bit.
     fs.chmodSync(found, 0o755);
+  }
+  // A link out of the engine folder works now and breaks the day its target
+  // is cleaned up, which the ping below cannot see.
+  for (const entry of fs.readdirSync(destination, { recursive: true })) {
+    const full = path.join(destination, String(entry));
+    if (!fs.lstatSync(full).isSymbolicLink()) continue;
+    const target = path.resolve(path.dirname(full), fs.readlinkSync(full));
+    if (path.relative(destination, target).startsWith("..")) {
+      fail(`${full} links outside the engine folder, to ${target}.`, "Copy the build with its links kept relative.");
+    }
   }
   // Catches a missing dependency before a user hits Measure.
   const ping = spawnSync(found, [], { input: '{"command":"ping"}\n', encoding: "utf8" });

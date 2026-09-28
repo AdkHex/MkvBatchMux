@@ -78,6 +78,94 @@ export interface SyncResult {
   primaryCodec?: string | null;
   secondaryCodec?: string | null;
   rateDiagnosis?: RateDiagnosis | null;
+  /** "survey": the sample windows alone, for a pair that is one offset throughout. "timeline": the
+   *  dub laid along the whole video, because the survey saw a cut, drift, speed change or weak match. */
+  method?: "survey" | "timeline" | null;
+  /** Every place the dub departs from the video, from the timeline route; empty for a survey. */
+  edits?: TimelineEdit[] | null;
+  gaps?: TimelineGap[] | null;
+  /** Things to check before trusting the delay: a damaged file, a weak survey, the same file twice. */
+  warnings?: string[] | null;
+  /** The frame-rate conversion the dub needs, when it runs at another speed. */
+  rateGuide?: RateGuide | null;
+  /** The whole-timeline plan the timeline route measured from, so it need not be scanned again. */
+  timeline?: TimelinePlan | null;
+  timelineDescription?: string | null;
+}
+
+/** One place the dub departs from the video, as the engine lists it however small. */
+export interface TimelineEdit {
+  index: number;
+  /** "missing": the dub lacks part of the video. "extra": the dub has material the video does not.
+   *  "replaced": a scene of the video is replaced in the dub by other material. */
+  kind: "missing" | "extra" | "replaced";
+  /** Under 1 s, under 30 s, or longer. Every edit is listed whatever its grade. */
+  severity: "minor" | "moderate" | "major";
+  videoS: number;
+  videoEndS: number;
+  /** Where it is in the dub file's own timeline. */
+  dubS: number;
+  dubEndS: number;
+  /** How far the offset moves, engine convention: negative when the dub lacks material. */
+  jumpMs: number;
+  sizeMs: number;
+  missingS: number;
+  extraS: number;
+  /** The size in the video's frames, when its frame rate is known. */
+  frames: number | null;
+  uncertaintyS: number;
+  offsetBeforeMs: number;
+  offsetAfterMs: number;
+  shortestStretchS: number;
+  /** Rests on a stretch of dub too short to rule out a repeated passage matched in the wrong place. */
+  check: boolean;
+  /** The edit as a sentence: where, what, and how the sync moves from there. */
+  description: string;
+}
+
+/** A span of the video the dub does not cover: before it starts, after it ends, silent, unmatched. */
+export interface TimelineGap {
+  startS: number;
+  endS: number;
+  lengthS: number;
+  reason: string;
+  uncertaintyS: number;
+  description: string;
+}
+
+/** The frame-rate conversion a dub needs, from which rate to which (engine `conversion_guide`). */
+export interface RateGuide {
+  videoFps: number | null;
+  dubFps: number | null;
+  fromFps: number | null;
+  toFps: number | null;
+  fromLabel: string | null;
+  toLabel: string | null;
+  /** Both rates are standard ones, so the ratio is the exact conversion between them. */
+  named: boolean;
+  alternatives: string[];
+  confirmed: boolean | null;
+  speed: number;
+  /** mkvmerge's stretch, dub rate over video rate. */
+  stretch: { num: number; den: number };
+  /** ffmpeg's tempo factor, the reciprocal of the stretch. */
+  tempo: number;
+  tempoPercent: number;
+  lengthPercent: number;
+  pitchSemitones: number;
+  driftPerHourS: number;
+  dubDurationS: number | null;
+  convertedDurationS: number | null;
+  /** The delay to pair with the stretch: mkvmerge stretches first and shifts after. */
+  delayWithStretchMs: number | null;
+  sampleRate: number | null;
+  /** Sample-exact resample for the dub's own sample rate; null when that was not known. */
+  resampleFilter: string | null;
+  atempoFilter: string;
+  ffmpegFilter: string;
+  pitchNote: string;
+  stretchNote: string;
+  instruction: string;
 }
 
 /** One measurement request. `key` ties the result back to the ExternalFile (and
@@ -186,6 +274,10 @@ export interface MeasuredDelay {
   cutMagnitudeMs?: number | null;
   /** The full-timeline scan that followed this measurement, when one ran. */
   timeline?: TimelineScan;
+  /** How the engine reached the delay; optional so older stored records still load. */
+  method?: "survey" | "timeline" | null;
+  /** The engine's warnings about this measurement, to check before trusting it. */
+  warnings?: string[];
   /** Which of the video's audio tracks this was measured against. */
   referenceTrack: number;
   primaryFps: number | null;
@@ -231,6 +323,10 @@ export interface TimelinePlan {
   warnings: string[];
   error: string | null;
   summary?: { dubUsedShare: number | null } | null;
+  /** Present from engine builds that list edits themselves; older plans only have segments. */
+  edits?: TimelineEdit[];
+  gaps?: TimelineGap[];
+  rateGuide?: RateGuide | null;
 }
 
 /** Where the offset changes between two stretches of dub. */
@@ -268,6 +364,9 @@ export interface TimelineScan {
   videoDurationS: number;
   /** The engine's own table of the plan, for the details view. */
   description: string | null;
+  /** The engine's own list of every edit, with each one's grade and sentence, when it gave one. */
+  edits?: TimelineEdit[];
+  rateGuide?: RateGuide | null;
 }
 
 export interface TimelineScanRequest {

@@ -330,6 +330,24 @@ export function MeasuredDelayInfo({
           />
         )}
 
+        {measured.warnings && measured.warnings.length > 0 && (
+          <WarningBadge
+            tone="caution"
+            icon={AlertTriangle}
+            label={measured.warnings.length === 1 ? "1 note" : `${measured.warnings.length} notes`}
+            cause={
+              <>
+                {measured.warnings.map((warning) => (
+                  <span key={warning} className="block">
+                    • {warning}
+                  </span>
+                ))}
+              </>
+            }
+            fix={<>Each note says what to check. The delay beside this is the engine's best answer either way.</>}
+          />
+        )}
+
         <TimelineScanInfo measured={measured} onUseTimelineDelay={onUseTimelineDelay} />
 
         {withheld && onApplyAnyway && (
