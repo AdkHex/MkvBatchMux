@@ -1,13 +1,10 @@
 name: CI
 
+# A push to main runs these checks as the first job of the release (release.yml),
+# so they are not triggered by the push a second time here.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE"
   pull_request:
+  workflow_call:
 
 jobs:
   check:

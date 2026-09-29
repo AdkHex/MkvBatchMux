@@ -1,21 +1,16 @@
 // Usage: npm run release -- <patch|minor|major|X.Y.Z> [--push]
 //
-// Writes the new version into every file that carries it, commits
-// "Release vX.Y.Z", tags it, and (with --push) pushes both. Pushing the tag
-// is what triggers the release build.
+// Only needed to choose a number: every push to main is released anyway, as
+// the next minor. Writes the version into every file that carries it, commits
+// "Release vX.Y.Z" and (with --push) pushes it; the release workflow then
+// publishes that number, because it is newer than every tag.
 
 import fs from "node:fs";
-import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { setVersion, versionFiles } from "./set-version.mjs";
 
 const root = process.cwd();
-const files = {
-  pkg: path.join(root, "package.json"),
-  pkgLock: path.join(root, "package-lock.json"),
-  tauri: path.join(root, "src-tauri", "tauri.conf.json"),
-  cargo: path.join(root, "src-tauri", "Cargo.toml"),
-  cargoLock: path.join(root, "src-tauri", "Cargo.lock"),
-};
+const files = versionFiles(root);
 
 const args = process.argv.slice(2);
 const push = args.includes("--push");
@@ -43,37 +38,15 @@ if (!/^\d+\.\d+\.\d+$/.test(next)) {
   process.exit(1);
 }
 
-const writeJson = (file, mutate) => {
-  const data = JSON.parse(fs.readFileSync(file, "utf8"));
-  mutate(data);
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
-};
-
-writeJson(files.pkg, (d) => { d.version = next; });
-writeJson(files.pkgLock, (d) => {
-  d.version = next;
-  if (d.packages?.[""]) d.packages[""].version = next;
-});
-writeJson(files.tauri, (d) => { d.package.version = next; });
-
-const cargo = fs.readFileSync(files.cargo, "utf8");
-fs.writeFileSync(files.cargo, cargo.replace(/^version\s*=\s*"[^"]+"/m, `version = "${next}"`));
-const crate = /^name\s*=\s*"([^"]+)"/m.exec(cargo)[1];
-const lock = fs.readFileSync(files.cargoLock, "utf8");
-fs.writeFileSync(
-  files.cargoLock,
-  lock.replace(new RegExp(`(\\[\\[package\\]\\]\\nname = "${crate}"\\nversion = ")[^"]+(")`), `$1${next}$2`),
-);
+setVersion(root, next);
 
 git("add", ...Object.values(files));
 git("commit", "-m", `Release v${next}`);
-git("tag", "-a", `v${next}`, "-m", `v${next}`);
-console.log(`Release v${next} committed and tagged.`);
+console.log(`Release v${next} committed.`);
 
 if (push) {
   git("push");
-  git("push", "origin", `v${next}`);
   console.log("Pushed. The release workflow is building the installer.");
 } else {
-  console.log(`Run: git push && git push origin v${next}`);
+  console.log("Run: git push");
 }

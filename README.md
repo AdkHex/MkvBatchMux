@@ -254,21 +254,29 @@ with nothing on screen to say why.
 
 ### Releases and CI
 
-Every push and pull request runs **CI** (typecheck, lint, tests, `cargo check`).
-Documentation-only changes are skipped.
+**Every push to `main` is released.** The **Release** workflow first runs the
+CI checks (typecheck, lint, tests, `cargo check`, `cargo test`), then builds the
+Windows installer with the bundled FFmpeg and engine, signs the updater bundle,
+and publishes a GitHub release marked *latest*; installed apps pick it up
+automatically. Pull requests run the same checks without releasing, and a push
+that only changes documentation is neither checked nor released.
 
-A release is cut from a tag:
+The version is decided by the workflow (`scripts/decide-version.mjs`): the next
+minor after the newest `v*` tag, or the repo's own version when that is newer.
+It is written into the build only, never committed back, so `package.json` may
+lag the latest release; the Releases page is the record of what shipped. Pushes
+close together are released one after another, each under its own number. A
+build that fails publishes nothing, and the next push takes the same number.
+
+To choose the number yourself (a patch or a major), set it and push:
 
 ```bash
-npm run release -- minor --push     # or patch / major / 1.65.0
+npm run release -- patch --push     # or major / 2.0.0
 ```
 
-This writes the version into `package.json`, `tauri.conf.json` and
-`Cargo.toml`, commits `Release vX.Y.Z`, tags it and pushes. The **Release**
-workflow then builds the Windows installer with the bundled FFmpeg and engine,
-signs the updater bundle, and publishes a GitHub release marked *latest* —
-installed apps pick it up automatically. Release notes are the commit subjects
-since the previous tag.
+This writes the version into `package.json`, `tauri.conf.json`, `Cargo.toml`
+and the lockfiles, commits `Release vX.Y.Z` and pushes it. Release notes are the
+commit subjects since the previous release.
 
 <details>
 <summary>Repository secrets (required for auto-update)</summary>

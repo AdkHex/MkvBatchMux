@@ -1,16 +1,35 @@
 name: Release
 
+# Every push to main is released: as the next minor after the newest tag, or as
+# the number set with `npm run release` when that is newer (scripts/decide-version.mjs).
+# Nothing is committed back; the version is written into this checkout only.
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    # A push of only documentation is neither tested nor released; any other
+    # push is both.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".gitignore"
   workflow_dispatch:
 
 permissions:
   contents: write
 
+# Pushes close together are released one after another: each decides its number
+# once the one before has tagged, so two never claim the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+
   windows:
+    needs: check
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -31,20 +50,17 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install
-        run: npm ci
-
-      - name: Read version
+      - name: Decide the version
         id: version
         shell: bash
-        run: |
-          version=$(node -p "require('./package.json').version")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" != "v$version" ]]; then
-            echo "::error::Tag ${{ github.ref_name }} does not match package.json version $version."
-            exit 1
-          fi
+        run: node scripts/decide-version.mjs
+
+      - name: Write the version into the build
+        shell: bash
+        run: node scripts/set-version.mjs "${{ steps.version.outputs.version }}"
+
+      - name: Install
+        run: npm ci
 
       - name: Resolve the analysis engine
         id: engine
@@ -223,6 +239,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: MKVBatchMux ${{ steps.version.outputs.tag }}
           body_path: release-notes.md
           files: artifacts/**
