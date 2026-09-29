@@ -203,6 +203,12 @@ pub struct MeasureStartRequest {
     pub window_count: i64,
     pub max_offset_ms: f64,
     pub max_workers: i64,
+    #[serde(default)]
+    pub fast: bool,
+    /// Off unless asked for: the engine's own default re-measures every pair the survey
+    /// does not settle by reading both files end to end, minutes per film.
+    #[serde(default)]
+    pub timeline: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -819,12 +825,14 @@ pub fn measure_delays_start(
         let _ = app.emit_all(
             "audiosync-log",
             format!(
-                "Decoding with {}{} · {} windows × {} s, max offset {} s",
+                "Decoding with {}{} · {} windows × {} s, max offset {} s{}{}",
                 pair.ffmpeg.display(),
                 if pair.bundled { " (bundled)" } else { "" },
                 request.window_count,
                 request.window_seconds,
                 request.max_offset_ms / 1000.0,
+                if request.fast { " · fast pass" } else { "" },
+                if request.timeline { " · whole timeline" } else { "" },
             ),
         );
     }
@@ -856,8 +864,8 @@ pub fn measure_delays_start(
         "windowCount": request.window_count,
         "maxOffsetMs": request.max_offset_ms,
         "maxWorkers": request.max_workers,
-        // No `fast`: AudioSyncMaster never sends it, and its route (one long
-        // window plus an end check) gives a different answer than the survey.
+        "fast": request.fast,
+        "timeline": request.timeline,
     });
 
     let handle = (*engine).clone();
@@ -1349,5 +1357,8 @@ mod tests {
         assert_eq!(parsed.pairs.len(), 1);
         assert_eq!(parsed.pairs[0].key, "audio-1");
         assert_eq!(parsed.max_workers, 3);
+        // An older frontend sends neither flag: that must not turn the slow route on.
+        assert!(!parsed.fast);
+        assert!(!parsed.timeline);
     }
 }

@@ -227,7 +227,7 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
                   windowCount: clampWindowCount(String(measurement.windowCount)),
                   windowSeconds: clampWindowSeconds(String(measurement.windowSeconds)),
                   maxOffsetMs: clampMaxOffsetSeconds(String(measurement.maxOffsetMs / 1000)) * 1000,
-                  scanTimeline: measurement.scanTimeline ?? true,
+                  fullTimeline: measurement.fullTimeline ?? false,
                 },
               });
               onOpenChange(false);
@@ -561,14 +561,15 @@ export function OptionsDialog({ open, onOpenChange, options, onSave }: OptionsDi
           <div className="flex items-start gap-2">
             <CheckboxField
               id="scan-timeline"
-              checked={measurement.scanTimeline ?? true}
-              onCheckedChange={(checked) => setMeasurement((m) => ({ ...m, scanTimeline: checked === true }))}
+              checked={measurement.fullTimeline ?? false}
+              onCheckedChange={(checked) => setMeasurement((m) => ({ ...m, fullTimeline: checked === true }))}
               className="mt-0.5"
             />
             <label htmlFor="scan-timeline" className="text-xs text-muted-foreground cursor-pointer">
-              After measuring, scan each pair's full runtime for cuts and frame-rate changes. Uses
-              AudioSyncMaster's Dub sync analysis (plan only, nothing is written); roughly half a minute
-              per hour of video, longer where the dub and video share little.
+              Scan each pair's whole timeline for cuts and frame-rate changes, with AudioSyncMaster's
+              Dub sync analysis (plan only, nothing is written). Slow: it reads both files end to end,
+              which takes minutes per film. Off, the delay comes from the sample windows, with a wider
+              search for any pair they cannot place.
             </label>
           </div>
         </section>

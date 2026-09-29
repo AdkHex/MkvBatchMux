@@ -8,6 +8,7 @@ import {
   frameOffset,
   isAutoFillable,
   isImplausiblyLarge,
+  needsWiderSearch,
   playerDelayMs,
   sourceDelayMs,
   conversionBetween,
@@ -159,6 +160,20 @@ describe("isAutoFillable", () => {
 
   it("accepts an ordinary result", () => {
     expect(isAutoFillable(makeResult({ delayMs: 87.7 }))).toBe(true);
+  });
+});
+
+describe("needsWiderSearch", () => {
+  it("retries a pair the survey could not place", () => {
+    // What the six 60 s windows report for a dub that lacks a 92 s recap.
+    expect(needsWiderSearch(makeResult({ delayMs: null, confidence: 0, error: "The dub does not match" }))).toBe(true);
+    expect(needsWiderSearch(makeResult({ delayMs: 12000, confidence: 0.45 }))).toBe(true);
+  });
+
+  it("leaves a result that is an answer alone", () => {
+    expect(needsWiderSearch(makeResult({ delayMs: -92000, confidence: 0.86 }))).toBe(false);
+    expect(needsWiderSearch(makeResult({ delayMs: 1200, isLikelyCut: true }))).toBe(false);
+    expect(needsWiderSearch(makeResult({ delayMs: 400000 }))).toBe(false);
   });
 });
 

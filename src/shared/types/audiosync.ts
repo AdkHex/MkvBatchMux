@@ -188,8 +188,8 @@ export const MAX_PLAUSIBLE_OFFSET_MS = 300000;
 export const ENGINE_DEFAULTS = {
   // AudioSyncMaster's own defaults, so an untouched install measures what AudioSyncMaster does.
   // A larger maxOffsetMs pads every window with that much audio, which changes the correlation
-  // peaks and so the result; offsets beyond a minute are the timeline scan's job, which
-  // searches the whole runtime regardless of this.
+  // peaks and so the result; a pair these windows cannot place is searched again wider
+  // (WIDE_SEARCH_MS).
   //
   // windowCount changes where every window sits (step = (last-first)/(count-1)), so a different count
   // isn't a more precise measurement — it's a different one, worth tens of ms on drifting material.
@@ -208,6 +208,11 @@ export const ENGINE_LIMITS = {
   maxOffsetSeconds: { min: 1, max: 600 },
 } as const;
 
+/** The second look for a pair the survey could not place, typically a dub without the video's
+ *  recap (+92 s is common). The engine's fast route decodes one long window and an end check
+ *  instead of padding six windows with this much audio, so it costs seconds, not a full read. */
+export const WIDE_SEARCH_MS = 300000;
+
 export interface MeasureStartRequest {
   runId: string;
   pairs: MeasurePair[];
@@ -215,6 +220,11 @@ export interface MeasureStartRequest {
   windowCount: number;
   maxOffsetMs: number;
   maxWorkers: number;
+  /** One long window plus an end check before the survey. */
+  fast: boolean;
+  /** Re-measure a pair the survey does not settle along its whole timeline: reads both files
+   *  end to end, the slowest thing the engine does. */
+  timeline: boolean;
 }
 
 export interface EngineStatus {

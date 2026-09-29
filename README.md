@@ -132,9 +132,19 @@ A result is measured and shown but **not filled in** when the engine flags a
 different cut, the offset is over five minutes, or the confidence is below 50 %.
 Each of those has an **Apply anyway** action once you've checked the files.
 
-### Timeline scan: cuts and frame-rate changes
+### Speed
 
-After measuring, each pair's **whole runtime** is scanned with
+Measuring reads six 45 s windows from each file, a few seconds per pair even
+for a film. A pair those windows cannot place -- typically a dub that lacks
+the video's recap, +92 s being common, beyond the 60 s they search -- is
+measured once more with a five-minute search over one long window and an end
+check, which also takes seconds. Nothing reads a whole file unless the
+timeline scan below is turned on.
+
+### Timeline scan: cuts and frame-rate changes (off by default)
+
+Turned on in Settings → *Delay measurement*, each pair's **whole runtime** is
+scanned with
 AudioSyncMaster's *Dub sync* planner, run in plan-only mode with its own
 defaults, so nothing is written. The measurement samples six windows and can
 miss a cut between them, or a trim of a frame or two. The scan follows the dub
@@ -159,15 +169,14 @@ through the entire video at 2 ms resolution and adds these to the row:
   in one piece. **Timeline details** shows the engine's full plan table, the
   same one AudioSyncMaster shows.
 
-A pair the six windows cannot settle on their own (a window that found
-nothing, a step, a drift, a frame-rate change, a weak match) is measured along
-its whole timeline by the engine itself, and that plan becomes the row's scan,
-so it is not scanned twice.
+With it on, a pair the six windows cannot settle on their own (a window that
+found nothing, a step, a drift, a frame-rate change, a weak match) is measured
+along its whole timeline by the engine itself, as AudioSyncMaster does, and
+that plan becomes the row's scan, so it is not scanned twice.
 
-The scan takes roughly half a minute per hour of video, and longer where the
-dub and video share little. Turn it off in Settings → *Delay
-measurement*. It only warns: the delay written is still the measured one, so
-the two apps agree.
+It is off by default because it reads both files end to end, twice: minutes
+per film on a large BluRay encode, where the windows take seconds. It only
+warns: the delay written is still the measured one.
 
 ---
 

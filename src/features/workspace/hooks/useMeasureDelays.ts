@@ -4,8 +4,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/shared/hooks/use-toast";
 import type { ExternalFile, MeasurementSettings, VideoFile } from "@/shared/types";
-import type { EngineStatus, SyncResult, TimelineScan } from "@/shared/types/audiosync";
-import { ENGINE_DEFAULTS } from "@/shared/types/audiosync";
+import type { EngineStatus, MeasureStartRequest, SyncResult, TimelineScan } from "@/shared/types/audiosync";
+import { ENGINE_DEFAULTS, WIDE_SEARCH_MS } from "@/shared/types/audiosync";
 import {
   audiosyncEngineStatus,
   listenMeasureDelaysDone,
@@ -19,6 +19,7 @@ import {
   scanTimelineStart,
 } from "@/shared/lib/backend";
 import { applyMeasurement } from "@/features/workspace/lib/applyMeasurement";
+import { needsWiderSearch } from "@/features/workspace/lib/delayConversion";
 import {
   attachTimelineScan,
   isRateChange,
@@ -31,8 +32,9 @@ import {
 } from "@/features/workspace/lib/measurePairs";
 
 export interface MeasureProgress {
-  /** Measuring delays, then scanning each pair's full timeline for cuts. */
-  phase: "measure" | "scan";
+  /** Measuring delays; then either searching wider for the pairs that found nothing, or, when
+   *  the whole-timeline option is on, scanning each pair's full timeline for cuts. */
+  phase: "measure" | "wide" | "scan";
   processed: number;
   total: number;
   current: string | null;
@@ -68,8 +70,14 @@ export function useMeasureDelays({
   const runIdRef = useRef<string | null>(null);
   const planRef = useRef<Map<string, PlannedMeasurement>>(new Map());
   const forcedRef = useRef(false);
-  const scanEnabledRef = useRef(measurement?.scanTimeline ?? true);
-  scanEnabledRef.current = measurement?.scanTimeline ?? true;
+  // Fixed for the length of a run, so changing Settings mid-run cannot mix routes.
+  const fullTimelineRef = useRef(false);
+  const passRef = useRef<"measure" | "wide">("measure");
+  // Pairs the survey could not place, for the wide search that follows it.
+  const retryKeysRef = useRef<Set<string>>(new Set());
+  const settingsRef = useRef<Omit<MeasureStartRequest, "runId" | "pairs" | "fast" | "timeline">>({
+    ...ENGINE_DEFAULTS,
+  });
   const maxWorkersRef = useRef<number>(ENGINE_DEFAULTS.maxWorkers);
   const scansRef = useRef<TimelineScan[]>([]);
   // Pairs the engine already laid along the whole timeline while measuring: their plan came
@@ -127,6 +135,9 @@ export function useMeasureDelays({
     if (scan) {
       scansRef.current.push(scan);
       scannedByMeasureRef.current.add(key);
+    }
+    if (passRef.current === "measure" && !fullTimelineRef.current && needsWiderSearch(result)) {
+      retryKeysRef.current.add(key);
     }
     // Results can arrive faster than the parent re-renders; the next one must start from this.
     audioFilesRef.current = next;
@@ -188,6 +199,33 @@ export function useMeasureDelays({
     }
   }, []);
 
+  /** Measure again the pairs the survey could not place, with the engine's fast route over a
+   *  five-minute search. Returns false when there is none, or it could not start. */
+  const startWideSearch = useCallback(async (runId: string): Promise<boolean> => {
+    const pairs = [...retryKeysRef.current]
+      .map((key) => planRef.current.get(key)?.pair)
+      .filter((pair): pair is PlannedMeasurement["pair"] => pair !== undefined);
+    if (pairs.length === 0) return false;
+    const settings = settingsRef.current;
+    passRef.current = "wide";
+    runIdRef.current = runId;
+    setProgress({ phase: "wide", processed: 0, total: pairs.length, current: null });
+    try {
+      await measureDelaysStart({
+        runId,
+        pairs,
+        ...settings,
+        maxOffsetMs: Math.max(settings.maxOffsetMs, WIDE_SEARCH_MS),
+        fast: true,
+        timeline: false,
+      });
+      return true;
+    } catch (error) {
+      toast({ title: "Could not search wider", description: String(error), variant: "destructive" });
+      return false;
+    }
+  }, []);
+
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
     // Registration is async, so cleanup can run before the handles arrive;
@@ -201,7 +239,7 @@ export function useMeasureDelays({
     listenMeasureDelaysProgress((payload) => {
       if (payload.runId !== runIdRef.current) return;
       setProgress({
-        phase: "measure",
+        phase: passRef.current,
         processed: payload.processed,
         total: payload.total,
         current: payload.current,
@@ -216,10 +254,14 @@ export function useMeasureDelays({
     listenMeasureDelaysDone(async (payload) => {
       if (payload.runId !== runIdRef.current) return;
 
-      if (!payload.error && !payload.cancelled && scanEnabledRef.current) {
-        const scanRunId = `${payload.runId}-scan`;
-        runIdRef.current = scanRunId;
-        if (await startScan(scanRunId)) return;
+      if (!payload.error && !payload.cancelled && passRef.current === "measure") {
+        if (fullTimelineRef.current) {
+          const scanRunId = `${payload.runId}-scan`;
+          runIdRef.current = scanRunId;
+          if (await startScan(scanRunId)) return;
+        } else if (await startWideSearch(`${payload.runId}-wide`)) {
+          return;
+        }
       }
       finish();
 
@@ -280,7 +322,7 @@ export function useMeasureDelays({
       disposed = true;
       unlisteners.forEach((un) => un());
     };
-  }, [applyResult, applyScan, finish, reportFindings, startScan]);
+  }, [applyResult, applyScan, finish, reportFindings, startScan, startWideSearch]);
 
   const start = useCallback(
     async (options: { onlyAudioFileIds?: string[]; force?: boolean } = {}) => {
@@ -326,21 +368,31 @@ export function useMeasureDelays({
       forcedRef.current = Boolean(options.force);
       scansRef.current = [];
       scannedByMeasureRef.current = new Set();
+      retryKeysRef.current = new Set();
+      passRef.current = "measure";
       planRef.current = new Map(plan.measurements.map((m) => [m.pair.key, m]));
 
       setIsMeasuring(true);
       setProgress({ phase: "measure", processed: 0, total: plan.measurements.length, current: null });
 
-      // Only the engine's own parameters travel; scanTimeline is this app's switch.
-      const { scanTimeline: _scanTimeline, ...engineSettings } = measurement ?? {};
-      const settings = { ...ENGINE_DEFAULTS, ...engineSettings };
+      // Built field by field: settings saved by older versions carry keys the engine must not see.
+      const settings = {
+        windowSeconds: measurement?.windowSeconds ?? ENGINE_DEFAULTS.windowSeconds,
+        windowCount: measurement?.windowCount ?? ENGINE_DEFAULTS.windowCount,
+        maxOffsetMs: measurement?.maxOffsetMs ?? ENGINE_DEFAULTS.maxOffsetMs,
+        maxWorkers: ENGINE_DEFAULTS.maxWorkers,
+      };
+      settingsRef.current = settings;
       maxWorkersRef.current = settings.maxWorkers;
+      fullTimelineRef.current = measurement?.fullTimeline ?? false;
 
       try {
         await measureDelaysStart({
           runId,
           pairs: plan.measurements.map((m) => m.pair),
           ...settings,
+          fast: false,
+          timeline: fullTimelineRef.current,
         });
       } catch (error) {
         setIsMeasuring(false);

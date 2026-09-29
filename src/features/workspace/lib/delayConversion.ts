@@ -31,6 +31,12 @@ export function isAutoFillable(result: SyncResult): boolean {
   return true;
 }
 
+/** Whether the survey failed to place the pair at all, so a wider search may find it: no delay,
+ *  or too weak a match to use. A cut or an implausible size is an answer, not a miss. */
+export function needsWiderSearch(result: SyncResult): boolean {
+  return Boolean(result.error) || sourceDelayMs(result) === null || isUnconvincing(result);
+}
+
 /** The confidence below which a result is noise rather than a measurement. */
 export const MIN_AUTOFILL_CONFIDENCE = 0.5;
 

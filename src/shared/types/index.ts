@@ -129,9 +129,10 @@ export interface MeasurementSettings {
   windowSeconds: number;
   windowCount: number;
   maxOffsetMs: number;
-  /** Follow each measurement with a full-timeline scan for cuts and frame-rate changes.
-   *  Optional so settings saved before it existed load; absent means on. */
-  scanTimeline?: boolean;
+  /** Lay every pair along its whole timeline for cuts and frame-rate changes. Reads both files
+   *  end to end, minutes per film, so absent means off. Replaces `scanTimeline`, whose saved
+   *  `true` would otherwise keep the slow route on for everyone who ever pressed Save. */
+  fullTimeline?: boolean;
 }
 
 export interface OptionsData {

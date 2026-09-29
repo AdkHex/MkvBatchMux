@@ -1106,7 +1106,11 @@ export function AudiosTab({
               <>
                 <span className="text-xs text-muted-foreground whitespace-nowrap">
                   {measureProgress
-                    ? `${measureProgress.phase === "scan" ? "Scanning for cuts" : "Measuring"} ${Math.min(
+                    ? `${
+                        { measure: "Measuring", wide: "Searching wider", scan: "Scanning for cuts" }[
+                          measureProgress.phase
+                        ]
+                      } ${Math.min(
                         measureProgress.processed + (measureProgress.phase === "scan" ? 1 : 0),
                         measureProgress.total,
                       )} of ${measureProgress.total}${
