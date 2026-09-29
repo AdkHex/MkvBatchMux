@@ -97,7 +97,7 @@ the same analysis engine as
 [AudioSyncMaster](https://github.com/AdkHex/AudioSyncMaster), and is built to
 report the **same number** for the same files:
 
-- The engine is pinned to an AudioSyncMaster **release** (`v2.13.0`), never to
+- The engine is pinned to an AudioSyncMaster **release** (`v2.15.0`), never to
   its `main` branch. Settings → *Audio analysis engine* shows the stamp.
 - The measurement parameters (sample windows, window length, maximum offset)
   default to AudioSyncMaster's (6 × 45 s, 60 s) and are editable in Settings →
@@ -107,11 +107,12 @@ report the **same number** for the same files:
   the one AudioSyncMaster sends: no fast pass, whatever the search range.
 - The reference track defaults to the video's **first audio stream**, as in
   AudioSyncMaster. Choose another in the *Reference audio track* panel.
-- FFmpeg decodes the audio, and the build matters: builds differ in whether
-  they trim E-AC3 / AC-3 / TrueHD decoder priming inside a container, which
-  shifts every delay on such a track by a constant tens of milliseconds.
-  AudioSyncMaster uses the FFmpeg installed on your machine, so this app does
-  too: it searches your PATH, the registry PATH and the winget/Chocolatey/Scoop
+- FFmpeg decodes the audio. Older builds (6.1, Ubuntu 24.04's) decode the
+  encoder priming a container marks to be skipped as sound -- 1024 samples of
+  AAC, 256 of E-AC3 / AC-3 -- which put every delay on such a track 5-64 ms
+  late; the engine reads that from the track starting before zero and decodes
+  past it, so every build measures the same. AudioSyncMaster uses the FFmpeg
+  installed on your machine, so this app does too: it searches your PATH, the registry PATH and the winget/Chocolatey/Scoop
   locations, and only falls back to the bundled copy when none is found.
   Settings → Dependencies shows which `ffmpeg.exe` is in use.
 
@@ -219,7 +220,7 @@ Both are build artifacts and are not committed.
 `package.json` names the AudioSyncMaster release the engine is built from:
 
 ```json
-"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.13.0" }
+"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.15.0" }
 ```
 
 CI checks that tag out, `fetch-engine` refuses a checkout at any other commit

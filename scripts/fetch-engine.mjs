@@ -37,7 +37,7 @@ function readPin() {
   if (!pin || typeof pin.ref !== "string" || !pin.ref) {
     fail(
       "package.json has no audiosyncEngine.ref.",
-      'Add { "audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.13.0" } }.',
+      'Add { "audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.15.0" } }.',
     );
   }
   return pin;
