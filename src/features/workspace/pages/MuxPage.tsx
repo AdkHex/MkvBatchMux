@@ -1,38 +1,74 @@
-/** Mux: the queue, where every loaded video goes to mkvmerge, and the output
- *  settings for the batch. Start, validation, pause and stop live in the
- *  shell (src/app/Index.tsx), which holds the queue; this page shows it and
+/** Mux: the queue, where every loaded video goes to mkvmerge. The queue is
+ *  simply the loaded videos, so it fills itself; this page shows it, where the
+ *  files go (Save to, in the toolbar's middle) and, behind Options, how. A
+ *  double-click on a job opens its details. Start, validation, pause and stop
+ *  live in the shell (src/app/Index.tsx), which holds the queue; this page
  *  asks before starting a batch that validation had warnings about — the old
  *  Mux Settings tab's rule. */
 
 import {
-  AddRegular,
+  AttachRegular,
+  BookmarkMultipleRegular,
+  BracesRegular,
   CheckmarkStarburstRegular,
+  ChevronDownRegular,
+  ChevronUpRegular,
+  ClosedCaptionRegular,
+  CopyRegular,
   DeleteRegular,
-  DismissRegular,
   FolderOpenRegular,
+  FolderRegular,
   LayerRegular,
+  MusicNote2Regular,
+  OptionsRegular,
   PauseRegular,
   PlayRegular,
   StopRegular,
-  TextBulletListSquareRegular,
   VideoClipRegular,
 } from "@fluentui/react-icons";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { QueueAction } from "@/app/Index";
 import { PageDock } from "@/app/dock";
 import { muxOutcome, timeLeftText, tookText } from "@/app/history";
-import { useShell, usePageCommands, type PageId } from "@/app/shell";
+import { useShell, usePageCommands, useStatus, type PageId } from "@/app/shell";
 import { pickDirectory } from "@/shared/lib/backend";
 import type { MuxJob, MuxPreviewResult, MuxSettings, OutputSettings, VideoFile } from "@/shared/types";
-import { Box, Dialog, PageView, type LcdProps } from "@/ui/frame";
-import { Btn, Cmd, Empty, Fld, InfoBar, LangCombo, MidText, Status, TBox, TRow, Table, Toggle, Tr, type St } from "@/ui/kit";
+import { Dialog, PageView, Panel, Popover, lcdStatus, type LcdProps } from "@/ui/frame";
+import { Btn, Chk, Cmd, Combo, Empty, Fld, InfoBar, LangCombo, MidText, Status, TBox, Table, Toggle, Tr, cx, type St } from "@/ui/kit";
 
-import { formatGb } from "./common";
+import { SearchBox, formatDelay, formatGb } from "./common";
+import { languageName } from "./tracks/parts";
+
+/** One track of the file a job writes: kept from the source, added from a
+ *  file, or removed. */
+export interface ReportTrack {
+  type: "video" | "audio" | "subtitle";
+  /** ISO 639 code. */
+  language?: string;
+  name: string;
+  /** "Source", or the added file's name. */
+  from: string;
+  flags: string[];
+  delay?: number;
+  added?: boolean;
+  removed?: boolean;
+}
 
 export interface JobReport {
   title: string;
   sections: { title: string; items: { title: string; details: string[] }[] }[];
+  /** Every track of the new file, in order, then the removed ones. */
+  tracks?: ReportTrack[];
+  /** What happens to chapters, attachments and tags. */
+  also?: [string, string][];
+}
+
+/** What a job adds to its video, for the queue's Adds column. */
+export interface JobAdds {
+  audio: number;
+  subtitle: number;
+  chapter: number;
+  attachment: number;
 }
 
 export interface MuxPageProps {
@@ -48,14 +84,14 @@ export interface MuxPageProps {
   unlinkedPage: PageId | null;
   jobs: MuxJob[];
   videoFiles: VideoFile[];
-  queue: QueueAction;
-  onClearAll: () => void;
-  onRemoveJob: (jobId: string) => void;
+  /** What each job adds, by job id. */
+  addsByJob?: Record<string, JobAdds>;
+  /** Empty the queue, which is to say the loaded videos. */
+  onClearQueue: () => void;
   onStartMuxing: () => void;
   onPauseMuxing: () => void;
   onResumeMuxing: () => void;
   onStopMuxing: () => void;
-  onViewLog: () => void;
   previewResults: Record<string, MuxPreviewResult>;
   previewLoading: boolean;
   onPreviewQueue: () => void;
@@ -66,9 +102,17 @@ export interface MuxPageProps {
   running: boolean;
 }
 
-const MAX_PARALLEL_JOBS = 16;
 /** The confirmation lists this many warnings, then says how many more. */
 const LISTED_WARNINGS = 8;
+
+/** Jobs at once: 0 is automatic (every job, up to 16). */
+const PARALLEL_OPTIONS = [
+  { value: 0, label: "Automatic" },
+  { value: 1, label: "1" },
+  { value: 2, label: "2" },
+  { value: 4, label: "4" },
+  { value: 8, label: "8" },
+];
 
 function formatEta(seconds?: number) {
   if (seconds === undefined || seconds <= 0 || Number.isNaN(seconds)) return "—";
@@ -77,7 +121,7 @@ function formatEta(seconds?: number) {
   return mins <= 0 ? `${secs} s` : `${mins} min`;
 }
 
-type Tab = "report";
+const typeIcon = (type: ReportTrack["type"]) => (type === "video" ? <VideoClipRegular /> : type === "audio" ? <MusicNote2Regular /> : <ClosedCaptionRegular />);
 
 export function MuxPage({
   hidden,
@@ -90,14 +134,12 @@ export function MuxPage({
   unlinkedPage,
   jobs,
   videoFiles,
-  queue,
-  onClearAll,
-  onRemoveJob,
+  addsByJob = {},
+  onClearQueue,
   onStartMuxing,
   onPauseMuxing,
   onResumeMuxing,
   onStopMuxing,
-  onViewLog,
   previewResults,
   previewLoading,
   onPreviewQueue,
@@ -107,11 +149,14 @@ export function MuxPage({
 }: MuxPageProps) {
   const shell = useShell();
   const [selectedJobIndex, setSelectedJobIndex] = useState<number | null>(null);
-  const [reportOpen, setReportOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [confirmStartOpen, setConfirmStartOpen] = useState(false);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const [open, setOpen] = useState<"save" | "options" | null>(null);
+  const [search, setSearch] = useState("");
+  const saveRef = useRef<HTMLButtonElement>(null);
+  const optionsRef = useRef<HTMLButtonElement>(null);
 
-  const fileCount = jobs.length > 0 ? jobs.length : videoFiles.length;
-  const autoParallelJobs = Math.max(1, Math.min(fileCount || 1, MAX_PARALLEL_JOBS));
   const hasJobs = jobs.length > 0;
   const measuring = shell.enginePage === "audio";
   const hasExternalLinkIssues = externalLinkIssues.length > 0;
@@ -157,29 +202,32 @@ export function MuxPage({
   useEffect(() => {
     if (jobs.length === 0) {
       setSelectedJobIndex(null);
-      setReportOpen(false);
+      setDetailsOpen(false);
       return;
     }
     if (selectedJobIndex !== null && selectedJobIndex >= jobs.length) setSelectedJobIndex(jobs.length - 1);
   }, [jobs.length, selectedJobIndex]);
 
+  // Settings cannot change while a batch runs: close their panels.
+  useEffect(() => {
+    if (running) setOpen(null);
+  }, [running]);
+
   const selectedJob = selectedJobIndex !== null ? jobs[selectedJobIndex] : undefined;
-  const openReport = (index: number | null = selectedJobIndex) => {
+  const openDetails = (index: number | null = selectedJobIndex) => {
     if (index === null) return;
     setSelectedJobIndex(index);
-    setReportOpen(true);
-    shell.dock.setTab(null);
+    setDetailsOpen(true);
   };
 
   const finished = batch.finishedAt !== null && !running && hasJobs;
   const stopped = jobs.some((job) => job.status === "stopped");
-  const canStart = hasJobs && !hasExternalLinkIssues && !running && !measuring && jobs.some((job) => job.status === "queued");
+  const canStart = hasJobs && !hasExternalLinkIssues && !running && !measuring;
 
   usePageCommands("mux", {
     start: canStart ? handleStartClick : undefined,
     stop: running ? onStopMuxing : undefined,
-    removeSelected: selectedJob && !running ? () => onRemoveJob(selectedJob.id) : undefined,
-    clear: hasJobs && !running ? onClearAll : undefined,
+    clear: hasJobs && !running ? () => setConfirmClearOpen(true) : undefined,
   });
 
   // --------------------------------------------------------------- display
@@ -199,22 +247,24 @@ export function MuxPage({
         }
     : previewLoading
       ? { icon: "run", l1: `Validating ${jobs.length} job${jobs.length === 1 ? "" : "s"}`, pct: null }
-      : !hasJobs
-        ? { l1: "The queue is empty", l2: queue.count ? `${queue.count} video${queue.count === 1 ? " is" : "s are"} ready to add` : "Load videos on Videos first" }
-        : finished
-          ? (() => {
-              const outcome = muxOutcome(jobs);
-              return {
-                icon: (outcome.tone === "ok" ? "ok" : outcome.tone === "bad" ? "bad" : "warn") as LcdProps["icon"],
-                l1: outcome.parts.join(" · "),
-                l2: stopped ? `${jobs.filter((j) => j.status === "stopped").length} stopped` : `Into ${into} in ${tookText((batch.finishedAt ?? 0) - (batch.startedAt ?? 0))}`,
-              };
-            })()
-          : hasExternalLinkIssues
-            ? { icon: "warn", l1: externalLinkIssues[0].replace(/\.$/, ""), l2: "Pair every file before muxing" }
-            : warnings.length > 0
-              ? { icon: "warn", l1: `Validated · ${warnings.length} warning${warnings.length === 1 ? "" : "s"} in ${warnedJobs} job${warnedJobs === 1 ? "" : "s"}`, l2: "Start asks before it runs" }
-              : { l1: `${jobs.length} in the queue`, l2: `Into ${into} · ${autoParallelJobs} at a time` };
+      : finished
+        ? (() => {
+            const outcome = muxOutcome(jobs);
+            return {
+              icon: (outcome.tone === "ok" ? "ok" : outcome.tone === "bad" ? "bad" : "warn") as LcdProps["icon"],
+              l1: outcome.parts.join(" · "),
+              l2: stopped ? `${jobs.filter((j) => j.status === "stopped").length} stopped` : `Into ${into} in ${tookText((batch.finishedAt ?? 0) - (batch.startedAt ?? 0))}`,
+            };
+          })()
+        : hasJobs && hasExternalLinkIssues
+          ? { icon: "warn", l1: externalLinkIssues[0].replace(/\.$/, ""), l2: "Pair every file before muxing" }
+          : hasJobs && warnings.length > 0
+            ? { icon: "warn", l1: `Validated · ${warnings.length} warning${warnings.length === 1 ? "" : "s"} in ${warnedJobs} job${warnedJobs === 1 ? "" : "s"}`, l2: "Start asks before it runs" }
+            : { l1: "" };
+  const own = useStatus("mux", lcdStatus(lcd));
+  // Save to keeps the toolbar's middle except while something runs: a
+  // finished batch's result is in the Status column, History and Output.
+  const status = own?.icon === "run" ? own : null;
 
   const statusOf = (job: MuxJob): { s: St; text?: string; pct?: number; title?: string } => {
     const jobWarnings = previewResults[job.id]?.warnings ?? [];
@@ -226,73 +276,59 @@ export function MuxPage({
     return { s: "wait", text: finished && stopped ? "Not started" : "Queued" };
   };
 
-  const report = selectedJob ? getJobReport?.(selectedJob.id) : null;
-  const preview = selectedJob ? previewResults[selectedJob.id] : undefined;
-  const reportBody = (
-    <div className="rep">
-      {!selectedJob ? (
-        <span className="t3">Select a job to see what muxing changes in it.</span>
-      ) : (
-        <>
-          {preview && preview.warnings.length > 0 && (
-            <div className="col">
-              <span className="sec warn">{preview.warnings.length} warning{preview.warnings.length === 1 ? "" : "s"}</span>
-              {preview.warnings.map((warning, i) => <span key={i} className="it t2">{warning}</span>)}
-            </div>
-          )}
-          {selectedJob.status === "error" && selectedJob.errorMessage && (
-            <div className="col">
-              <span className="sec bad">Failed</span>
-              <span className="it t2">{selectedJob.errorMessage}</span>
-            </div>
-          )}
-          {!report || report.sections.length === 0 ? (
-            <span className="t3">Nothing changes in this video beyond remuxing it.</span>
-          ) : (
-            report.sections.map((section) => (
-              <div key={section.title} className="col">
-                <span className="sec">{section.title}</span>
-                {section.items.map((item, i) => (
-                  <span key={i} className="it t2" title={item.details.join(" · ")}>
-                    <span className="truncate">{item.title}{item.details.length ? ` · ${item.details.join(" · ")}` : ""}</span>
-                  </span>
-                ))}
-              </div>
-            ))
-          )}
-          {preview?.command && <pre>{preview.command}</pre>}
-        </>
-      )}
-    </div>
-  );
+  const query = search.trim().toLowerCase();
+  const shown = jobs.map((job, index) => ({ job, index })).filter(({ job }) => !query || job.videoFile.name.toLowerCase().includes(query));
+  const totalBytes = jobs.reduce((sum, job) => sum + (job.sizeBefore ?? job.videoFile.size ?? 0), 0);
 
-  const dock = (
-    <PageDock<Tab>
-      common={shell.dock}
-      own={[{ id: "report", label: "Report", body: reportBody, tools: selectedJob ? <span className="t3 sm truncate" style={{ paddingRight: 6, maxWidth: 420 }}>{selectedJob.videoFile.name}</span> : undefined }]}
-      ownTab={reportOpen ? "report" : null}
-      onOwnTab={() => setReportOpen(true)}
-    />
-  );
-
+  const setDirectory = (directory: string) => {
+    onSettingsChange({ directory });
+    onMuxSettingsChange({ destinationDir: directory });
+  };
+  const browse = async () => {
+    const directory = await pickDirectory();
+    if (directory) setDirectory(directory);
+  };
+  const willOverwrite = settings.directory.trim() === "" && settings.overwriteExisting;
   const keepAudio = muxSettings.onlyKeepAudiosEnabled && muxSettings.onlyKeepAudioLanguages[0] ? muxSettings.onlyKeepAudioLanguages[0] : "all";
   const keepSubs = muxSettings.onlyKeepSubtitlesEnabled && muxSettings.onlyKeepSubtitleLanguages[0] ? muxSettings.onlyKeepSubtitleLanguages[0] : "all";
-  const willOverwrite = settings.directory.trim() === "" && settings.overwriteExisting;
+
+  const saveTo = (
+    <span className="destw">
+      <button
+        ref={saveRef}
+        type="button"
+        className={cx("dest", open === "save" && "on")}
+        disabled={running}
+        aria-expanded={open === "save"}
+        title={`Where the files go: ${into}`}
+        onClick={() => setOpen(open === "save" ? null : "save")}
+      >
+        <span className="ic" aria-hidden><FolderRegular /></span>
+        {settings.directory.trim() ? <span className="truncate">{settings.directory}</span> : <span className="ph truncate">{settings.overwriteExisting ? "Over the sources" : "Beside the sources"}</span>}
+        <span className="nm truncate">\{settings.namingPattern.trim() || "{original_filename}"}.mkv</span>
+        <span className="ch" aria-hidden><ChevronDownRegular /></span>
+      </button>
+      <button type="button" className="destb" title="Choose the folder" aria-label="Choose the output folder" disabled={running} onClick={() => void browse()}>
+        <FolderOpenRegular />
+      </button>
+    </span>
+  );
 
   return (
     <PageView
       hidden={hidden}
-      lcd={lcd}
-      dock={dock}
+      status={status}
+      center={saveTo}
+      dock={<PageDock common={shell.dock} />}
       tools={
         <>
-          <Cmd icon={<AddRegular />} disabled={queue.count === 0 || running} onClick={queue.add}>Add to queue</Cmd>
           <Cmd icon={<CheckmarkStarburstRegular />} disabled={!hasJobs || previewLoading || hasExternalLinkIssues || running || measuring} onClick={onPreviewQueue}>
             {previewLoading ? "Validating…" : "Validate"}
           </Cmd>
-          <Cmd icon={<TextBulletListSquareRegular />} title="Report for the selected job" disabled={!selectedJob} onClick={() => openReport()} />
-          <Cmd icon={<DeleteRegular />} title="Remove the selected job (Del)" disabled={!selectedJob || running} onClick={() => selectedJob && onRemoveJob(selectedJob.id)} />
-          <Cmd icon={<DismissRegular />} title="Clear the queue" disabled={!hasJobs || running} onClick={onClearAll} />
+          <button ref={optionsRef} type="button" className={cx("cmd", open === "options" && "on")} disabled={running} aria-expanded={open === "options"} onClick={() => setOpen(open === "options" ? null : "options")}>
+            <span className="ic" aria-hidden><OptionsRegular /></span>
+            <span className="lbl">Options</span>
+          </button>
         </>
       }
       primary={
@@ -301,185 +337,223 @@ export function MuxPage({
             {batch.paused ? <Btn icon={<PlayRegular />} onClick={onResumeMuxing}>Resume</Btn> : <Btn icon={<PauseRegular />} onClick={onPauseMuxing}>Pause</Btn>}
             <Btn icon={<StopRegular />} kbd="Esc" onClick={onStopMuxing}>Stop</Btn>
           </>
-        ) : finished && !jobs.some((job) => job.status === "queued") ? (
-          <Btn icon={<DismissRegular />} onClick={onClearAll}>Clear the queue</Btn>
         ) : (
-          <Btn accent icon={<PlayRegular />} kbd="Enter" title={measuring ? "Measuring is running on Audio" : undefined} disabled={!canStart} onClick={handleStartClick}>
-            Start muxing
-          </Btn>
+          <>
+            <Btn icon={<DeleteRegular />} title="Clear the queue" aria-label="Clear the queue" disabled={!hasJobs} onClick={() => setConfirmClearOpen(true)} />
+            <Btn accent icon={<PlayRegular />} kbd="Enter" title={measuring ? "Measuring is running on Audio" : undefined} disabled={!canStart} onClick={handleStartClick}>
+              Start muxing
+            </Btn>
+          </>
         )
       }
     >
-      {hasJobs ? (
-        <Box body={false} title="Queue" sub={`${jobs.length} job${jobs.length === 1 ? "" : "s"}`}>
-          {hasExternalLinkIssues && (
-            <InfoBar tone="warn" actions={unlinkedPage ? <Btn onClick={() => shell.show(unlinkedPage)}>Show on {unlinkedPage === "audio" ? "Audio" : "Subtitles"}</Btn> : undefined}>
-              {externalLinkIssues.join(" ")}
-            </InfoBar>
-          )}
-          {!running && !hasExternalLinkIssues && warnings.length > 0 && (
-            <InfoBar
-              tone="warn"
-              actions={
-                <Btn
-                  onClick={() => {
-                    const index = jobs.findIndex((job) => (previewResults[job.id]?.warnings.length ?? 0) > 0);
-                    openReport(index >= 0 ? index : null);
-                  }}
-                >
-                  Show
-                </Btn>
-              }
-            >
-              Validation found {warnings.length} warning{warnings.length === 1 ? "" : "s"} in {warnedJobs} job{warnedJobs === 1 ? "" : "s"}.
-            </InfoBar>
-          )}
-          <Table cols="24px minmax(0,1fr) 144px 72px 72px 64px" head={["#", "Name", "Status", " Before", " After", " Left"]} label="Queue">
-            {jobs.map((job, index) => {
-              const status = statusOf(job);
+      <Panel
+        label="Queue"
+        left={
+          <span className="crumb">
+            Queue
+            {hasJobs && <span className="t3">{jobs.length} video{jobs.length === 1 ? "" : "s"} · {formatGb(totalBytes)}</span>}
+          </span>
+        }
+        end={hasJobs && <SearchBox value={search} onChange={setSearch} label="Search the queue" w={180} />}
+      >
+        {hasJobs && hasExternalLinkIssues && (
+          <InfoBar tone="warn" actions={unlinkedPage ? <Btn onClick={() => shell.show(unlinkedPage)}>Show on {unlinkedPage === "audio" ? "Audio" : "Subtitles"}</Btn> : undefined}>
+            {externalLinkIssues.join(" ")}
+          </InfoBar>
+        )}
+        {hasJobs && !running && !hasExternalLinkIssues && warnings.length > 0 && (
+          <InfoBar
+            tone="warn"
+            actions={
+              <Btn
+                onClick={() => {
+                  const index = jobs.findIndex((job) => (previewResults[job.id]?.warnings.length ?? 0) > 0);
+                  openDetails(index >= 0 ? index : null);
+                }}
+              >
+                Show
+              </Btn>
+            }
+          >
+            Validation found {warnings.length} warning{warnings.length === 1 ? "" : "s"} in {warnedJobs} job{warnedJobs === 1 ? "" : "s"}.
+          </InfoBar>
+        )}
+        {hasJobs ? (
+          <Table cols="24px minmax(0,1fr) 132px 72px 72px 150px 52px" head={["#", "Name", "Adds", " Before", " After", "Status", " Left"]} label="Queue">
+            {shown.map(({ job, index }) => {
+              const jobStatus = statusOf(job);
+              const adds = addsByJob[job.id];
               return (
-                <Tr key={job.id} on={selectedJobIndex === index} onClick={() => setSelectedJobIndex(index)} onDoubleClick={() => openReport(index)} label={job.videoFile.name}>
+                <Tr key={job.id} on={selectedJobIndex === index} onClick={() => setSelectedJobIndex(index)} onDoubleClick={() => openDetails(index)} label={job.videoFile.name}>
                   <span className="num t3">{index + 1}</span>
-                  <span className="cell"><span className="fi" aria-hidden><VideoClipRegular /></span><MidText text={job.videoFile.name} tail={22} /></span>
-                  <span title={status.title} style={{ minWidth: 0 }}><Status s={status.s} text={status.text} pct={status.pct} /></span>
+                  <span className="cell"><span className="fi" aria-hidden><VideoClipRegular /></span><MidText text={job.videoFile.name} tail={40} /></span>
+                  {adds ? <Adds adds={adds} /> : <span className="t3">—</span>}
                   <span className="r num t2" style={{ display: "flex" }}>{formatGb(job.sizeBefore ?? job.videoFile.size)}</span>
                   <span className="r num t2" style={{ display: "flex" }}>{job.sizeAfter ? formatGb(job.sizeAfter) : "—"}</span>
+                  <span title={jobStatus.title} style={{ minWidth: 0 }}><Status s={jobStatus.s} text={jobStatus.text} pct={jobStatus.pct} /></span>
                   <span className="r num t2" style={{ display: "flex" }}>{job.status === "processing" ? formatEta(job.etaSeconds) : "—"}</span>
                 </Tr>
               );
             })}
           </Table>
-        </Box>
-      ) : (
-        <section className="box">
+        ) : (
           <Empty icon={<LayerRegular />} title="The queue is empty">
-            <Btn icon={<AddRegular />} disabled={queue.count === 0} onClick={queue.add}>{queue.count ? `Add ${queue.count} video${queue.count === 1 ? "" : "s"}` : "Add videos"}</Btn>
+            <span className="t2">Every video loaded on Videos is muxed.</span>
+            <Btn onClick={() => shell.show("videos")}>Go to Videos</Btn>
           </Empty>
-        </section>
-      )}
+        )}
+      </Panel>
 
-      <Box title="Output">
-        <Fld label="Folder">
-          <div className="row" style={{ gap: 4 }}>
-            <span className="grow">
+      {open === "save" && (
+        <Popover anchor={saveRef} label="Save to" align="center" onClose={() => setOpen(null)}>
+          <div className="fh">Save to</div>
+          <Fld label="Folder">
+            <span className="row" style={{ gap: 4, minWidth: 0 }}>
+              <TBox label="Output folder" className="grow" style={{ minWidth: 0 }} value={settings.directory} placeholder="Beside the source" onChange={setDirectory} />
+              <Cmd icon={<FolderOpenRegular />} title="Choose the folder" onClick={() => void browse()} />
+            </span>
+          </Fld>
+          <Fld label="File name">
+            <span className="row" style={{ gap: 4, minWidth: 0 }}>
               <TBox
-                label="Output folder"
-                value={settings.directory}
-                placeholder="Beside the source"
-                disabled={running}
-                onChange={(directory) => {
-                  onSettingsChange({ directory });
-                  onMuxSettingsChange({ destinationDir: directory });
+                label="File name template"
+                className="grow"
+                style={{ minWidth: 0 }}
+                mono
+                unit=".mkv"
+                value={settings.namingPattern}
+                placeholder="{original_filename}"
+                onChange={(namingPattern) => {
+                  onSettingsChange({ namingPattern });
+                  onMuxSettingsChange({ outputNamingPattern: namingPattern });
                 }}
               />
+              <span className="t3" title="Fields: {original_filename}, {id}, {extension}" style={{ display: "grid", fontSize: 16, padding: "0 6px" }} aria-hidden>
+                <BracesRegular />
+              </span>
             </span>
-            <Cmd
-              icon={<FolderOpenRegular />}
-              title="Choose folder"
-              disabled={running}
-              onClick={async () => {
-                const directory = await pickDirectory();
-                if (directory) {
-                  onSettingsChange({ directory });
-                  onMuxSettingsChange({ destinationDir: directory });
-                }
+            <span className="sm t3 truncate" title={namingPreview}>{namingPreview}</span>
+          </Fld>
+          <label className="ck">
+            <Toggle
+              name="Overwrite the source when no folder is set"
+              on={settings.overwriteExisting}
+              onChange={(on) => {
+                onSettingsChange({ overwriteExisting: on });
+                onMuxSettingsChange({ overwriteSource: on });
               }}
             />
+            Overwrite the source when no folder is set
+          </label>
+          {willOverwrite && <span className="warn sm">This replaces the original files.</span>}
+        </Popover>
+      )}
+
+      {open === "options" && (
+        <Popover anchor={optionsRef} label="Mux options" wide onClose={() => setOpen(null)}>
+          <div className="fh">Audio</div>
+          <div className="fgrid">
+            <Fld label="Keep">
+              <LangCombo
+                w="100%"
+                label="Keep audio in"
+                value={keepAudio}
+                extra={[{ value: "all", label: "All languages" }]}
+                onChange={(value) => onMuxSettingsChange({ onlyKeepAudiosEnabled: value !== "all", onlyKeepAudioLanguages: value !== "all" ? [value] : [] })}
+              />
+            </Fld>
+            <Fld label="Default">
+              <LangCombo
+                w="100%"
+                label="Default audio"
+                value={muxSettings.makeAudioDefaultLanguage ?? "none"}
+                extra={[{ value: "none", label: "No change" }]}
+                onChange={(value) => onMuxSettingsChange({ makeAudioDefaultLanguage: value !== "none" ? value : undefined })}
+              />
+            </Fld>
           </div>
-        </Fld>
-        <Fld label="File name">
-          <TBox
-            label="File name template"
-            mono
-            value={settings.namingPattern}
-            placeholder="{original_filename}"
-            disabled={running}
-            title="{original_filename}, {id}, {extension}"
-            onChange={(namingPattern) => {
-              onSettingsChange({ namingPattern });
-              onMuxSettingsChange({ outputNamingPattern: namingPattern });
-            }}
-          />
-          <span className="sm t3 truncate" title={namingPreview}>{namingPreview}</span>
-        </Fld>
-        <TRow label="Overwrite the source when no folder is set" d={willOverwrite ? <span className="warn">This replaces the original files</span> : undefined}>
-          <Toggle
-            name="Overwrite the source when no folder is set"
-            on={settings.overwriteExisting}
-            disabled={running}
-            onChange={(on) => {
-              onSettingsChange({ overwriteExisting: on });
-              onMuxSettingsChange({ overwriteSource: on });
-            }}
-          />
-        </TRow>
-        <div className="hr" />
-        <span className="sec">Remove from the source</span>
-        <TRow label="Chapters"><Toggle name="Remove chapters from the source" on={muxSettings.discardOldChapters} onChange={(on) => onMuxSettingsChange({ discardOldChapters: on })} /></TRow>
-        <TRow label="Attachments"><Toggle name="Remove attachments from the source" on={muxSettings.discardOldAttachments} onChange={(on) => onMuxSettingsChange({ discardOldAttachments: on })} /></TRow>
-        <TRow label="Global tags"><Toggle name="Remove global tags from the source" on={muxSettings.removeGlobalTags} onChange={(on) => onMuxSettingsChange({ removeGlobalTags: on })} /></TRow>
-        <div className="hr" />
-        <span className="sec">Track rules</span>
-        <TRow label="Keep audio in">
-          <LangCombo
-            sm
-            w={132}
-            label="Keep audio in"
-            value={keepAudio}
-            extra={[{ value: "all", label: "All languages" }]}
-            onChange={(value) => onMuxSettingsChange({ onlyKeepAudiosEnabled: value !== "all", onlyKeepAudioLanguages: value !== "all" ? [value] : [] })}
-          />
-        </TRow>
-        <TRow label="Default audio">
-          <LangCombo
-            sm
-            w={132}
-            label="Default audio"
-            value={muxSettings.makeAudioDefaultLanguage ?? "none"}
-            extra={[{ value: "none", label: "No change" }]}
-            onChange={(value) => onMuxSettingsChange({ makeAudioDefaultLanguage: value !== "none" ? value : undefined })}
-          />
-        </TRow>
-        <TRow label="Keep subtitles in">
-          <LangCombo
-            sm
-            w={132}
-            label="Keep subtitles in"
-            value={keepSubs}
-            extra={[{ value: "all", label: "All languages" }]}
-            onChange={(value) => onMuxSettingsChange({ onlyKeepSubtitlesEnabled: value !== "all", onlyKeepSubtitleLanguages: value !== "all" ? [value] : [] })}
-          />
-        </TRow>
-        <TRow label="Default subtitle">
-          <LangCombo
-            sm
-            w={132}
-            label="Default subtitle"
-            value={muxSettings.makeSubtitleDefaultLanguage ?? "none"}
-            extra={[{ value: "none", label: "No change" }]}
-            onChange={(value) => onMuxSettingsChange({ makeSubtitleDefaultLanguage: value !== "none" ? value : undefined })}
-          />
-        </TRow>
-        <div className="hr" />
-        <span className="sec">Safety</span>
-        <TRow label="Write a CRC checksum"><Toggle name="Write a CRC checksum" on={muxSettings.addCrc} onChange={(on) => onMuxSettingsChange({ addCrc: on })} /></TRow>
-        <TRow label="Remove old CRC tags"><Toggle name="Remove old CRC tags" on={muxSettings.removeOldCrc} onChange={(on) => onMuxSettingsChange({ removeOldCrc: on })} /></TRow>
-        <TRow label="Stop at the first error"><Toggle name="Stop at the first error" on={muxSettings.abortOnErrors} onChange={(on) => onMuxSettingsChange({ abortOnErrors: on })} /></TRow>
-        <TRow label="Keep a log file"><Toggle name="Keep a log file" on={muxSettings.keepLogFile} onChange={(on) => onMuxSettingsChange({ keepLogFile: on })} /></TRow>
-        <div className="hr" />
-        <span className="sec">Performance</span>
-        <TRow label="Fast mux" d="Metadata only, in place, nothing added">
-          <span title={fastMuxAvailable ? undefined : "Fast mux only works for in-place metadata-only edits with overwrite source enabled."}>
-            <Toggle
-              name="Fast mux"
-              on={muxSettings.useMkvpropedit}
-              disabled={!fastMuxAvailable || running}
-              onChange={(on) => fastMuxAvailable && onMuxSettingsChange({ useMkvpropedit: on })}
-            />
-          </span>
-        </TRow>
-        <TRow label="Jobs at once"><span className="t2 num" title="Follows the number of queued files, up to 16.">{autoParallelJobs} · follows the queue</span></TRow>
-      </Box>
+          <div className="fh">Subtitles</div>
+          <div className="fgrid">
+            <Fld label="Keep">
+              <LangCombo
+                w="100%"
+                label="Keep subtitles in"
+                value={keepSubs}
+                extra={[{ value: "all", label: "All languages" }]}
+                onChange={(value) => onMuxSettingsChange({ onlyKeepSubtitlesEnabled: value !== "all", onlyKeepSubtitleLanguages: value !== "all" ? [value] : [] })}
+              />
+            </Fld>
+            <Fld label="Default">
+              <LangCombo
+                w="100%"
+                label="Default subtitle"
+                value={muxSettings.makeSubtitleDefaultLanguage ?? "none"}
+                extra={[{ value: "none", label: "No change" }]}
+                onChange={(value) => onMuxSettingsChange({ makeSubtitleDefaultLanguage: value !== "none" ? value : undefined })}
+              />
+            </Fld>
+          </div>
+          <div className="fh">Remove from the source</div>
+          <div className="row" style={{ gap: 28 }}>
+            <label className="ck"><Toggle name="Remove chapters from the source" on={muxSettings.discardOldChapters} onChange={(on) => onMuxSettingsChange({ discardOldChapters: on })} />Chapters</label>
+            <label className="ck"><Toggle name="Remove attachments from the source" on={muxSettings.discardOldAttachments} onChange={(on) => onMuxSettingsChange({ discardOldAttachments: on })} />Attachments</label>
+            <label className="ck"><Toggle name="Remove global tags from the source" on={muxSettings.removeGlobalTags} onChange={(on) => onMuxSettingsChange({ removeGlobalTags: on })} />Global tags</label>
+          </div>
+          <div className="fh">Run</div>
+          <div className="fgrid">
+            <Fld label="Jobs at once">
+              <Combo<number> label="Jobs at once" value={muxSettings.maxParallelJobs} options={PARALLEL_OPTIONS} w="100%" onChange={(maxParallelJobs) => onMuxSettingsChange({ maxParallelJobs })} />
+            </Fld>
+            <span />
+            <span style={{ display: "flex" }} title={fastMuxAvailable ? "Names and flags only, with mkvpropedit" : "Only when nothing is added and the sources are overwritten"}>
+              <Chk on={muxSettings.useMkvpropedit} disabled={!fastMuxAvailable} onChange={(on) => fastMuxAvailable && onMuxSettingsChange({ useMkvpropedit: on })}>Edit in place when possible</Chk>
+            </span>
+            <Chk on={muxSettings.keepLogFile} onChange={(on) => onMuxSettingsChange({ keepLogFile: on })}>Keep a log file</Chk>
+            <Chk on={muxSettings.abortOnErrors} onChange={(on) => onMuxSettingsChange({ abortOnErrors: on })}>Stop at the first error</Chk>
+            <Chk on={muxSettings.addCrc} onChange={(on) => onMuxSettingsChange({ addCrc: on })}>Write a CRC checksum</Chk>
+            <span />
+            <Chk on={muxSettings.removeOldCrc} onChange={(on) => onMuxSettingsChange({ removeOldCrc: on })}>Remove old CRC tags</Chk>
+          </div>
+        </Popover>
+      )}
+
+      {detailsOpen && selectedJob && (
+        <JobDetails
+          job={selectedJob}
+          index={selectedJobIndex ?? 0}
+          total={jobs.length}
+          report={getJobReport?.(selectedJob.id) ?? null}
+          preview={previewResults[selectedJob.id]}
+          into={into}
+          onCopy={shell.copy}
+          onClose={() => setDetailsOpen(false)}
+        />
+      )}
+
+      {confirmClearOpen && (
+        <Dialog
+          alert
+          title="Clear the queue?"
+          onClose={() => setConfirmClearOpen(false)}
+          foot={
+            <>
+              <Btn
+                accent
+                onClick={() => {
+                  setConfirmClearOpen(false);
+                  onClearQueue();
+                }}
+              >
+                Clear
+              </Btn>
+              <Btn onClick={() => setConfirmClearOpen(false)}>Cancel</Btn>
+            </>
+          }
+        >
+          <div className="t2">The queue is the loaded videos, so this takes the {jobs.length} video{jobs.length === 1 ? "" : "s"} off Videos, ready for the next batch. The files themselves stay where they are.</div>
+        </Dialog>
+      )}
 
       {confirmStartOpen && (
         <Dialog
@@ -515,5 +589,111 @@ export function MuxPage({
         </Dialog>
       )}
     </PageView>
+  );
+}
+
+/** What a job adds, as icons and counts; a missing dub in amber. */
+function Adds({ adds }: { adds: JobAdds }) {
+  return (
+    <span className="adds" title={`${adds.audio} audio, ${adds.subtitle} subtitle, ${adds.chapter} chapter, ${adds.attachment} attachment file${adds.attachment === 1 ? "" : "s"}`}>
+      <span><span className="ic" aria-hidden><MusicNote2Regular /></span>{adds.audio}</span>
+      <span><span className="ic" aria-hidden><ClosedCaptionRegular /></span>{adds.subtitle}</span>
+      <span><span className="ic" aria-hidden><BookmarkMultipleRegular /></span>{adds.chapter}</span>
+      <span><span className="ic" aria-hidden><AttachRegular /></span>{adds.attachment}</span>
+    </span>
+  );
+}
+
+/** A job, in full: its warnings, every track of the file it writes and where
+ *  each comes from (the removed ones folded away), what happens to chapters,
+ *  attachments and tags, and the mkvmerge command once validated. */
+export function JobDetails({
+  job,
+  index,
+  total,
+  report,
+  preview,
+  into,
+  onCopy,
+  onClose,
+}: {
+  job: MuxJob;
+  index: number;
+  total: number;
+  report: JobReport | null;
+  preview?: MuxPreviewResult;
+  into: string;
+  onCopy: (text: string) => void;
+  onClose: () => void;
+}) {
+  const [showRemoved, setShowRemoved] = useState(false);
+  const tracks = report?.tracks ?? [];
+  const kept = tracks.filter((track) => !track.removed);
+  const removed = tracks.filter((track) => track.removed);
+  const shown = showRemoved ? [...kept, ...removed] : kept;
+  const statusWord = job.status === "processing" ? `Muxing · ${Math.round(job.progress)}%` : job.status === "completed" ? "Done" : job.status === "error" ? "Failed" : job.status === "stopped" ? "Stopped" : "Queued";
+  return (
+    <Dialog
+      size="xl"
+      bodyClass="flush compact"
+      title={job.videoFile.name}
+      sub={`Job ${index + 1} of ${total} · ${statusWord} · ${formatGb(job.sizeBefore ?? job.videoFile.size)}`}
+      onClose={onClose}
+      left={preview?.command ? <Btn icon={<CopyRegular />} onClick={() => onCopy(preview.command)}>Copy command</Btn> : undefined}
+      foot={<Btn accent onClick={onClose}>Close</Btn>}
+    >
+      {(preview?.warnings.length || (job.status === "error" && job.errorMessage)) && (
+        <div className="col" style={{ gap: 8, padding: "12px 16px 0" }}>
+          {job.status === "error" && job.errorMessage && <InfoBar tone="bad">{job.errorMessage}</InfoBar>}
+          {preview && preview.warnings.length > 0 && (
+            <InfoBar tone="warn">
+              {preview.warnings.length} warning{preview.warnings.length === 1 ? "" : "s"} · {preview.warnings.join(" · ")}
+            </InfoBar>
+          )}
+        </div>
+      )}
+      <div className="sect">
+        Tracks in the new file <span className="t3">· {kept.length} kept or added</span>
+        {removed.length > 0 && (
+          <button type="button" className="drop" aria-expanded={showRemoved} onClick={() => setShowRemoved(!showRemoved)}>
+            {removed.length} removed
+            <span className="ic" aria-hidden>{showRemoved ? <ChevronUpRegular /> : <ChevronDownRegular />}</span>
+          </button>
+        )}
+      </div>
+      {tracks.length === 0 ? (
+        <div className="t3" style={{ padding: "0 16px 8px" }}>The video's tracks are read when it is scanned.</div>
+      ) : (
+        <Table style={{ flex: "none" }} cols="20px 18px 96px minmax(0,.8fr) minmax(0,1.3fr) 96px 72px" head={["#", "", "Language", "Track", "From", "Flags", " Delay"]} label="Tracks in the new file">
+          {shown.map((track, i) => (
+            <Tr key={i}>
+              <span className="num t3">{track.removed ? "" : i + 1}</span>
+              <span className="t3" style={{ display: "grid", fontSize: 16 }} aria-hidden>{typeIcon(track.type)}</span>
+              <span className={cx("truncate", track.removed && "t3 strike")}>{track.type === "video" ? "—" : languageName(track.language)}</span>
+              <span className={cx("truncate", track.removed && "t3 strike")} title={track.name}>{track.name}</span>
+              <span className={cx("truncate", !track.added && "t3")} title={track.from}>
+                {track.from}
+                {track.added && <span className="t3"> · added</span>}
+              </span>
+              <span className={track.removed ? "t3" : "t2"}>{track.removed ? "Removed" : track.flags.join(", ")}</span>
+              <span className="r num t2" style={{ display: "flex" }}>{track.delay ? `${formatDelay(track.delay)} s` : ""}</span>
+            </Tr>
+          ))}
+        </Table>
+      )}
+      <div className="sect">Also</div>
+      <div className="also">
+        {(report?.also ?? []).map(([key, value]) => (
+          <span key={key} style={{ display: "contents" }}>
+            <span className="k">{key}</span>
+            <span>{value}</span>
+          </span>
+        ))}
+        <span className="k">Into</span>
+        <span className="truncate" title={into}>{into}</span>
+      </div>
+      <div className="sect">Command</div>
+      {preview?.command ? <pre className="cmdline">{preview.command}</pre> : <div className="t3" style={{ padding: "0 16px 16px" }}>Validate to see the mkvmerge command for this job.</div>}
+    </Dialog>
   );
 }

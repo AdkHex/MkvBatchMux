@@ -14,7 +14,7 @@ import { pickFiles } from "@/shared/lib/backend";
 import { delaySecondsOrZero } from "@/shared/lib/delayInput";
 import { AUDIO_EXTENSIONS, SUBTITLE_EXTENSIONS } from "@/shared/lib/extensions";
 import type { ExternalFile, Track, VideoFile } from "@/shared/types";
-import { Dialog, DockTabs } from "@/ui/frame";
+import { Dialog, DialogTabs } from "@/ui/frame";
 import { Btn, Chk, Cmd, Combo, Fld, LangCombo, TBox, TRow, Toggle } from "@/ui/kit";
 
 import { ImportTrackEditButton, ImportTrackEditDialog, type ImportTrackOverride } from "./ImportTrackEditDialog";
@@ -311,21 +311,14 @@ export function VideoFileEditDialog({
   return (
     <>
       <Dialog
-        size="wide"
+        size="xl"
         title="Edit tracks"
         sub={videoFile.name}
         onClose={() => onOpenChange(false)}
         left={<Btn onClick={load}>Reset</Btn>}
-        foot={
-          <>
-            <Btn onClick={() => onOpenChange(false)}>Cancel</Btn>
-            <Btn accent onClick={handleApplyChanges}>Apply</Btn>
-          </>
-        }
-      >
-        <div className="frame">
-          <DockTabs<TrackTab>
-            tabs={TABS.map((t) => ({ id: t.id, label: `${t.label} ${counts[t.id]}` }))}
+        bar={
+          <DialogTabs<TrackTab>
+            tabs={TABS.map((t) => ({ id: t.id, label: t.label, count: counts[t.id] }))}
             on={activeTab}
             onTab={setActiveTab}
             tools={
@@ -342,18 +335,25 @@ export function VideoFileEditDialog({
               </>
             }
           />
-          <TrackRowsTable
-            rows={currentTracks}
-            audio={activeTab === "audios"}
-            label={`${TABS.find((t) => t.id === activeTab)!.label} tracks`}
-            selectedId={selectedTrackId}
-            onSelect={setSelectedTrackId}
-            onChange={handleTrackChange}
-            onSetAll={setAll}
-            onDelete={deleteTrack}
-            onMove={(from, to) => setCurrentTracks((prev) => moveTrackRow(prev, from, to))}
-          />
-        </div>
+        }
+        foot={
+          <>
+            <Btn onClick={() => onOpenChange(false)}>Cancel</Btn>
+            <Btn accent onClick={handleApplyChanges}>Apply</Btn>
+          </>
+        }
+      >
+        <TrackRowsTable
+          rows={currentTracks}
+          audio={activeTab === "audios"}
+          label={`${TABS.find((t) => t.id === activeTab)!.label} tracks`}
+          selectedId={selectedTrackId}
+          onSelect={setSelectedTrackId}
+          onChange={handleTrackChange}
+          onSetAll={setAll}
+          onDelete={deleteTrack}
+          onMove={(from, to) => setCurrentTracks((prev) => moveTrackRow(prev, from, to))}
+        />
       </Dialog>
 
       {addExternalOpen && addExternalType && (

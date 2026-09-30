@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { applyTrackRowsToVideo, moveTrackRow, type TrackRowDraft } from "@/features/workspace/lib/modifyTracks";
 import { CODE_TO_LABEL } from "@/shared/data/languages-iso6393";
 import type { Track, VideoFile } from "@/shared/types";
-import { Dialog, DockTabs } from "@/ui/frame";
+import { Dialog, DialogTabs } from "@/ui/frame";
 import { Btn, Cmd, MidText, Status, Table, Tr } from "@/ui/kit";
 
 import { TrackRowsTable, type TrackFlag } from "./TrackRowsTable";
@@ -153,21 +153,14 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
 
   return (
     <Dialog
-      size="wide"
+      size="xl"
       title="Modify tracks"
       sub={scopedFiles.length === 1 && selectedVideoId ? scopedFiles[0].name : "Every loaded video, track by position"}
       onClose={() => onOpenChange(false)}
       left={<Btn onClick={rebuild}>Reset</Btn>}
-      foot={
-        <>
-          <Btn onClick={() => onOpenChange(false)}>Cancel</Btn>
-          <Btn accent onClick={applyChanges}>Apply</Btn>
-        </>
-      }
-    >
-      <div className="frame">
-        <DockTabs<TrackTab>
-          tabs={TABS.map((t) => ({ id: t.id, label: `${t.label} ${counts[t.id]}` }))}
+      bar={
+        <DialogTabs<TrackTab>
+          tabs={TABS.map((t) => ({ id: t.id, label: t.label, count: counts[t.id] }))}
           on={activeTab}
           onTab={setActiveTab}
           tools={
@@ -177,18 +170,25 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
             </>
           }
         />
-        <TrackRowsTable
-          rows={currentTracks}
-          audio={activeTab === "audios"}
-          label={`${TABS.find((t) => t.id === activeTab)!.label} tracks`}
-          selectedId={selectedTrackId}
-          onSelect={setSelectedTrackId}
-          onChange={handleTrackChange}
-          onSetAll={setAll}
-          onDelete={activeTab === "videos" ? undefined : deleteTrack}
-          onMove={(from, to) => setCurrentTracks((prev) => moveTrackRow(prev, from, to))}
-        />
-      </div>
+      }
+      foot={
+        <>
+          <Btn onClick={() => onOpenChange(false)}>Cancel</Btn>
+          <Btn accent onClick={applyChanges}>Apply</Btn>
+        </>
+      }
+    >
+      <TrackRowsTable
+        rows={currentTracks}
+        audio={activeTab === "audios"}
+        label={`${TABS.find((t) => t.id === activeTab)!.label} tracks`}
+        selectedId={selectedTrackId}
+        onSelect={setSelectedTrackId}
+        onChange={handleTrackChange}
+        onSetAll={setAll}
+        onDelete={activeTab === "videos" ? undefined : deleteTrack}
+        onMove={(from, to) => setCurrentTracks((prev) => moveTrackRow(prev, from, to))}
+      />
       {selectedRow && (
         <div className="frame">
           <div className="dtabs"><span className="tab on">Track {String(selectedIndexRaw >= 0 ? selectedIndexRaw + 1 : 1).padStart(2, "0")} in each video</span></div>

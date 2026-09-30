@@ -4,27 +4,25 @@
 import { AddRegular, ArrowSyncRegular, AttachRegular, DeleteRegular, DocumentRegular, FolderOpenRegular, ImageRegular, TextFontRegular } from "@fluentui/react-icons";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { QueueAction } from "@/app/Index";
 import { PageDock } from "@/app/dock";
-import { useShell, usePageCommands } from "@/app/shell";
+import { useShell, usePageCommands, useStatus } from "@/app/shell";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { pickDirectory, pickFiles, scanMedia } from "@/shared/lib/backend";
 import { ATTACHMENT_EXTENSIONS } from "@/shared/lib/extensions";
 import type { ExternalFile, MuxSettings, Preset } from "@/shared/types";
-import { Box, PageView, type LcdProps } from "@/ui/frame";
-import { Btn, Cmd, Combo, DL, Empty, Links, MidText, TRow, Table, Toggle, Tr } from "@/ui/kit";
+import { PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
+import { Btn, Chk, Cmd, Combo, Empty, MidText, SheetField, TBox, Table, Toggle, Tr } from "@/ui/kit";
 import { toast } from "@/ui/toast";
 
-import { QueueBtn, SORT_OPTIONS, SearchBox, extensionOf, extensionOptions, formatFileSize, looksLikeFolder, matchesSearch, parentFolder, type SortValue } from "./common";
-import { L } from "./tracks/MeasurePane";
+import { SORT_OPTIONS, SearchBox, extensionOf, extensionOptions, formatFileSize, looksLikeFolder, matchesSearch, parentFolder, type SortValue } from "./common";
 
 export interface AttachmentsPageProps {
   hidden: boolean;
   attachmentFiles: ExternalFile[];
   onAttachmentFilesChange: (files: ExternalFile[]) => void;
   preset?: Preset | null;
+  muxSettings: MuxSettings;
   onMuxSettingsChange: (settings: Partial<MuxSettings>) => void;
-  queue: QueueAction;
 }
 
 const FONT = new Set(["ttf", "otf", "ttc", "woff", "woff2"]);
@@ -41,7 +39,7 @@ const kindOf = (name: string) => {
   return ext ? ext.toUpperCase() : "File";
 };
 
-export function AttachmentsPage({ hidden, attachmentFiles, onAttachmentFilesChange, preset, onMuxSettingsChange, queue }: AttachmentsPageProps) {
+export function AttachmentsPage({ hidden, attachmentFiles, onAttachmentFilesChange, preset, muxSettings, onMuxSettingsChange }: AttachmentsPageProps) {
   const shell = useShell();
   const { attachmentTabState, updateAttachmentTabState } = useTabState((state) => ({
     attachmentTabState: state.attachmentTabState,
@@ -76,7 +74,7 @@ export function AttachmentsPage({ hidden, attachmentFiles, onAttachmentFilesChan
     updateAttachmentTabState({ sourceFolder: presetFolder });
   }, [preset, updateAttachmentTabState]);
 
-  const { attachmentsEnabled, sourceFolder, extension, allowDuplicate, discardOld, expertMode } = attachmentTabState;
+  const { attachmentsEnabled, sourceFolder, extension, allowDuplicate, expertMode } = attachmentTabState;
 
   const visibleAttachments = useMemo(
     () =>
@@ -168,7 +166,6 @@ export function AttachmentsPage({ hidden, attachmentFiles, onAttachmentFilesChan
     },
   });
 
-  const selected = selectedIndex !== null ? attachmentFiles[selectedIndex] : undefined;
   const bytes = attachmentFiles.reduce((sum, file) => sum + (file.size || 0), 0);
   const lcd: LcdProps = !attachmentsEnabled
     ? { l1: "Attachments are off", l2: "The videos keep the attachments they have" }
@@ -176,109 +173,102 @@ export function AttachmentsPage({ hidden, attachmentFiles, onAttachmentFilesChan
       ? { l1: "Drop fonts or a folder of attachments" }
       : { l1: `${attachmentFiles.length} attachment${attachmentFiles.length === 1 ? "" : "s"} · ${formatFileSize(bytes)}`, l2: "Added to every queued video" };
 
+  const status = useStatus("attachments", lcdStatus(lcd));
+  // One switch, shown here and in Mux › Options: the mux settings hold it.
+  const discard = muxSettings.discardOldAttachments;
+  const setDiscard = (enabled: boolean) => {
+    updateAttachmentTabState({ discardOld: enabled });
+    onMuxSettingsChange({ discardOldAttachments: enabled });
+  };
+
   return (
     <PageView
       hidden={hidden}
-      lcd={lcd}
+      status={status}
       dock={<PageDock common={shell.dock} />}
       tools={
         <>
           <Cmd icon={<AddRegular />} disabled={!attachmentsEnabled} onClick={() => void handleAddFiles()}>Add files</Cmd>
-          <Cmd icon={<FolderOpenRegular />} title="Choose folder" disabled={!attachmentsEnabled} onClick={() => void chooseFolder()} />
           <Cmd icon={<ArrowSyncRegular />} title="Rescan" disabled={!attachmentsEnabled || !sourceFolder} onClick={() => void scanAttachments(sourceFolder)} />
           <Cmd icon={<DeleteRegular />} title="Remove (Del)" disabled={!attachmentsEnabled || selectedIndex === null} onClick={handleRemove} />
         </>
       }
-      primary={<QueueBtn queue={queue} />}
     >
-      {attachmentsEnabled && attachmentFiles.length > 0 ? (
-        <Box
-          body={false}
-          title="Attachments"
-          sub={sourceFolder ? <span title={sourceFolder}>{sourceFolder}</span> : undefined}
-          end={
-            <>
-              <Combo<string> ghost sm w={104} label="Formats to scan" value={extension} options={extensionOptions(ATTACHMENT_EXTENSIONS)} onChange={(value) => updateAttachmentTabState({ extension: value })} />
-              <Combo<SortValue> ghost sm w={116} label="Sort" value={sort} options={SORT_OPTIONS} onChange={setSort} />
-              <SearchBox value={search} onChange={setSearch} label="Search attachments" w={150} />
-            </>
-          }
-        >
-          <Table cols="24px minmax(0,1fr) 72px 80px" head={["#", "Name", "Type", " Size"]} label="Attachments">
+      <Panel
+        label="Attachments"
+        left={
+          <span className="crumb">
+            Attachments
+            {attachmentFiles.length > 0 && <span className="t3">{attachmentFiles.length} file{attachmentFiles.length === 1 ? "" : "s"} · {formatFileSize(bytes)}</span>}
+          </span>
+        }
+        end={attachmentFiles.length > 0 && <SearchBox value={search} onChange={setSearch} label="Search attachments" w={150} />}
+        sheet={
+          <>
+            <SheetField label="Folder" wide>
+              <span className="row" style={{ gap: 4, minWidth: 0 }}>
+                <TBox label="Folder" className="grow" style={{ minWidth: 0 }} value={sourceFolder} readOnly placeholder="Choose a folder, or drop one on the window" title={sourceFolder || undefined} />
+                <Cmd icon={<FolderOpenRegular />} title="Choose folder (Ctrl+O)" disabled={!attachmentsEnabled} onClick={() => void chooseFolder()} />
+              </span>
+            </SheetField>
+            <span className="checks span2">
+              <label className="ck"><Toggle name="Add to every queued video" on={attachmentsEnabled} onChange={setEnabled} />Add to every queued video</label>
+              <Chk on={discard} disabled={!attachmentsEnabled} onChange={setDiscard}>Discard the videos' own</Chk>
+            </span>
+            <SheetField label="Formats">
+              <Combo<string> label="Formats to scan" value={extension} options={extensionOptions(ATTACHMENT_EXTENSIONS)} w="100%" disabled={!attachmentsEnabled} onChange={(value) => updateAttachmentTabState({ extension: value })} />
+            </SheetField>
+            <SheetField label="Order">
+              <Combo<SortValue> label="Sort" value={sort} options={SORT_OPTIONS} w="100%" onChange={setSort} />
+            </SheetField>
+            <span className="checks span2">
+              <Chk
+                on={allowDuplicate}
+                disabled={!attachmentsEnabled}
+                onChange={(enabled) => {
+                  updateAttachmentTabState({ allowDuplicate: enabled });
+                  onMuxSettingsChange({ allowDuplicateAttachments: enabled });
+                }}
+              >
+                Allow duplicate names
+              </Chk>
+              <Chk
+                on={expertMode}
+                disabled={!attachmentsEnabled}
+                onChange={(enabled) => {
+                  updateAttachmentTabState({ expertMode: enabled });
+                  onMuxSettingsChange({ attachmentsExpertMode: enabled });
+                }}
+              >
+                Expert mode
+              </Chk>
+            </span>
+          </>
+        }
+      >
+        {attachmentsEnabled && attachmentFiles.length > 0 ? (
+          <Table cols="24px minmax(0,1fr) 120px 80px minmax(0,1fr)" head={["#", "Name", "Type", " Size", "Folder"]} label="Attachments">
             {visibleAttachments.map(({ file, index }) => (
               <Tr key={file.id} on={selectedIndex === index} onClick={() => selectAttachmentIndex(index)} label={file.name}>
                 <span className="num t3">{index + 1}</span>
-                <span className="cell"><span className="fi" aria-hidden>{iconFor(file.name)}</span><MidText text={file.name} /></span>
-                <span className="t2">{extensionOf(file.name).toUpperCase() || "—"}</span>
+                <span className="cell"><span className="fi" aria-hidden>{iconFor(file.name)}</span><MidText text={file.name} tail={30} /></span>
+                <span className="t2 truncate">{kindOf(file.name)}</span>
                 <span className="r num t2" style={{ display: "flex" }}>{file.size ? formatFileSize(file.size) : "—"}</span>
+                <span className="t3 truncate" title={parentFolder(file.path)}>{parentFolder(file.path) || "—"}</span>
               </Tr>
             ))}
           </Table>
-        </Box>
-      ) : (
-        <section className="box">
-          {attachmentsEnabled ? (
-            <Empty icon={<AttachRegular />} title="Drop fonts or a folder of attachments">
-              <Btn icon={<AddRegular />} onClick={() => void handleAddFiles()}>Add files</Btn>
-              <Btn icon={<FolderOpenRegular />} onClick={() => void chooseFolder()}>Choose folder</Btn>
-            </Empty>
-          ) : (
-            <Empty icon={<AttachRegular />} title="Attachments are off">
-              <Btn onClick={() => setEnabled(true)}>Turn on attachments</Btn>
-            </Empty>
-          )}
-        </section>
-      )}
-      <div className="stack">
-        <Box title="Attachments">
-          <TRow label="Add attachments" d="To every queued video"><Toggle name="Add attachments" on={attachmentsEnabled} onChange={setEnabled} /></TRow>
-          <TRow label="Discard the videos' own attachments">
-            <Toggle
-              name="Discard the videos' own attachments"
-              on={discardOld}
-              disabled={!attachmentsEnabled}
-              onChange={(enabled) => {
-                updateAttachmentTabState({ discardOld: enabled });
-                onMuxSettingsChange({ discardOldAttachments: enabled });
-              }}
-            />
-          </TRow>
-          <TRow label="Allow duplicate names">
-            <Toggle
-              name="Allow duplicate names"
-              on={allowDuplicate}
-              disabled={!attachmentsEnabled}
-              onChange={(enabled) => {
-                updateAttachmentTabState({ allowDuplicate: enabled });
-                onMuxSettingsChange({ allowDuplicateAttachments: enabled });
-              }}
-            />
-          </TRow>
-          <TRow label="Expert mode">
-            <Toggle
-              name="Expert mode"
-              on={expertMode}
-              disabled={!attachmentsEnabled}
-              onChange={(enabled) => {
-                updateAttachmentTabState({ expertMode: enabled });
-                onMuxSettingsChange({ attachmentsExpertMode: enabled });
-              }}
-            />
-          </TRow>
-        </Box>
-        {attachmentsEnabled && selected && (
-          <Box title={<MidText text={selected.name} tail={20} />}>
-            <DL
-              rows={[
-                ["Type", kindOf(selected.name)],
-                ["Size", selected.size ? formatFileSize(selected.size) : "—"],
-                ["Folder", <span key="f" className="truncate" title={parentFolder(selected.path)}>{parentFolder(selected.path) || "—"}</span>],
-              ]}
-            />
-            <Links><L icon={<DeleteRegular />} onClick={handleRemove}>Remove</L></Links>
-          </Box>
+        ) : attachmentsEnabled ? (
+          <Empty icon={<AttachRegular />} title="Drop fonts or a folder of attachments">
+            <Btn icon={<AddRegular />} onClick={() => void handleAddFiles()}>Add files</Btn>
+            <Btn icon={<FolderOpenRegular />} onClick={() => void chooseFolder()}>Choose folder</Btn>
+          </Empty>
+        ) : (
+          <Empty icon={<AttachRegular />} title="Attachments are off">
+            <Btn onClick={() => setEnabled(true)}>Turn on attachments</Btn>
+          </Empty>
         )}
-      </div>
+      </Panel>
     </PageView>
   );
 }

@@ -6,9 +6,9 @@
 import {
   CheckmarkCircleFilled,
   CheckmarkRegular,
+  DismissRegular,
   ErrorCircleFilled,
   HistoryRegular,
-  InfoRegular,
   SettingsRegular,
   WarningFilled,
   WindowConsoleRegular,
@@ -21,6 +21,7 @@ import {
   useState,
   type CSSProperties,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -221,46 +222,62 @@ function CaptionButtons() {
   );
 }
 
-/* ------------------------------------------------------------ status display */
+/* ------------------------------------------------------------------ status */
 
+/** How a page describes what it is doing. Pages still say it in full; the
+ *  toolbar shows it small, and only when there is something to show. */
 export interface LcdProps {
   icon?: "run" | "ok" | "warn" | "bad" | "idle";
   l1: ReactNode;
   l2?: ReactNode;
-  /** Progress along the bottom edge, 0–100; null for "running, unknown". */
+  /** Progress, 0–100; null for "running, unknown". */
   pct?: number | null;
   time?: ReactNode;
 }
 
-/** The status display in the middle of the toolbar: the one place that always
- *  says what the app is doing. */
-export function Lcd({ icon = "idle", l1, l2, pct, time }: LcdProps) {
+export interface StatusProps {
+  icon: "run" | "ok" | "warn" | "bad";
+  text: ReactNode;
+  /** The longer explanation, on hover. */
+  detail?: string;
+  time?: ReactNode;
+  pct?: number | null;
+  /** Open the page it is about, when it is about another page. */
+  onClick?: () => void;
+}
+
+/** A page's status as the toolbar shows it: nothing when idle. */
+export function lcdStatus(lcd: LcdProps): StatusProps | null {
+  if (!lcd.icon || lcd.icon === "idle") return null;
+  return { icon: lcd.icon, text: lcd.l1, detail: typeof lcd.l2 === "string" ? lcd.l2 : undefined, time: lcd.time, pct: lcd.pct };
+}
+
+/** The status, small, in the toolbar's middle: a run's progress or a result
+ *  worth a look. */
+export function StatusPill({ icon, text, detail, time, pct, onClick }: StatusProps) {
   return (
-    <div className="lcd" role="status" aria-live="polite">
+    <button type="button" className="stat" role="status" aria-live="polite" title={detail} disabled={!onClick} onClick={onClick}>
       <span className="ic" aria-hidden>
         {icon === "run" ? (
-          <Ring size={16} />
+          <Ring size={14} />
         ) : icon === "ok" ? (
           <CheckmarkCircleFilled className="ok" />
         ) : icon === "warn" ? (
           <WarningFilled className="warn" />
-        ) : icon === "bad" ? (
-          <ErrorCircleFilled className="bad" />
         ) : (
-          <InfoRegular />
+          <ErrorCircleFilled className="bad" />
         )}
       </span>
-      <div className="col" style={{ minWidth: 0 }}>
-        <span className="l1 truncate">{l1}</span>
-        {l2 && <span className="l2 truncate">{l2}</span>}
-      </div>
-      {time && <span className="time">{time}</span>}
+      <span className="truncate">
+        <b>{text}</b>
+        {time && <> · {time}</>}
+      </span>
       {pct !== undefined && (
         <span className={cx("bar", pct === null && "ind")}>
           <i style={pct === null ? undefined : { width: `${Math.max(0, Math.min(100, pct))}%` }} />
         </span>
       )}
-    </div>
+    </button>
   );
 }
 
@@ -307,21 +324,22 @@ export function AppWindow({
 }
 
 /** One page's toolbar and workspace. Hidden pages stay mounted, so a page
- *  keeps what it was showing when you come back to it. */
+ *  keeps what it was showing when you come back to it. The toolbar's middle
+ *  shows the status while there is one, and `center` otherwise. */
 export function PageView({
   tools,
-  lcd,
+  status,
+  center,
   primary,
-  strip,
-  cols = "minmax(0,1fr) 300px",
+  cols = "minmax(0,1fr)",
   dock,
   children,
   hidden,
 }: {
   tools?: ReactNode;
-  lcd: LcdProps;
+  status?: StatusProps | null;
+  center?: ReactNode;
   primary?: ReactNode;
-  strip?: ReactNode;
   cols?: string;
   dock?: ReactNode;
   children: ReactNode;
@@ -331,10 +349,9 @@ export function PageView({
     <div className="pageview" hidden={hidden}>
       <div className="toolbar" data-tauri-drag-region>
         <div className="l">{tools}</div>
-        <Lcd {...lcd} />
+        <div className="c">{status ? <StatusPill {...status} /> : center}</div>
         <div className="r">{primary}</div>
       </div>
-      {strip && <div className="strip2">{strip}</div>}
       <div className="ws" style={{ gridTemplateColumns: cols }}>
         {children}
         {dock && <div className="box dock">{dock}</div>}
@@ -353,6 +370,7 @@ export function PageBar<P extends string>({
   note,
   history,
   output,
+  outputDot,
   onHistory,
   onOutput,
   onPreferences,
@@ -367,6 +385,8 @@ export function PageBar<P extends string>({
   note?: ReactNode;
   history?: boolean;
   output?: boolean;
+  /** Something went wrong while Output was hidden. */
+  outputDot?: boolean;
   onHistory: () => void;
   onOutput: () => void;
   onPreferences: () => void;
@@ -401,8 +421,9 @@ export function PageBar<P extends string>({
         <button type="button" className={cx("ub", history && "on")} title="History (Ctrl+H)" aria-label="History" aria-pressed={history} onClick={onHistory}>
           <span className="ic" aria-hidden><HistoryRegular /></span>
         </button>
-        <button type="button" className={cx("ub", output && "on")} title="Output (Ctrl+`)" aria-label="Output" aria-pressed={output} onClick={onOutput}>
+        <button type="button" className={cx("ub", output && "on")} title={outputDot ? "Output: something went wrong (Ctrl+`)" : "Output (Ctrl+`)"} aria-label={outputDot ? "Output, something went wrong" : "Output"} aria-pressed={output} onClick={onOutput}>
           <span className="ic" aria-hidden><WindowConsoleRegular /></span>
+          {outputDot && <i className="dot" aria-hidden />}
         </button>
         <button type="button" className="ub" title="Preferences (Ctrl+,)" aria-label="Preferences" onClick={onPreferences}>
           <span className="ic" aria-hidden><SettingsRegular /></span>
@@ -443,6 +464,144 @@ export function Box({
       )}
       {body ? <div className="box-b">{children}</div> : children}
     </section>
+  );
+}
+
+/** A list with its one header row (tabs or a title on the left; filters and
+ *  search on the right) and, under it, the settings that shape it. */
+export function Panel({
+  left,
+  end,
+  sheet,
+  label,
+  children,
+}: {
+  left: ReactNode;
+  end?: ReactNode;
+  sheet?: ReactNode;
+  label?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="box" aria-label={label}>
+      <div className="phead">
+        {left}
+        {end && <span className="end">{end}</span>}
+      </div>
+      {sheet && <div className="sheet">{sheet}</div>}
+      {children}
+    </section>
+  );
+}
+
+/** A folder as its last two parts, the whole path on hover. */
+export function Crumb({ path, empty = "No folder" }: { path: string; empty?: string }) {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  if (parts.length === 0) return <span className="crumb t3">{empty}</span>;
+  const last = parts[parts.length - 1];
+  const parent = parts.length > 1 ? parts[parts.length - 2] : null;
+  return (
+    <span className="crumb" title={path}>
+      {parent && (
+        <>
+          <span className="t3 truncate">{parent}</span>
+          <span className="t3" aria-hidden>/</span>
+        </>
+      )}
+      <span className="truncate">{last}</span>
+    </span>
+  );
+}
+
+/** A small panel of settings under the button that opened it. Closes on a
+ *  click elsewhere and on Escape; lists opened from inside it (a language, a
+ *  choice) do not close it. */
+export function Popover({
+  anchor,
+  onClose,
+  label,
+  wide,
+  align = "start",
+  children,
+}: {
+  anchor: RefObject<HTMLElement>;
+  onClose: () => void;
+  label: string;
+  wide?: boolean;
+  align?: "start" | "center";
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useLayoutEffect(() => {
+    const el = anchor.current;
+    const host = ref.current?.offsetParent as HTMLElement | null;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const base = host?.getBoundingClientRect() ?? { left: 0, top: 0, width: window.innerWidth };
+    const width = wide ? 480 : 420;
+    const start = align === "center" ? r.left + r.width / 2 - width / 2 : r.left;
+    const left = Math.max(8, Math.min(start - base.left, base.width - width - 8));
+    setAt({ top: r.bottom - base.top + 6, left });
+  }, [anchor, wide, align]);
+
+  useEffect(() => {
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      if (!target) return;
+      if (ref.current?.contains(target) || anchor.current?.contains(target)) return;
+      if (target.closest(".fly, .menu-scrim, .smoke")) return;
+      closeRef.current();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.stopPropagation();
+      closeRef.current();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [anchor]);
+
+  return createPortal(
+    <div ref={ref} className={cx("fly setfly", wide && "wide")} role="dialog" aria-label={label} style={at ?? { visibility: "hidden" }}>
+      {children}
+    </div>,
+    document.querySelector(".win") ?? document.body,
+  );
+}
+
+/** Tabs with their counts across a large dialog's bar (Video 1, Audio 3,
+ *  Subtitles 5), and the commands for the tab showing. */
+export function DialogTabs<T extends string>({
+  tabs,
+  on,
+  onTab,
+  tools,
+}: {
+  tabs: { id: T; label: string; count?: number }[];
+  on: T;
+  onTab: (tab: T) => void;
+  tools?: ReactNode;
+}) {
+  return (
+    <>
+      <span className="row" role="tablist" style={{ gap: 0 }}>
+        {tabs.map((t) => (
+          <button key={t.id} type="button" role="tab" aria-selected={t.id === on} className={cx("tab", t.id === on && "on")} onClick={() => onTab(t.id)}>
+            {t.label}
+            {t.count !== undefined && <span className="n">{t.count}</span>}
+          </button>
+        ))}
+      </span>
+      {tools && <span className="tools">{tools}</span>}
+    </>
   );
 }
 
@@ -526,20 +685,50 @@ export function Dialog({
   onClose,
   label,
   alert,
+  bar,
+  bodyClass,
 }: {
   title: ReactNode;
   sub?: ReactNode;
   children?: ReactNode;
   foot: ReactNode;
   left?: ReactNode;
-  size?: "mid" | "wide";
+  size?: "mid" | "wide" | "xl";
   onClose?: () => void;
   /** Accessible name when the title is not plain text. */
   label?: string;
   /** A question that needs an answer before anything else (Windows'
    *  ContentDialog asking to confirm). */
   alert?: boolean;
+  /** "xl" only: a row under the title, such as tabs and their commands. */
+  bar?: ReactNode;
+  /** "xl" only: classes for the body ("flush", "compact"). */
+  bodyClass?: string;
 }) {
+  if (size === "xl")
+    return (
+      <Modal onClose={onClose}>
+        <div className="dialog xl" role="dialog" aria-modal="true" aria-label={label ?? (typeof title === "string" ? title : undefined)}>
+          <div className="dh">
+            <div className="grow col" style={{ minWidth: 0 }}>
+              <div className="dt truncate" role="heading" aria-level={2}>{title}</div>
+              {sub && <div className="ds truncate">{sub}</div>}
+            </div>
+            {onClose && (
+              <button type="button" className="cmd icon" title="Close (Esc)" aria-label="Close" onClick={onClose}>
+                <span className="ic" aria-hidden><DismissRegular /></span>
+              </button>
+            )}
+          </div>
+          {bar && <div className="dbar">{bar}</div>}
+          <div className={cx("db", bodyClass)}>{children}</div>
+          <div className="df">
+            {left && <span className="l">{left}</span>}
+            {foot}
+          </div>
+        </div>
+      </Modal>
+    );
   return (
     <Modal onClose={onClose}>
       <div className={cx("dialog", size)} role={alert ? "alertdialog" : "dialog"} aria-modal="true" aria-label={label ?? (typeof title === "string" ? title : undefined)}>

@@ -135,8 +135,8 @@ export function Table({ cols, head, children, style }: { cols: string; head: Rea
     </div>
   );
 }
-export function Tr({ on, onClick, children, style }: { on?: boolean; onClick?: Fn; children: ReactNode; style?: CSSProperties }) {
-  return <div className={cx("tr", on && "on")} onClick={onClick} style={style}>{children}</div>;
+export function Tr({ on, onClick, onDoubleClick, children, style }: { on?: boolean; onClick?: Fn; onDoubleClick?: Fn; children: ReactNode; style?: CSSProperties }) {
+  return <div className={cx("tr", on && "on")} onClick={onClick} onDoubleClick={onDoubleClick} style={style}>{children}</div>;
 }
 
 /* ---------------- panes ---------------- */

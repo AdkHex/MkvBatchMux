@@ -1,32 +1,27 @@
-/** Videos: the folder of videos every other page adds to. A list of the
- *  videos with what each holds and where it is in the queue, and an inspector
- *  for the selection. The scan (names first, then track details streamed in
- *  chunks) is the old Videos tab's, unchanged. */
+/** Videos: the folder of videos every other page adds to, as one list the
+ *  width of the window: each video's frame rate, duration and size. A click
+ *  selects; a double-click opens Edit tracks. The scan (names first, then
+ *  track details streamed in chunks) is the old Videos tab's, unchanged. */
 
 import {
   ArrowSyncRegular,
-  ClosedCaptionRegular,
   DeleteRegular,
   EditRegular,
   FolderOpenRegular,
   InfoRegular,
-  MusicNote2Regular,
   StopRegular,
   TextBulletListSquareRegular,
   VideoClipMultipleRegular,
   VideoClipRegular,
-  VideoRegular,
 } from "@fluentui/react-icons";
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 
-import type { QueueAction } from "@/app/Index";
 import { PageDock } from "@/app/dock";
-import { useShell, usePageCommands } from "@/app/shell";
+import { useShell, usePageCommands, useStatus } from "@/app/shell";
 import { MediaInfoDialog } from "@/features/workspace/components/MediaInfoDialog";
 import { ModifyTracksDialog } from "@/features/workspace/components/ModifyTracksDialog";
 import { VideoFileEditDialog } from "@/features/workspace/components/VideoFileEditDialog";
 import { mergeVideoFiles } from "@/features/workspace/lib/videoMerge";
-import { CODE_TO_LABEL } from "@/shared/data/languages-iso6393";
 import {
   cancelScan as cancelBackendScan,
   inspectPathsStream,
@@ -37,16 +32,14 @@ import {
   scanMedia,
 } from "@/shared/lib/backend";
 import { VIDEO_EXTENSIONS } from "@/shared/lib/extensions";
-import type { ExternalFile, MuxJob, Preset, Track, VideoFile } from "@/shared/types";
-import { Box, PageView, type LcdProps } from "@/ui/frame";
-import { Btn, Cmd, Combo, DL, Empty, Links, MidText, Status, Table, Tr, cx, type St } from "@/ui/kit";
+import type { ExternalFile, Preset, VideoFile } from "@/shared/types";
+import { Crumb, PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
+import { Btn, Cmd, Combo, Empty, MidText, Table, Tr } from "@/ui/kit";
 
 import {
-  QueueBtn,
   SORT_OPTIONS,
   SearchBox,
   extensionOptions,
-  formatClockSeconds,
   formatGb,
   looksLikeFolder,
   matchesSearch,
@@ -68,14 +61,7 @@ export interface VideosPageProps {
   ) => void;
   externalFilesByVideoId?: Record<string, { audios: ExternalFile[]; subtitles: ExternalFile[] }>;
   onExternalFilesChange?: (videoFileId: string, type: "audio" | "subtitle", files: ExternalFile[]) => void;
-  /** Every external file paired with each video, by video id. */
-  addedByVideo: Record<string, ExternalFile[]>;
-  /** The queue, for each video's Status. */
-  jobs: MuxJob[];
   preset?: Preset | null;
-  queue: QueueAction;
-  /** Files loaded on the Audio and Subtitles pages, for the status display. */
-  pendingTracks: { audio: number; subtitles: number };
 }
 
 const ROW_HEIGHT = 32;
@@ -86,82 +72,7 @@ const VIRTUAL_FROM = 120;
 const MEDIA_INFO_MAX = 5;
 
 const formatFps = (fps?: number) => (fps ? fps.toFixed(3).replace(/\.?0+$/, "") : "—");
-const kept = (tracks: Track[] | undefined, type: Track["type"]) => (tracks ?? []).filter((t) => t.type === type && t.action !== "remove").length;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-
-/** Kept tracks per type, plus the files added to the video, as icons and counts. */
-function TrackCounts({ video, added }: { video: VideoFile; added: ExternalFile[] }) {
-  if (!video.tracks || video.tracks.length === 0) return <span className="t3">—</span>;
-  const a = kept(video.tracks, "audio") + added.filter((f) => f.type === "audio").length;
-  const s = kept(video.tracks, "subtitle") + added.filter((f) => f.type === "subtitle").length;
-  return (
-    <span className="cell sm t2 num" style={{ gap: 10 }} title={`${kept(video.tracks, "video")} video, ${a} audio, ${s} subtitle`}>
-      <span className="cell" style={{ gap: 3 }}><VideoRegular aria-hidden />{kept(video.tracks, "video")}</span>
-      <span className="cell" style={{ gap: 3 }}><MusicNote2Regular aria-hidden />{a}</span>
-      <span className="cell" style={{ gap: 3 }}><ClosedCaptionRegular aria-hidden />{s}</span>
-    </span>
-  );
-}
-
-/** A video's place in the queue, in the one status vocabulary. */
-function jobStatus(job: MuxJob | undefined): { s: St; text?: string; pct?: number | null; title?: string } {
-  if (!job) return { s: "ready" };
-  if (job.status === "queued") return { s: "wait", text: "Queued" };
-  if (job.status === "processing") return { s: "run", pct: job.progress };
-  if (job.status === "completed") return { s: "ok" };
-  if (job.status === "error") return { s: "bad", title: job.errorMessage };
-  return { s: "warn", text: "Stopped" };
-}
-
-/** "Korean", from "kor"; nothing for undetermined. */
-const languageName = (code?: string) => (code && code !== "und" ? (CODE_TO_LABEL[code] ?? code) : null);
-
-const typeIcon = (type: Track["type"]) => (type === "video" ? <VideoRegular /> : type === "audio" ? <MusicNote2Regular /> : <ClosedCaptionRegular />);
-
-/** A video's tracks as the inspector lists them: kept, removed, and added. */
-export function TrackList({ video, added = [] }: { video: VideoFile; added?: ExternalFile[] }) {
-  const rows: { key: string; type: Track["type"]; text: string; flag: string; off?: boolean }[] = [];
-  const tracks = (video.tracks ?? []).filter((t) => t.type !== "chapter");
-  for (const type of ["video", "audio", "subtitle"] as const) {
-    tracks
-      .filter((t) => t.type === type)
-      .forEach((t) =>
-        rows.push({
-          key: `${type}-${t.id}`,
-          type,
-          text: [type === "video" ? null : languageName(t.language), t.codec, t.name].filter(Boolean).join(" · ") || "Unnamed",
-          flag: t.action === "remove" ? "Removed" : t.isDefault ? "Default" : t.isForced ? "Forced" : "",
-          off: t.action === "remove",
-        }),
-      );
-    if (type === "video") continue;
-    added
-      .filter((f) => f.type === type)
-      .forEach((f) => {
-        const codec = f.tracks?.find((t) => t.type === type)?.codec;
-        rows.push({ key: `added-${f.id}`, type, text: [languageName(f.language), codec, f.trackName].filter(Boolean).join(" · ") || f.name, flag: "Added" });
-      });
-  }
-  if (rows.length === 0) return <span className="t3">Track details are still being read.</span>;
-  return (
-    <div className="col">
-      {rows.map((row) => (
-        <div key={row.key} className={cx("trk", row.off && "off")}>
-          <span className="fi" aria-hidden>{typeIcon(row.type)}</span>
-          <span className="grow truncate" title={row.text}>{row.text}</span>
-          <span className="fl">{row.flag}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** A layout of kept tracks, to tell whether every video holds the same ones. */
-const layoutOf = (video: VideoFile) =>
-  (video.tracks ?? [])
-    .filter((t) => t.type !== "chapter")
-    .map((t) => `${t.type}:${t.language ?? ""}:${t.codec ?? ""}`)
-    .join("|");
 
 export function VideosPage({
   hidden,
@@ -172,11 +83,7 @@ export function VideosPage({
   onAddExternalFiles,
   externalFilesByVideoId,
   onExternalFilesChange,
-  addedByVideo,
-  jobs,
   preset,
-  queue,
-  pendingTracks,
 }: VideosPageProps) {
   const shell = useShell();
   const videoExtensions = VIDEO_EXTENSIONS.map((ext) => ext.toLowerCase());
@@ -434,7 +341,6 @@ export function VideosPage({
   };
 
   const selected = useMemo(() => files.filter((f) => selectedFileIds.includes(f.id)), [files, selectedFileIds]);
-  const jobByVideo = useMemo(() => new Map(jobs.map((job) => [job.videoFile.id, job])), [jobs]);
   const one = selected.length === 1 ? selected[0] : null;
 
   usePageCommands("videos", {
@@ -462,11 +368,7 @@ export function VideosPage({
 
   // --------------------------------------------------------------- display
 
-  const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
-  const toAdd = [
-    pendingTracks.audio ? plural(pendingTracks.audio, "audio file") : null,
-    pendingTracks.subtitles ? plural(pendingTracks.subtitles, "subtitle file") : null,
-  ].filter(Boolean);
+  // Only a scan has anything to say; the list itself shows the rest.
   const lcd: LcdProps = isScanning
     ? {
         icon: "run",
@@ -474,10 +376,9 @@ export function VideosPage({
         l2: sourceFolder || undefined,
         pct: scanProgress.total > 0 ? (scanProgress.current / scanProgress.total) * 100 : null,
       }
-    : files.length === 0
-      ? { l1: "Drop a folder of videos to begin" }
-      : { l1: `${plural(files.length, "video")} · ${formatGb(totalBytes)}`, l2: toAdd.length ? `${toAdd.join(" · ")} to add` : undefined };
+    : { l1: "" };
 
+  const status = useStatus("videos", lcdStatus(lcd));
   const dock = <PageDock common={shell.dock} />;
 
   const has = files.length > 0;
@@ -485,9 +386,8 @@ export function VideosPage({
   return (
     <PageView
       hidden={hidden}
-      lcd={lcd}
+      status={status}
       dock={dock}
-      cols={has ? "minmax(0,1fr) 300px" : "minmax(0,1fr)"}
       tools={
         <>
           <Cmd icon={<FolderOpenRegular />} disabled={isScanning} onClick={() => void chooseFolder()}>Choose folder</Cmd>
@@ -501,19 +401,14 @@ export function VideosPage({
         isScanning ? (
           <Btn icon={<StopRegular />} kbd="Esc" onClick={cancelScan}>Stop</Btn>
         ) : (
-          <>
-            <Btn icon={<TextBulletListSquareRegular />} disabled={!has} onClick={() => setIsModifyTracksOpen(true)}>Modify tracks…</Btn>
-            <QueueBtn queue={queue} />
-          </>
+          <Btn icon={<TextBulletListSquareRegular />} disabled={!has} onClick={() => setIsModifyTracksOpen(true)}>Modify tracks…</Btn>
         )
       }
     >
       {has ? (
-        <>
-          <Box
-            body={false}
-            title="Videos"
-            sub={sourceFolder ? <span title={sourceFolder}>{sourceFolder}</span> : undefined}
+          <Panel
+            label="Videos"
+            left={<Crumb path={sourceFolder} empty="Videos" />}
             end={
               <>
                 <Combo<string> ghost sm w={104} label="Formats to scan" value={videoExtension} options={extensionOptions(VIDEO_EXTENSIONS)} onChange={setVideoExtension} />
@@ -523,8 +418,8 @@ export function VideosPage({
             }
           >
             <Table
-              cols="minmax(0,1fr) 108px 60px 68px 72px 88px"
-              head={["Name", "Tracks", " FPS", " Duration", " Size", "Status"]}
+              cols="minmax(0,1fr) 100px 88px 88px"
+              head={["Name", " Frame rate", " Duration", " Size"]}
               label="Videos"
               bodyRef={bodyRef}
               onBodyScroll={(event) => shouldVirtualize && setScrollTop(event.currentTarget.scrollTop)}
@@ -536,8 +431,6 @@ export function VideosPage({
                   {virtualRange.topSpacer > 0 && <div style={{ height: virtualRange.topSpacer }} />}
                   {visibleFiles.map((file, visibleIndex) => {
                     const index = shouldVirtualize ? virtualRange.startIndex + visibleIndex : visibleIndex;
-                    const read = Boolean(file.tracks && file.tracks.length > 0);
-                    const job = jobStatus(jobByVideo.get(file.id));
                     return (
                       <Tr
                         key={file.id}
@@ -548,17 +441,11 @@ export function VideosPage({
                       >
                         <span className="cell">
                           <span className="fi" aria-hidden><VideoClipRegular /></span>
-                          <MidText text={file.name} tail={22} />
+                          <MidText text={file.name} tail={40} />
                         </span>
-                        <TrackCounts video={file} added={addedByVideo[file.id] ?? []} />
-                        <span className="r num t2" style={{ display: "flex" }}>{formatFps(file.fps)}</span>
+                        <span className="r num t2" style={{ display: "flex" }}>{file.fps ? `${formatFps(file.fps)} fps` : "—"}</span>
                         <span className="r num t2" style={{ display: "flex" }}>{file.duration || "—"}</span>
                         <span className="r num t2" style={{ display: "flex" }}>{formatGb(file.size)}</span>
-                        {isScanning && !read ? (
-                          <Status s="wait" />
-                        ) : (
-                          <span title={job.title} style={{ minWidth: 0 }}><Status s={job.s} text={job.text} pct={job.pct} /></span>
-                        )}
                       </Tr>
                     );
                   })}
@@ -566,18 +453,7 @@ export function VideosPage({
                 </>
               )}
             </Table>
-          </Box>
-          <Inspector
-            files={files}
-            selected={selected}
-            sourceFolder={sourceFolder}
-            addedByVideo={addedByVideo}
-            onEdit={openEdit}
-            onMediaInfo={() => setIsMediaInfoOpen(true)}
-            onModify={() => setIsModifyTracksOpen(true)}
-            onRemove={removeSelected}
-          />
-        </>
+          </Panel>
       ) : (
         <section className="box">
           {isScanning ? (
@@ -604,90 +480,5 @@ export function VideosPage({
         onExternalFilesChange={onExternalFilesChange}
       />
     </PageView>
-  );
-}
-
-/** The right-hand pane: the selection, or the folder when nothing is selected. */
-function Inspector({
-  files,
-  selected,
-  sourceFolder,
-  addedByVideo,
-  onEdit,
-  onMediaInfo,
-  onModify,
-  onRemove,
-}: {
-  files: VideoFile[];
-  selected: VideoFile[];
-  sourceFolder: string;
-  addedByVideo: Record<string, ExternalFile[]>;
-  onEdit: (file: VideoFile) => void;
-  onMediaInfo: () => void;
-  onModify: () => void;
-  onRemove: () => void;
-}) {
-  const L = ({ icon, children, onClick }: { icon: ReactNode; children: ReactNode; onClick: () => void }) => (
-    <button type="button" className="cmd" onClick={onClick}>
-      <span className="ic" aria-hidden>{icon}</span>
-      {children}
-    </button>
-  );
-  const bytes = (list: VideoFile[]) => list.reduce((sum, f) => sum + (f.size || 0), 0);
-  const seconds = (list: VideoFile[]) => list.reduce((sum, f) => sum + (f.durationSeconds || 0), 0);
-  const fps = (list: VideoFile[]) => {
-    const rates = [...new Set(list.map((f) => formatFps(f.fps)).filter((r) => r !== "—"))];
-    return rates.length === 0 ? "—" : rates.length === 1 ? `${rates[0]} fps` : "Mixed";
-  };
-  const folder = (path: string) => <span className="truncate" title={path}>{path || "—"}</span>;
-
-  if (selected.length > 1) {
-    const audio = selected.reduce((n, f) => n + kept(f.tracks, "audio"), 0);
-    const subs = selected.reduce((n, f) => n + kept(f.tracks, "subtitle"), 0);
-    return (
-      <Box title={`${selected.length} videos`}>
-        <DL rows={[["Size", formatGb(bytes(selected))], ["Duration", formatClockSeconds(seconds(selected))], ["Frame rate", fps(selected)], ["Tracks", `${plural(audio, "audio")} · ${plural(subs, "subtitle", "subtitles")}`]]} />
-        <Links>
-          <L icon={<InfoRegular />} onClick={onMediaInfo}>Media info</L>
-          <L icon={<TextBulletListSquareRegular />} onClick={onModify}>Modify tracks…</L>
-          <L icon={<DeleteRegular />} onClick={onRemove}>Remove</L>
-        </Links>
-      </Box>
-    );
-  }
-  if (selected.length === 1) {
-    const video = selected[0];
-    const dir = video.path.replace(/[\\/][^\\/]*$/, "");
-    return (
-      <Box title={<MidText text={video.name} tail={14} />}>
-        <DL rows={[["Duration", video.duration || "—"], ["Frame rate", video.fps ? `${formatFps(video.fps)} fps` : "—"], ["Size", formatGb(video.size)], ["Folder", folder(dir)]]} />
-        <div className="col" style={{ gap: 4 }}>
-          <span className="sec">Tracks</span>
-          <TrackList video={video} added={addedByVideo[video.id] ?? []} />
-        </div>
-        <Links>
-          <L icon={<EditRegular />} onClick={() => onEdit(video)}>Edit tracks…</L>
-          <L icon={<InfoRegular />} onClick={onMediaInfo}>Media info</L>
-        </Links>
-      </Box>
-    );
-  }
-  const exts = [...new Set(files.map((f) => f.name.split(".").pop()?.toUpperCase()).filter(Boolean))].join(", ");
-  const first = files[0];
-  const same = files.every((f) => layoutOf(f) === layoutOf(first));
-  const name = sourceFolder.replace(/[\\/]+$/, "").replace(/^.*[\\/]/, "") || "Videos";
-  return (
-    <Box title={name}>
-      <DL rows={[["Folder", folder(sourceFolder)], ["Videos", `${files.length} · ${exts || "—"}`], ["Size", formatGb(bytes(files))], ["Duration", formatClockSeconds(seconds(files))], ["Frame rate", fps(files)]]} />
-      {first && (
-        <div className="col" style={{ gap: 4 }}>
-          <span className="sec">{same ? "In every video" : "In the first video"}</span>
-          <TrackList video={first} />
-        </div>
-      )}
-      <Links>
-        <L icon={<TextBulletListSquareRegular />} onClick={onModify}>Modify tracks…</L>
-      </Links>
-    </Box>
   );
 }

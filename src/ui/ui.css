@@ -145,20 +145,7 @@ svg { flex-shrink: 0; }
 .toolbar .r { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 
 /* The status display: always says what the app is doing. */
-.lcd {
-  position: relative; width: 460px; height: 40px; border-radius: 6px; overflow: hidden;
-  display: flex; align-items: center; gap: 10px; padding: 0 14px;
-  background: var(--sunken); box-shadow: inset 0 1px 2px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.25);
-}
-html.light .lcd { box-shadow: inset 0 1px 2px rgba(0,0,0,.08), inset 0 0 0 1px rgba(0,0,0,.08); }
-.lcd .ic { font-size: 16px; display: grid; color: var(--text-2); }
-.lcd .l1 { font-size: 13px; line-height: 17px; }
-.lcd .l2 { font-size: 12px; line-height: 16px; color: var(--text-3); }
-.lcd .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--divider); }
-.lcd .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); transition: width 250ms linear; }
-.lcd .time { margin-left: auto; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 
-.strip2 { height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 2px; padding: 0 8px 6px; }
 .tool { height: 32px; padding: 0 10px; border-radius: 4px; display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); }
 .tool:hover { background: var(--hover); color: var(--text); }
 .tool.on { background: var(--selected); color: var(--text); box-shadow: inset 0 0 0 1px var(--ctl-stroke); }
@@ -385,7 +372,6 @@ html.light .lcd { box-shadow: inset 0 1px 2px rgba(0,0,0,.08), inset 0 0 0 1px r
 .nil { color: var(--text-4); }
 
 /* Track strip: the Audio / Subtitles track slots, under the toolbar. */
-.strip2 .end { margin-left: auto; display: flex; align-items: center; gap: 2px; }
 .tool .t3 { color: var(--text-3); }
 
 /* A panel header's own controls: 28 px, like the dock's. */
@@ -452,7 +438,6 @@ html.light .lcd { box-shadow: inset 0 1px 2px rgba(0,0,0,.08), inset 0 0 0 1px r
 .tr:hover .pairdub .combo.ghost .ic { opacity: 1; }
 
 /* The display's right-hand figure stays on one line. */
-.lcd .time { white-space: nowrap; flex-shrink: 0; }
 /* Runs of switches in an inspector sit closer than its sections. */
 .box-b > .trow + .trow { margin-top: -6px; }
 
@@ -471,13 +456,13 @@ html.light .lcd { box-shadow: inset 0 1px 2px rgba(0,0,0,.08), inset 0 0 0 1px r
 .box-h .tt { flex-shrink: 0; }
 .toolbar .l > * { flex-shrink: 0; }
 .toolbar .l { overflow: hidden; }
-@container (max-width: 1160px) { .lcd { width: 380px; } }
+@container (max-width: 1160px) { .dest { width: 340px; } }
 @container (max-width: 1040px) {
-  .lcd { width: 300px; }
+  .dest { width: 260px; }
   .toolbar .l .cmd:not(.icon) { width: 32px; padding: 0; justify-content: center; }
   .toolbar .l .cmd:not(.icon) .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .box-h .end .tbox { width: 120px !important; }
-  .box-h .end .combo.ghost { min-width: 0; width: 92px !important; }
+  .box-h .end .tbox, .phead .end .tbox { width: 120px !important; }
+  .box-h .end .combo.ghost, .phead .end .combo.ghost { min-width: 0; width: 92px !important; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -533,7 +518,6 @@ html.light .lcd { box-shadow: inset 0 1px 2px rgba(0,0,0,.08), inset 0 0 0 1px r
 .mi { width: 100%; text-align: left; }
 .mi:disabled { opacity: .45; }
 .mi .mcheck { width: 16px; display: grid; place-items: center; font-size: 14px; color: var(--text-2); margin-left: -4px; }
-.lcd .bar.ind i { width: 30%; animation: ind 1.5s var(--ease) infinite; }
 .pg:disabled { opacity: .45; }
 .pg:disabled:hover { background: transparent; }
 .toolbar .l, .toolbar .r { -webkit-app-region: no-drag; }
@@ -563,3 +547,129 @@ html.light .lcd { box-shadow: inset 0 1px 2px rgba(0,0,0,.08), inset 0 0 0 1px r
 .tbox.invalid, .tbox.invalid:focus-within { border-bottom-color: var(--bad); }
 .hdel:focus-within { opacity: 1; }
 .cmd.on { background: var(--selected); }
+
+/* ------------------------------------------------------------------------ */
+/* Revision 2 (design/mockup/revision): no right panel, one header row per  */
+/* list, settings in view, a small status, bigger dialogs.                  */
+/* ------------------------------------------------------------------------ */
+
+/* The status, small: only while something runs or has news. */
+.toolbar .c { display: flex; justify-content: center; min-width: 0; -webkit-app-region: no-drag; }
+.stat { position: relative; height: 30px; max-width: 380px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px 0 10px; border-radius: 15px; overflow: hidden; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--layer-stroke); font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.stat:hover:not(:disabled) { color: var(--text); }
+.stat:disabled { cursor: default; }
+.stat .ic { display: grid; font-size: 14px; }
+.stat b { color: var(--text); font-weight: 600; }
+.stat .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; }
+.stat .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); transition: width 250ms linear; }
+.stat .bar.ind i { width: 30%; animation: ind 1.5s var(--ease) infinite; }
+
+/* The page bar's credit, small; Output's dot while it is hidden. */
+.pagebar .made { font-size: 11px; letter-spacing: .01em; color: var(--text-3); }
+.pagebar .ub { position: relative; }
+.pagebar .ub.on .ic { color: var(--accent); }
+.pagebar .ub .dot { position: absolute; top: 7px; right: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--bad); box-shadow: 0 0 0 2px var(--base); }
+
+/* One header row on every list: tabs or a title, then filters and search. */
+.phead { height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 2px; padding: 0 6px 0 4px; border-bottom: 1px solid var(--divider); }
+.phead .end { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.phead .tbox { height: 28px; }
+.crumb { display: inline-flex; align-items: center; gap: 6px; padding-left: 10px; font-weight: 600; min-width: 0; white-space: nowrap; }
+.crumb .t3, .crumb .t4 { font-weight: 400; }
+
+/* A track as a tab on its list; × on hover deletes it. */
+.ttab { position: relative; display: inline-flex; height: 40px; align-items: center; }
+.ttab .tt { height: 40px; padding: 0 32px 0 10px; display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); white-space: nowrap; }
+.ttab .tt .ic { font-size: 16px; display: grid; }
+.ttab .tt .lg { color: var(--text-3); font-weight: 400; }
+.ttab:hover .tt { color: var(--text); }
+.ttab.on .tt { color: var(--text); font-weight: 600; }
+.ttab.on .tt .ic { color: var(--accent); }
+.ttab.on::after { content: ""; position: absolute; left: 10px; right: 32px; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
+.ttab .x { position: absolute; right: 6px; top: 9px; width: 22px; height: 22px; border-radius: 4px; display: grid; place-items: center; font-size: 14px; color: var(--text-2); opacity: 0; transition: opacity 83ms linear; }
+.ttab:hover .x, .ttab:focus-within .x { opacity: 1; }
+.ttab .x:hover { background: var(--hover); color: var(--text); }
+
+/* Settings in view under the header: four columns, labels in their own. */
+.sheet { flex-shrink: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 28px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--divider); background: var(--sunken); }
+.sheet .pf { display: grid; grid-template-columns: 80px minmax(0, 1fr); align-items: center; gap: 10px; min-width: 0; }
+.sheet .pf.wide { grid-column: span 2; }
+.sheet .pf > .lb { color: var(--text-2); white-space: nowrap; }
+.sheet .tbox, .sheet .combo { height: 30px; }
+.sheet .checks { display: flex; align-items: center; gap: 24px; min-width: 0; }
+.sheet .checks.span2 { grid-column: span 2; }
+@container (max-width: 1100px) {
+  .sheet { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sheet .pf.wide, .sheet .checks.span2 { grid-column: span 2; }
+}
+
+/* A checkbox or switch with its label, on one line. */
+.ck { display: flex; align-items: center; gap: 10px; min-height: 24px; color: var(--text); white-space: nowrap; }
+.ck .d { color: var(--text-3); font-size: 12px; }
+
+/* Mux: where the files go, in the toolbar's middle, with Browse beside it. */
+.destw { display: inline-flex; max-width: 100%; min-width: 0; }
+.dest { height: 34px; width: 400px; max-width: 100%; min-width: 0; display: inline-flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; border-radius: 6px; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--layer-stroke); color: var(--text); white-space: nowrap; }
+.dest:hover { box-shadow: inset 0 0 0 1px var(--ctl-stroke-2); }
+.dest.on { box-shadow: inset 0 0 0 1px var(--accent); }
+.dest .ic { display: grid; font-size: 16px; color: var(--text-3); }
+.dest .nm { margin-left: -6px; min-width: 60px; color: var(--text-3); }
+.dest .ch { margin-left: auto; display: grid; font-size: 12px; color: var(--text-3); }
+.dest .ph { color: var(--text-3); }
+.destb { height: 34px; width: 36px; flex-shrink: 0; margin-left: 4px; border-radius: 6px; display: grid; place-items: center; font-size: 16px; color: var(--text-2); background: var(--sunken); box-shadow: inset 0 0 0 1px var(--layer-stroke); }
+.destb:hover:not(:disabled) { color: var(--text); box-shadow: inset 0 0 0 1px var(--ctl-stroke-2); }
+
+/* A popover: a group of settings under the button that opened it. */
+.setfly { position: absolute; width: 420px; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.setfly.wide { width: 480px; }
+.setfly .fh { display: flex; align-items: baseline; gap: 10px; font-weight: 600; }
+
+/* What each job adds, at a glance. */
+.adds { display: flex; align-items: center; gap: 12px; color: var(--text-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.adds > span { display: inline-flex; align-items: center; gap: 3px; }
+.adds .ic { display: grid; font-size: 14px; color: var(--text-3); }
+.adds .miss, .adds .miss .ic { color: var(--warn); }
+
+/* A small fold-out, like "1 removed". */
+.drop { height: 24px; padding: 0 6px 0 8px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px; font-weight: 400; color: var(--text-2); font-size: 12px; }
+.drop:hover { background: var(--hover); color: var(--text); }
+.drop .ic { display: grid; font-size: 12px; }
+.strike { text-decoration: line-through; }
+
+/* Header and rows line up: the header keeps the room the rows' scrollbar
+   takes. */
+.tbl .th { overflow: hidden; scrollbar-gutter: stable; scrollbar-width: thin; }
+.tbl .tb { scrollbar-gutter: stable; }
+/* A row's remove button, on the row under the pointer. */
+.tbl .tr .rx { opacity: 0; transition: opacity 83ms linear; }
+.tbl .tr:hover .rx, .tbl .tr.on .rx, .tbl .tr:focus-within .rx { opacity: 1; }
+
+/* Bigger dialogs: plain ones fit their text; table ones a season's tracks. */
+.dialog { width: 520px; }
+.dialog.mid { width: 680px; }
+.dialog.wide { width: min(880px, calc(100% - 80px)); }
+.prefs { width: min(920px, calc(100% - 64px)); height: min(660px, calc(100% - 48px)); }
+.prefs .ptab { width: 112px; height: 62px; }
+.prefs .pbody { padding: 12px 48px 28px; }
+.dialog.xl { width: min(1000px, calc(100% - 80px)); height: min(640px, calc(100% - 64px)); display: flex; flex-direction: column; background: var(--base); }
+.dialog.xl .dh { display: flex; align-items: flex-start; gap: 16px; padding: 20px 14px 14px 24px; }
+.dialog.xl .dh .dt { font: 600 20px/28px var(--font-display); }
+.dialog.xl .dh .ds { margin-top: 2px; color: var(--text-2); }
+.dialog.xl .dbar { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--divider); }
+.dialog.xl .dbar .tab { height: 44px; padding: 0 12px; gap: 6px; display: inline-flex; align-items: center; }
+.dialog.xl .dbar .tab .n { color: var(--text-3); font-weight: 400; font-variant-numeric: tabular-nums; }
+.dialog.xl .dbar .tools { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.dialog.xl .db { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6px 8px; background: var(--layer); overflow: auto; gap: 0; }
+.dialog.xl .db.flush { padding: 0; border-top: 1px solid var(--divider); }
+.dialog.xl .db .tbl .tr { height: 40px; }
+.dialog.xl .db .tbl .tr.on::before { top: 12px; }
+.dialog.xl .db.compact .tbl .tr { height: 32px; }
+.dialog.xl .db.compact .tbl .tr.on::before { top: 8px; }
+.dialog.xl .df { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 18px 24px; border-top: 1px solid var(--divider); }
+.dialog.xl .df .btn { min-width: 104px; }
+.dialog.xl .sect { padding: 14px 16px 6px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.dialog.xl .sect .t3 { font-weight: 400; }
+.dialog.xl .also { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 6px 16px; padding: 4px 16px 10px; }
+.dialog.xl .also .k { color: var(--text-3); }
+.cmdline { margin: 0 16px 16px; padding: 12px 14px; border-radius: 6px; background: var(--sunken); color: var(--text-2); font: 12px/18px var(--mono); white-space: pre-wrap; word-break: break-all; }
+.meas { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; padding: 0 16px 14px; }

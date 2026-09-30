@@ -27,12 +27,13 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { AttachmentsPage } from "@/features/workspace/pages/AttachmentsPage";
 import { AudioPage } from "@/features/workspace/pages/AudioPage";
 import { ChaptersPage } from "@/features/workspace/pages/ChaptersPage";
-import { MuxPage } from "@/features/workspace/pages/MuxPage";
+import { MuxPage, type ReportTrack } from "@/features/workspace/pages/MuxPage";
 import { SubtitlesPage } from "@/features/workspace/pages/SubtitlesPage";
 import { VideosPage } from "@/features/workspace/pages/VideosPage";
 import { ModifyTracksDialog } from "@/features/workspace/components/ModifyTracksDialog";
 import { installUpdateAndRestart, useAutoUpdate } from "@/features/workspace/hooks/useAutoUpdate";
 import { buildMuxJobRequests } from "@/features/workspace/lib/muxJobBuilder";
+import { jobsToRun, parallelJobs, syncJobs } from "@/features/workspace/lib/queue";
 import { areVideoListsEquivalent } from "@/features/workspace/lib/videoCompare";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import {
@@ -54,10 +55,10 @@ import {
 } from "@/shared/lib/backend";
 import { getUnlinkedExternalFiles } from "@/shared/lib/matchUtils";
 import type { ExternalFile, MuxJob, MuxPreviewResult, MuxSettings, OptionsData, OutputSettings, Preset, VideoFile } from "@/shared/types";
-import { AppWindow, IS_MAC, PageBar, type Menu, type PageTab } from "@/ui/frame";
+import { AppWindow, IS_MAC, PageBar, type Menu, type PageTab, type StatusProps } from "@/ui/frame";
 import { toast } from "@/ui/toast";
 
-import { HistoryBody, HistoryTools, OutputBody, OutputTools, useHistoryFilter, type CommonTab, type LogLine } from "./dock";
+import { HistoryBody, HistoryTools, OutputBody, OutputTools, severityOf, useHistoryFilter, type CommonTab, type LogLine } from "./dock";
 import { loadHistory, muxOutcome, runName, saveHistory, type HistoryEntry } from "./history";
 import { KeyboardShortcuts } from "./KeyboardShortcuts";
 import { PreferencesWindow, type PrefsTab } from "./Preferences";
@@ -81,14 +82,6 @@ export const PAGES: PageTab<PageId>[] = [
 ];
 
 const PAGE_LABEL = Object.fromEntries(PAGES.map((p) => [p.id, p.label])) as Record<PageId, string>;
-
-/** What the preparing pages offer as their next action: hand the loaded
- *  videos to the queue. */
-export interface QueueAction {
-  /** Videos loaded but not queued yet. */
-  count: number;
-  add: () => void;
-}
 
 /** Drop entries for tracks that no longer exist, keeping the same object when
  *  there is nothing to drop so the state update is a no-op. */
@@ -221,7 +214,7 @@ export default function Index() {
     removeOldCrc: false,
     keepLogFile: false,
     abortOnErrors: false,
-    maxParallelJobs: 2,
+    maxParallelJobs: 0,
     onlyKeepAudiosEnabled: false,
     onlyKeepSubtitlesEnabled: false,
     onlyKeepAudioLanguages: [],
@@ -270,9 +263,32 @@ export default function Index() {
   // ------------------------------------------------------------- output
 
   const [logs, logDispatch] = useReducer(logReducer, []);
-  const log = useCallback((text: string) => logDispatch({ type: "add", text }), []);
   const [dockTab, setDockTab] = useState<CommonTab | null>(null);
   const openOutput = useCallback(() => setDockTab("output"), []);
+  // Output stays out of the way until asked for. An error written while it is
+  // hidden lights a dot on its icon; opening it puts the dot out.
+  const [outputDot, setOutputDot] = useState(false);
+  const outputShowing = useRef(false);
+  outputShowing.current = dockTab === "output";
+  useEffect(() => {
+    if (dockTab === "output") setOutputDot(false);
+  }, [dockTab]);
+  const log = useCallback((text: string) => {
+    logDispatch({ type: "add", text });
+    if (!outputShowing.current && severityOf(text) === "bad") setOutputDot(true);
+  }, []);
+
+  /** What each page shows in the toolbar's status. */
+  const [statuses, setStatuses] = useState<Partial<Record<PageId, StatusProps>>>({});
+  const publishStatus = useCallback((page: PageId, status: StatusProps | null) => {
+    setStatuses((prev) => {
+      if (!status && !prev[page]) return prev;
+      const next = { ...prev };
+      if (status) next[page] = status;
+      else delete next[page];
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const unlistenMux = listenMuxLog((payload) => log(payload.line));
@@ -383,34 +399,13 @@ export default function Index() {
     setPreviewResults({});
   }, [previewResetKey, previewResults]);
 
-  const queuedIds = useMemo(() => new Set(jobs.map((job) => job.id)), [jobs]);
-  const unqueuedCount = useMemo(
-    () => videoFiles.filter((f) => f.status === "pending" && !queuedIds.has(`job-${f.id}`)).length,
-    [videoFiles, queuedIds],
-  );
-
-  const handleAddToQueue = useCallback(() => {
-    const newJobs: MuxJob[] = videoFiles
-      .filter((f) => f.status === "pending")
-      .filter((f) => !queuedIds.has(`job-${f.id}`))
-      .map((f) => ({ id: `job-${f.id}`, videoFile: f, status: "queued" as const, progress: 0, sizeBefore: f.size }));
-    if (newJobs.length === 0) return;
-    setJobs((prev) => {
-      const next = [...prev, ...newJobs];
-      setMuxSettings((current) => ({ ...current, maxParallelJobs: Math.max(1, Math.min(next.length || 1, MAX_PARALLEL_JOBS)) }));
-      return next;
-    });
-    log(`Queued ${newJobs.length} video${newJobs.length === 1 ? "" : "s"}`);
-  }, [videoFiles, queuedIds, log]);
-
-  const queue = useMemo(() => ({ count: unqueuedCount, add: handleAddToQueue }), [unqueuedCount, handleAddToQueue]);
+  // The queue is every loaded video, kept in step with the Videos list.
+  useEffect(() => {
+    setJobs((prev) => syncJobs(prev, videoFiles));
+  }, [videoFiles]);
 
   useEffect(() => {
     const validVideoIds = new Set(videoFiles.map((video) => video.id));
-    setJobs((prev) => {
-      const next = prev.filter((job) => validVideoIds.has(job.videoFile.id));
-      return next.length === prev.length ? prev : next;
-    });
     setPreviewResults((prev) => {
       const nextEntries = Object.entries(prev).filter(([jobId]) => validVideoIds.has(jobId.startsWith("job-") ? jobId.slice(4) : jobId));
       return nextEntries.length === Object.keys(prev).length ? prev : Object.fromEntries(nextEntries);
@@ -422,7 +417,7 @@ export default function Index() {
   }, [videoFiles]);
 
   const buildJobRequests = useCallback(
-    () => buildMuxJobRequests({ videoFiles, jobs, audioFilesByTrack, subtitleFilesByTrack, chapterFiles, attachmentFiles, perVideoExternal }),
+    (only?: MuxJob[]) => buildMuxJobRequests({ videoFiles, jobs: only ?? jobs, audioFilesByTrack, subtitleFilesByTrack, chapterFiles, attachmentFiles, perVideoExternal }),
     [attachmentFiles, audioFilesByTrack, chapterFiles, jobs, perVideoExternal, subtitleFilesByTrack, videoFiles],
   );
 
@@ -504,9 +499,41 @@ export default function Index() {
       if (muxSettings.discardOldAttachments) rules.push("Remove the source's attachments");
       if (muxSettings.removeGlobalTags) rules.push("Remove the source's global tags");
       if (rules.length > 0) sections.push({ title: "Rules", items: rules.map((rule) => ({ title: rule, details: [] })) });
-      return { title: job.video.name, sections };
+
+      // Every track of the new file: the source's, then the added files; the
+      // removed ones last, for the Job details list.
+      const flagsOf = (isDefault?: boolean, isForced?: boolean) => [isDefault ? "Default" : null, isForced ? "Forced" : null].filter((flag): flag is string => Boolean(flag));
+      const sourceTracks: ReportTrack[] = (job.video.tracks || [])
+        .filter((track) => track.type !== "chapter")
+        .map((track, index) => ({
+          type: track.type as ReportTrack["type"],
+          language: track.language,
+          name: [track.codec, track.name].filter(Boolean).join(" · ") || `Track ${index + 1}`,
+          from: "Source",
+          flags: flagsOf(track.isDefault, track.isForced),
+          removed: track.action === "remove",
+        }));
+      const added = (type: "audio" | "subtitle", files: ExternalFile[]): ReportTrack[] =>
+        files.map((file) => ({ type, language: file.language, name: file.trackName || file.name.split(".").pop()?.toUpperCase() || type, from: file.name, flags: flagsOf(file.isDefault, file.isForced), delay: file.delay, added: true }));
+      const tracks = [...sourceTracks.filter((t) => !t.removed), ...added("audio", job.audios), ...added("subtitle", job.subtitles), ...sourceTracks.filter((t) => t.removed)];
+      const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+      const also: [string, string][] = [
+        ["Chapters", job.chapters.length ? `From ${job.chapters.map((file) => file.name).join(", ")}${muxSettings.discardOldChapters ? " · the source's removed" : ""}` : muxSettings.discardOldChapters ? "The source's removed" : "The source's kept"],
+        ["Attachments", job.attachments.length ? `${plural(job.attachments.length, "file")} added${muxSettings.discardOldAttachments ? " · the source's removed" : ""}` : muxSettings.discardOldAttachments ? "The source's removed" : "The source's kept"],
+        ["Global tags", muxSettings.removeGlobalTags ? "Removed" : "Kept"],
+      ];
+      return { title: job.video.name, sections, tracks, also };
     },
     [buildJobRequests, muxSettings.discardOldAttachments, muxSettings.discardOldChapters, muxSettings.removeGlobalTags],
+  );
+
+  /** What each job adds to its video, for the queue's Adds column. */
+  const addsByJob = useMemo(
+    () =>
+      Object.fromEntries(
+        buildJobRequests().map((job) => [job.id, { audio: job.audios.length, subtitle: job.subtitles.length, chapter: job.chapters.length, attachment: job.attachments.length }]),
+      ),
+    [buildJobRequests],
   );
 
   const fastMuxAvailable = useMemo(() => {
@@ -547,7 +574,7 @@ export default function Index() {
   const buildEffectiveMuxSettings = useCallback(
     (jobCount: number): MuxSettings => ({
       ...muxSettings,
-      maxParallelJobs: Math.max(1, Math.min(jobCount || 1, MAX_PARALLEL_JOBS)),
+      maxParallelJobs: parallelJobs(muxSettings.maxParallelJobs, jobCount, MAX_PARALLEL_JOBS),
       destinationDir: outputSettings.directory,
       outputNamingPattern: outputSettings.namingPattern,
       overwriteSource: outputSettings.overwriteExisting,
@@ -570,7 +597,21 @@ export default function Index() {
       refuseBusy("Start muxing");
       return;
     }
-    const jobsRequest = buildJobRequests();
+    const run = jobsToRun(jobs);
+    const jobsRequest = buildJobRequests(run);
+    if (jobsRequest.length === 0) {
+      toast({ title: "The queue is empty", description: "Load videos on the Videos page to mux them." });
+      releaseEngine("mux");
+      return;
+    }
+    const runIds = new Set(run.map((job) => job.id));
+    setJobs((prev) =>
+      prev.map((job) =>
+        runIds.has(job.id) && job.status !== "queued"
+          ? { ...job, status: "queued", progress: 0, errorMessage: undefined, sizeAfter: undefined, etaSeconds: undefined, startedAt: undefined }
+          : job,
+      ),
+    );
     const settings = buildEffectiveMuxSettings(jobsRequest.length);
     muxStartPendingRef.current = true;
     setBatch({ startedAt: Date.now(), finishedAt: null, paused: false });
@@ -591,7 +632,17 @@ export default function Index() {
       .finally(() => {
         muxStartPendingRef.current = false;
       });
-  }, [buildEffectiveMuxSettings, buildJobRequests, externalLinkIssues, claimEngine, refuseBusy, log]);
+  }, [buildEffectiveMuxSettings, buildJobRequests, externalLinkIssues, claimEngine, releaseEngine, refuseBusy, log, jobs]);
+
+  /** Clear the queue: the queue is the loaded videos, so this empties the
+   *  Videos list, ready for the next batch. */
+  const handleClearQueue = useCallback(() => {
+    setVideoFiles([]);
+    setVideoSourceFolder("");
+    setPreviewResults({});
+    setBatch({ startedAt: null, finishedAt: null, paused: false });
+    log("Cleared the queue");
+  }, [log]);
 
   const handlePreviewQueue = useCallback(async () => {
     // previewLoading only disables the button on the next render, so two quick
@@ -840,22 +891,6 @@ export default function Index() {
     });
   }, []);
 
-  /** Every file added to each video: the track slots' files it is paired
-   *  with, and the ones added to it alone. For the Videos inspector. */
-  const addedByVideo = useMemo(() => {
-    const out: Record<string, ExternalFile[]> = {};
-    const add = (file: ExternalFile) => {
-      if (!file.matchedVideoId) return;
-      (out[file.matchedVideoId] ??= []).push(file);
-    };
-    audioTracks.forEach((track) => (audioFilesByTrack[track] ?? []).forEach(add));
-    subtitleTracks.forEach((track) => (subtitleFilesByTrack[track] ?? []).forEach(add));
-    Object.entries(perVideoExternal).forEach(([videoId, entry]) => {
-      (out[videoId] ??= []).push(...entry.audios, ...entry.subtitles);
-    });
-    return out;
-  }, [audioTracks, audioFilesByTrack, subtitleTracks, subtitleFilesByTrack, perVideoExternal]);
-
   // --------------------------------------------------------------- dialogs
 
   const [modifyOpen, setModifyOpen] = useState(false);
@@ -909,8 +944,10 @@ export default function Index() {
       setCommands,
       openPreferences,
       copy: (text: string) => void copy(text),
+      publishStatus,
+      runStatus: enginePage && statuses[enginePage] ? { page: enginePage, status: statuses[enginePage]! } : null,
     }),
-    [active, desktop, enginePage, claimEngine, releaseEngine, log, openOutput, dock, addHistory, setCommands, openPreferences, copy],
+    [active, desktop, enginePage, claimEngine, releaseEngine, log, openOutput, dock, addHistory, setCommands, openPreferences, copy, publishStatus, statuses],
   );
 
   // The OS window's title follows the page, for the taskbar and Alt+Tab.
@@ -1079,7 +1116,6 @@ export default function Index() {
           { label: "Modify tracks…", shortcut: "Ctrl+M", onSelect: () => setModifyOpen(true), disabled: videoFiles.length === 0 },
           { label: "Media info", shortcut: "Ctrl+I", onSelect: run("mediaInfo"), disabled: off("mediaInfo") },
           "separator",
-          { label: "Add to queue", onSelect: handleAddToQueue, disabled: unqueuedCount === 0 },
           { label: "Validate", onSelect: () => void handlePreviewQueue(), disabled: jobs.length === 0 || previewLoading || muxIsRunning },
           { label: "Start muxing", shortcut: "Ctrl+Enter", onSelect: startMuxingFromAnywhere, disabled: jobs.length === 0 || muxIsRunning },
           "separator",
@@ -1119,7 +1155,6 @@ export default function Index() {
     "measure-delays": () => commandsRef.current.audio?.start?.(),
     "modify-tracks": () => setModifyOpen(true),
     "media-info": () => command("mediaInfo")?.(),
-    "add-to-queue": handleAddToQueue,
     validate: () => void handlePreviewQueue(),
     "start-muxing": startMuxingFromAnywhere,
     tools: () => setPrefs("tools"),
@@ -1152,9 +1187,9 @@ export default function Index() {
     <button type="button" className="acc" onClick={() => setPrefs("updates")}>Version {update.version} is ready — Update</button>
   ) : missingTool ? (
     <button type="button" className="warn" onClick={() => setPrefs("tools")}>{missingTool.name} is missing — Install</button>
-  ) : tools && tools.length > 0 ? (
-    toolsNote(tools)
-  ) : desktop ? null : (
+  ) : desktop ? (
+    <span className="made">Made by Ionicboy</span>
+  ) : (
     "Browser preview — files and runs need the desktop app"
   );
 
@@ -1179,6 +1214,7 @@ export default function Index() {
             note={note}
             history={dockTab === "history"}
             output={dockTab === "output"}
+            outputDot={outputDot}
             onHistory={() => toggleDock("history")}
             onOutput={() => toggleDock("output")}
             onPreferences={() => setPrefs("general")}
@@ -1227,11 +1263,7 @@ export default function Index() {
           onAddExternalFiles={handleAddExternalFiles}
           externalFilesByVideoId={perVideoExternal}
           onExternalFilesChange={handleExternalFilesChange}
-          addedByVideo={addedByVideo}
-          jobs={jobs}
           preset={activePreset}
-          queue={queue}
-          pendingTracks={{ audio: audioFilesCount, subtitles: subtitleFilesCount }}
         />
         <SubtitlesPage
           hidden={active !== "subtitles"}
@@ -1240,7 +1272,6 @@ export default function Index() {
           onSubtitleFilesChange={(files) => setSubtitleFilesByTrack((prev) => ({ ...prev, [activeSubtitleTrack]: files }))}
           onVideoFilesChange={handleVideoFilesChange}
           preset={activePreset}
-          queue={queue}
         />
         <AudioPage
           hidden={active !== "audio"}
@@ -1250,7 +1281,6 @@ export default function Index() {
           onVideoFilesChange={handleVideoFilesChange}
           preset={activePreset}
           measurement={options?.Measurement}
-          queue={queue}
         />
         <ChaptersPage
           hidden={active !== "chapters"}
@@ -1258,16 +1288,16 @@ export default function Index() {
           videoFiles={videoFiles}
           onChapterFilesChange={setChapterFiles}
           preset={activePreset}
+          muxSettings={muxSettings}
           onMuxSettingsChange={updateMuxSettings}
-          queue={queue}
         />
         <AttachmentsPage
           hidden={active !== "attachments"}
           attachmentFiles={attachmentFiles}
           onAttachmentFilesChange={setAttachmentFiles}
           preset={activePreset}
+          muxSettings={muxSettings}
           onMuxSettingsChange={updateMuxSettings}
-          queue={queue}
         />
         <MuxPage
           hidden={active !== "mux"}
@@ -1278,14 +1308,12 @@ export default function Index() {
           unlinkedPage={unlinkedAudioFiles.length > 0 ? "audio" : unlinkedSubtitleFiles.length > 0 ? "subtitles" : null}
           jobs={jobs}
           videoFiles={videoFiles}
-          queue={queue}
-          onClearAll={() => setJobs([])}
-          onRemoveJob={(jobId) => setJobs((prev) => prev.filter((job) => job.id !== jobId))}
+          addsByJob={addsByJob}
+          onClearQueue={handleClearQueue}
           onStartMuxing={handleStartMuxing}
           onPauseMuxing={handlePauseMuxing}
           onResumeMuxing={handleResumeMuxing}
           onStopMuxing={handleStopMuxing}
-          onViewLog={handleViewLog}
           muxSettings={muxSettings}
           onMuxSettingsChange={updateMuxSettings}
           previewResults={previewResults}
@@ -1303,13 +1331,3 @@ export default function Index() {
 const openReleaseNotes = () =>
   void import("@tauri-apps/api/shell").then(({ open }) => open("https://github.com/AdkHex/MkvBatchMux/releases")).catch(() => undefined);
 
-/** "MKVToolNix 88.0 · FFmpeg 7.1": the tools in use, for the page bar. */
-export function toolsNote(tools: DependencyStatus[]): string | null {
-  const short = (tool: DependencyStatus) => {
-    const version = tool.version?.match(/\d+(\.\d+)+/)?.[0];
-    const name = tool.id === "mkvtoolnix" ? "MKVToolNix" : tool.id === "ffmpeg" ? "FFmpeg" : null;
-    return name && version ? `${name} ${version}` : null;
-  };
-  const parts = tools.map(short).filter((part): part is string => Boolean(part));
-  return parts.length ? parts.join(" · ") : null;
-}

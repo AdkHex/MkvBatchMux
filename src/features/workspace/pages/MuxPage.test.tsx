@@ -8,7 +8,7 @@ import { ShellContext, type Shell } from "@/app/shell";
 // that, but the module must still import cleanly outside Tauri.
 vi.mock("@/shared/lib/backend", () => ({ pickDirectory: vi.fn() }));
 
-import { MuxPage } from "./MuxPage";
+import { MuxPage, type JobReport } from "./MuxPage";
 
 const video: VideoFile = {
   id: "v1",
@@ -61,6 +61,8 @@ const shell = (overrides: Partial<Shell> = {}): Shell => ({
   setCommands: vi.fn(),
   openPreferences: vi.fn(),
   copy: vi.fn(),
+  publishStatus: vi.fn(),
+  runStatus: null,
   ...overrides,
 });
 
@@ -71,8 +73,10 @@ function renderPage(overrides: {
   onStartMuxing?: () => void;
   overwriteExisting?: boolean;
   shell?: Partial<Shell>;
+  getJobReport?: (jobId: string) => JobReport | null;
 }) {
   const onStartMuxing = overrides.onStartMuxing ?? vi.fn();
+  const onClearQueue = vi.fn();
   render(
     withShell(
       <MuxPage
@@ -86,15 +90,13 @@ function renderPage(overrides: {
         unlinkedPage={null}
         jobs={[job]}
         videoFiles={[video]}
-        queue={{ count: 0, add: vi.fn() }}
-        onClearAll={vi.fn()}
-        onRemoveJob={vi.fn()}
+        onClearQueue={onClearQueue}
         onStartMuxing={onStartMuxing}
         onPauseMuxing={vi.fn()}
         onResumeMuxing={vi.fn()}
         onStopMuxing={vi.fn()}
-        onViewLog={vi.fn()}
         previewResults={overrides.previewResults ?? {}}
+        getJobReport={overrides.getJobReport}
         previewLoading={false}
         onPreviewQueue={vi.fn()}
         batch={{ startedAt: null, finishedAt: null, paused: false }}
@@ -103,7 +105,7 @@ function renderPage(overrides: {
       overrides.shell,
     ),
   );
-  return { onStartMuxing };
+  return { onStartMuxing, onClearQueue };
 }
 
 const withWarnings: Record<string, MuxPreviewResult> = {
@@ -176,5 +178,55 @@ describe("MuxPage start confirmation", () => {
     expect(start).toBeDisabled();
     fireEvent.click(start);
     expect(onStartMuxing).not.toHaveBeenCalled();
+  });
+});
+
+describe("MuxPage queue", () => {
+  beforeEach(cleanup);
+
+  it("asks before clearing the queue, and clears only when told to", () => {
+    const { onClearQueue } = renderPage({});
+
+    fireEvent.click(screen.getByRole("button", { name: /^clear the queue$/i }));
+    const dialog = screen.getByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /^cancel$/i }));
+    expect(onClearQueue).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^clear the queue$/i }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: /^clear$/i }));
+    expect(onClearQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens a job's details on a double-click, with the removed tracks folded away", () => {
+    const report: JobReport = {
+      title: video.name,
+      sections: [],
+      tracks: [
+        { type: "video", name: "AVC", from: "Source", flags: ["Default"] },
+        { type: "audio", language: "hin", name: "E-AC3", from: "Episode 01.hin.eac3", flags: [], added: true },
+        { type: "subtitle", language: "eng", name: "SDH", from: "Source", flags: [], removed: true },
+      ],
+      also: [["Global tags", "Removed"]],
+    };
+    renderPage({ getJobReport: () => report });
+
+    fireEvent.doubleClick(screen.getByRole("row", { name: video.name }));
+    const dialog = screen.getByRole("dialog", { name: video.name });
+    expect(within(dialog).getByText("Episode 01.hin.eac3")).toBeInTheDocument();
+    expect(within(dialog).queryByText("SDH")).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /1 removed/i }));
+    expect(within(dialog).getByText("SDH")).toBeInTheDocument();
+    expect(within(dialog).getByText("Removed", { selector: ".also span" })).toBeInTheDocument();
+  });
+
+  it("keeps the options out of sight until Options opens them", () => {
+    renderPage({});
+
+    expect(screen.queryByRole("dialog", { name: "Mux options" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^options$/i }));
+    const options = screen.getByRole("dialog", { name: "Mux options" });
+    expect(within(options).getByText("Remove from the source")).toBeInTheDocument();
+    expect(within(options).getByRole("switch", { name: /remove global tags from the source/i })).toBeInTheDocument();
   });
 });

@@ -146,7 +146,7 @@ function PrefsBody({ tab }: { tab: PTab }) {
   );
 }
 
-function PrefsWindow({ tab }: { tab: PTab }) {
+export function PrefsWindow({ tab }: { tab: PTab }) {
   const { go } = useProto();
   return (
     <div className="smoke">

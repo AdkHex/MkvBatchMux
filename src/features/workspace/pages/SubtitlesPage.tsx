@@ -6,8 +6,6 @@ import {
   ArrowImportRegular,
   ArrowSyncRegular,
   CheckmarkRegular,
-  ChevronDownRegular,
-  ChevronUpRegular,
   ClosedCaptionRegular,
   CopyRegular,
   DeleteRegular,
@@ -15,11 +13,10 @@ import {
   FolderOpenRegular,
   TimelineRegular,
 } from "@fluentui/react-icons";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { QueueAction } from "@/app/Index";
 import { PageDock } from "@/app/dock";
-import { useShell, usePageCommands } from "@/app/shell";
+import { useShell, usePageCommands, useStatus } from "@/app/shell";
 import { ImportTrackEditDialog, type ImportTrackOverride } from "@/features/workspace/components/ImportTrackEditDialog";
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
 import { useTabState, type TrackConfig } from "@/features/workspace/store/useTabState";
@@ -30,12 +27,12 @@ import { delaySecondsOrZero } from "@/shared/lib/delayInput";
 import { SUBTITLE_EXTENSIONS } from "@/shared/lib/extensions";
 import { getUnlinkedExternalFiles, linkExternalFilesByOrder } from "@/shared/lib/matchUtils";
 import type { ExternalFile, Preset, VideoFile } from "@/shared/types";
-import { Box, Dialog, PageView, type LcdProps } from "@/ui/frame";
-import { Btn, Chk, Cmd, Combo, DL, Empty, Fld, Grip, LangCombo, Links, MidText, TBox, TRow, Table, Toggle, Tr, cx } from "@/ui/kit";
+import { Dialog, PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
+import { Btn, Chk, Cmd, Combo, Empty, Fld, Grip, LangCombo, TBox, TRow, Table, Toggle, Tr } from "@/ui/kit";
 import { toast } from "@/ui/toast";
 
-import { FILTER_OPTIONS, QueueBtn, SearchBox, extensionOptions, formatDelay, formatFileSize, looksLikeFolder, matchesSearch, parentFolder, type FilterValue } from "./common";
-import { DeleteSlotDialog, ImportStreamsDialog, SlotSettings, TrackDelaysDialog, TrackStrip, languageName } from "./tracks/parts";
+import { FILTER_OPTIONS, SearchBox, extensionOptions, formatDelay, looksLikeFolder, matchesSearch, type FilterValue } from "./common";
+import { DeleteSlotDialog, ImportStreamsDialog, TrackDelaysDialog, TrackSheet, TrackTabs, languageName } from "./tracks/parts";
 
 export interface SubtitlesPageProps {
   hidden: boolean;
@@ -44,7 +41,6 @@ export interface SubtitlesPageProps {
   onSubtitleFilesChange: (files: ExternalFile[]) => void;
   onVideoFilesChange?: (files: VideoFile[]) => void;
   preset?: Preset | null;
-  queue: QueueAction;
 }
 
 const defaultTrackConfig: TrackConfig = {
@@ -70,14 +66,8 @@ const subtitleExtensions = [...SUBTITLE_EXTENSIONS];
 const createExternalId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-const L = ({ icon, children, onClick, disabled }: { icon: ReactNode; children: ReactNode; onClick: () => void; disabled?: boolean }) => (
-  <button type="button" className="cmd" onClick={onClick} disabled={disabled}>
-    <span className="ic" aria-hidden>{icon}</span>
-    {children}
-  </button>
-);
 
-export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFilesChange, preset, queue }: SubtitlesPageProps) {
+export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFilesChange, preset }: SubtitlesPageProps) {
   const shell = useShell();
   const syncSubtitleLinks = useCallback((files: ExternalFile[]) => linkExternalFilesByOrder(files, videoFiles), [videoFiles]);
   const {
@@ -611,7 +601,6 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
   const drag = useRowReorder({ bodyRef, rowCount, disabled: !ordered, onMove: (from, to) => from < subtitleFiles.length && reorderSubtitleFile(from, Math.min(to, subtitleFiles.length - 1)) });
 
   const selectedFile = selectedRow !== null ? subtitleFiles[selectedRow] : undefined;
-  const selectedVideo = selectedRow !== null ? videoFiles[selectedRow] : undefined;
   const canMoveUp = ordered && selectedRow !== null && selectedRow > 0 && selectedRow < subtitleFiles.length;
   const canMoveDown = ordered && selectedRow !== null && selectedRow < subtitleFiles.length - 1;
 
@@ -649,54 +638,61 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
           };
 
   const folder = currentConfig.sourceFolder;
+  const status = useStatus("subtitles", lcdStatus(lcd));
 
   return (
     <PageView
       hidden={hidden}
-      lcd={lcd}
+      status={status}
       dock={<PageDock common={shell.dock} />}
-      strip={
-        <TrackStrip
-          kind="subtitle"
-          slots={subtitleTracks}
-          active={activeSubtitleTrack}
-          configs={subtitleTrackConfigs}
-          onPick={(slot) => {
-            setActiveSubtitleTrack(slot);
-            setSelectedRow(null);
-          }}
-          onNew={addNewTrack}
-          onDuplicate={duplicateTrack}
-          onDelete={() => confirmDeleteTrack(activeSubtitleTrack)}
-        />
-      }
       tools={
         <>
-          <Cmd icon={<FolderOpenRegular />} onClick={() => void chooseFolder()}>Choose folder</Cmd>
-          <Cmd icon={<ArrowImportRegular />} title="Import from a video" onClick={handleImportSubtitles} />
+          <Cmd icon={<ArrowImportRegular />} onClick={handleImportSubtitles}>Import from a video</Cmd>
           <Cmd icon={<ArrowSyncRegular />} title="Rescan" disabled={!folder} onClick={() => void scanSubtitles(folder)} />
           <Cmd icon={<CopyRegular />} title="Duplicate the file" disabled={!selectedFile} onClick={() => selectedRow !== null && duplicateSubtitleFile(selectedRow)} />
           <Cmd icon={<DeleteRegular />} title="Remove (Del)" disabled={!selectedFile} onClick={() => selectedRow !== null && removeSubtitleFile(selectedRow)} />
         </>
       }
-      primary={<QueueBtn queue={queue} />}
     >
-      {subtitleFiles.length > 0 ? (
-        <Box
-          body={false}
-          title={`Subtitle ${activeSubtitleTrack}`}
-          sub={folder ? <span title={folder}>{folder}</span> : undefined}
-          end={
+      <Panel
+        label={`Subtitle ${activeSubtitleTrack}`}
+        left={
+          <TrackTabs
+            kind="subtitle"
+            slots={subtitleTracks}
+            active={activeSubtitleTrack}
+            configs={subtitleTrackConfigs}
+            onPick={(slot) => {
+              setActiveSubtitleTrack(slot);
+              setSelectedRow(null);
+            }}
+            onNew={addNewTrack}
+            onDuplicate={duplicateTrack}
+            onDelete={confirmDeleteTrack}
+          />
+        }
+        end={
+          subtitleFiles.length > 0 && (
             <>
-              <Combo<string> ghost sm w={104} label="Formats to scan" value={currentConfig.extension} options={extensionOptions(SUBTITLE_EXTENSIONS)} onChange={(extension) => updateCurrentConfig({ extension })} />
               <Combo<FilterValue> ghost sm w={96} label="Rows" value={filter} options={FILTER_OPTIONS} onChange={setFilter} />
-              <Cmd sm icon={<ChevronUpRegular />} title="Move up (Alt+↑)" disabled={!canMoveUp} onClick={() => reorderSubtitleFile(selectedRow!, selectedRow! - 1)} />
-              <Cmd sm icon={<ChevronDownRegular />} title="Move down (Alt+↓)" disabled={!canMoveDown} onClick={() => reorderSubtitleFile(selectedRow!, selectedRow! + 1)} />
               <SearchBox value={search} onChange={setSearch} label="Search subtitles" w={150} />
             </>
-          }
-        >
-          <Table cols="24px minmax(0,1fr) minmax(0,1fr) 88px 64px" head={["#", "Video", "Subtitle file", "Language", " Delay"]} label={`Subtitle ${activeSubtitleTrack}`} bodyRef={bodyRef}>
+          )
+        }
+        sheet={
+          <TrackSheet
+            kind="subtitle"
+            config={currentConfig}
+            onChange={updateCurrentConfig}
+            muxAfterOptions={muxAfterOptions}
+            folder={folder}
+            onBrowse={() => void chooseFolder()}
+            formats={{ value: currentConfig.extension, options: extensionOptions(SUBTITLE_EXTENSIONS), onChange: (extension) => updateCurrentConfig({ extension }) }}
+          />
+        }
+      >
+        {subtitleFiles.length > 0 ? (
+          <Table cols="24px minmax(0,1fr) minmax(0,1fr) 72px" head={["#", "Video", "Subtitle file", " Delay"]} label={`Subtitle ${activeSubtitleTrack}`} bodyRef={bodyRef}>
             {rows.map(({ index, video, file }) => {
               const dragProps = drag.rowProps(index);
               return (
@@ -716,61 +712,18 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
                   ) : (
                     <span className="nil">—</span>
                   )}
-                  <span className="t2 truncate">{file ? languageName(file.language) : ""}</span>
                   <span className="r num t2" style={{ display: "flex" }}>{file ? formatDelay(file.delay) : ""}</span>
                 </Tr>
               );
             })}
           </Table>
-        </Box>
-      ) : (
-        <section className="box">
+        ) : (
           <Empty icon={<ClosedCaptionRegular />} title="Drop a folder of subtitles">
             <Btn icon={<FolderOpenRegular />} onClick={() => void chooseFolder()}>Choose folder</Btn>
             <Btn icon={<ArrowImportRegular />} onClick={handleImportSubtitles}>Import from a video</Btn>
           </Empty>
-        </section>
-      )}
-      <div className="stack">
-        <SlotSettings kind="subtitle" slot={activeSubtitleTrack} config={currentConfig} onChange={updateCurrentConfig} muxAfterOptions={muxAfterOptions} />
-        {subtitleFiles.length > 0 &&
-          (selectedRow === null ? (
-            <Box title={`Subtitle ${activeSubtitleTrack} files`}>
-              <DL
-                rows={[
-                  ["Folder", <span key="f" className="truncate" title={folder}>{folder || "—"}</span>],
-                  ["Files", `${subtitleFiles.length} · ${[...new Set(subtitleFiles.map((f) => f.name.split(".").pop()?.toUpperCase()))].join(", ")}`],
-                  ["Paired", `${subtitleFiles.length - unlinkedCount} of ${subtitleFiles.length}`],
-                ]}
-              />
-            </Box>
-          ) : selectedFile ? (
-            <Box title={<MidText text={selectedFile.name} tail={16} />}>
-              <DL
-                rows={[
-                  ["Video", selectedVideo ? <span key="v" className="truncate" title={selectedVideo.name}>{selectedVideo.name}</span> : <span key="v" className="warn">None: this row is past the last video</span>],
-                  ["Format", selectedFile.name.split(".").pop()?.toUpperCase() ?? "—"],
-                  ["Size", selectedFile.size ? formatFileSize(selectedFile.size) : "—"],
-                  ["Language", languageName(selectedFile.language)],
-                  ["Delay", `${formatDelay(selectedFile.delay)} s`],
-                  ["Folder", <span key="d" className="truncate" title={parentFolder(selectedFile.path)}>{parentFolder(selectedFile.path)}</span>],
-                ]}
-              />
-              <Links>
-                <L icon={<EditRegular />} onClick={() => openEditDialog(selectedFile.id)}>Edit…</L>
-                <L icon={<CopyRegular />} onClick={() => duplicateSubtitleFile(selectedRow!)}>Duplicate</L>
-                <L icon={<DeleteRegular />} onClick={() => removeSubtitleFile(selectedRow!)}>Remove</L>
-              </Links>
-            </Box>
-          ) : (
-            <Box title={selectedVideo ? <MidText text={selectedVideo.name} tail={14} /> : "Row"}>
-              <span className="t2">No subtitle file for this video in Subtitle {activeSubtitleTrack}.</span>
-              <Links>
-                <L icon={<ArrowImportRegular />} onClick={handleImportSubtitles}>Import from a video…</L>
-              </Links>
-            </Box>
-          ))}
-      </div>
+        )}
+      </Panel>
 
       {importStreamsOpen && (
         <ImportStreamsDialog

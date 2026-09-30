@@ -10,6 +10,7 @@ import {
   CheckmarkCircleFilled,
   CheckmarkFilled,
   ChevronDownRegular,
+  DismissRegular,
   ErrorCircleFilled,
   InfoFilled,
   ReOrderDotsVerticalRegular,
@@ -603,6 +604,49 @@ export const TRow = ({ label, d, children }: { label: ReactNode; d?: ReactNode; 
   </div>
 );
 
+/** One labelled setting in a page's settings grid (the `.sheet` under a
+ *  list's header): the name in the grid's label column, then the control.
+ *  `wide` spans two columns. */
+export const SheetField = ({ label, wide, children }: { label: string; wide?: boolean; children: ReactNode }) => (
+  <span className={cx("pf", wide && "wide")}>
+    <span className="lb">{label}</span>
+    {children}
+  </span>
+);
+
+/** A track as a tab on its list: its name and what it holds (its language).
+ *  The × to delete it shows on hover. */
+export function TrackTab({
+  icon,
+  name,
+  detail,
+  on,
+  onSelect,
+  onDelete,
+}: {
+  icon: ReactNode;
+  name: string;
+  detail?: ReactNode;
+  on: boolean;
+  onSelect: () => void;
+  onDelete?: () => void;
+}) {
+  return (
+    <span className={cx("ttab", on && "on")}>
+      <button type="button" className="tt" role="tab" aria-selected={on} onClick={onSelect}>
+        <span className="ic" aria-hidden>{icon}</span>
+        {name}
+        {detail && <span className="lg">{detail}</span>}
+      </button>
+      {onDelete && (
+        <button type="button" className="x" title={`Delete ${name}`} aria-label={`Delete ${name}`} onClick={onDelete}>
+          <DismissRegular />
+        </button>
+      )}
+    </span>
+  );
+}
+
 /** The drag handle at the start of a row that can be reordered. */
 export const Grip = () => (
   <span className="grip-h" aria-hidden>
@@ -664,8 +708,13 @@ export function LangCombo({
     const below = window.innerHeight - r.bottom;
     const left = Math.min(r.left, window.innerWidth - 288);
     setAt(below >= 330 || below >= r.top ? { left, top: r.bottom + 4 } : { left, bottom: window.innerHeight - r.top + 4 });
-    input.current?.focus();
   }, [open]);
+
+  // Into the search box once the list is there, so everything typed lands in
+  // it: the box does not exist yet when the list is only being placed.
+  useEffect(() => {
+    if (open && at) input.current?.focus();
+  }, [open, at]);
 
   useEffect(() => {
     setActive(0);
@@ -713,8 +762,9 @@ export function LangCombo({
         aria-expanded={open}
         onClick={() => setOpen(true)}
         onKeyDown={(event) => {
-          // Typing on the closed combo opens it with what was typed.
-          if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey && event.key !== " ") {
+          // Typing on the closed combo opens it with what was typed. Once it
+          // is open, keys belong to the search box.
+          if (!open && event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey && event.key !== " ") {
             event.preventDefault();
             setQuery(event.key);
             setOpen(true);

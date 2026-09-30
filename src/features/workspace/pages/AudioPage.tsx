@@ -7,8 +7,6 @@ import {
   ArrowImportRegular,
   ArrowSyncRegular,
   CheckmarkRegular,
-  ChevronDownRegular,
-  ChevronUpRegular,
   CopyRegular,
   DeleteRegular,
   EditRegular,
@@ -20,16 +18,16 @@ import {
 } from "@fluentui/react-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { QueueAction } from "@/app/Index";
 import { PageDock } from "@/app/dock";
 import { runName, timeLeftText, tookText } from "@/app/history";
-import { useShell, usePageCommands } from "@/app/shell";
+import { useShell, usePageCommands, useStatus } from "@/app/shell";
 import { ImportTrackEditDialog, type ImportTrackOverride } from "@/features/workspace/components/ImportTrackEditDialog";
 import { useMeasureDelays } from "@/features/workspace/hooks/useMeasureDelays";
 import { acceptWithheldMeasurement, applyAllPendingDelays, hasPendingDelay, markDelayAsManual } from "@/features/workspace/lib/applyMeasurement";
 import { audioFpsFor, formatAudioFps, needsRateChange } from "@/features/workspace/lib/audioFps";
 import { measureFindings, measureOutcome, measureStatus, measurementsOf } from "@/features/workspace/lib/measureVerdict";
 import { DEFAULT_REFERENCE_TRACK, plannedReferenceTrack } from "@/features/workspace/lib/measurePairs";
+import { frameOffset } from "@/features/workspace/lib/delayConversion";
 import { applyTimelineDelay } from "@/features/workspace/lib/timelineScan";
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
 import { useTabState, type TrackConfig } from "@/features/workspace/store/useTabState";
@@ -40,13 +38,13 @@ import { delaySecondsOrZero } from "@/shared/lib/delayInput";
 import { AUDIO_EXTENSIONS } from "@/shared/lib/extensions";
 import { getUnlinkedExternalFiles, linkExternalFilesByOrder } from "@/shared/lib/matchUtils";
 import type { ExternalFile, MeasurementSettings, Preset, StretchSetting, VideoFile } from "@/shared/types";
-import { Box, Dialog, PageView, type LcdProps } from "@/ui/frame";
-import { Btn, Chk, Cmd, Combo, DL, Empty, Fld, Grip, LangCombo, Links, MidText, Status, TBox, TRow, Table, Toggle, Tr, cx, type St } from "@/ui/kit";
+import { Dialog, PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
+import { Btn, Chk, Cmd, Combo, DL, Empty, Fld, Grip, LangCombo, Links, Meter, Status, TBox, TRow, Table, Toggle, Tr, cx, type St } from "@/ui/kit";
 import { toast } from "@/ui/toast";
 
-import { FILTER_OPTIONS, QueueBtn, SearchBox, extensionOptions, formatDelay, formatFileSize, looksLikeFolder, matchesSearch, parentFolder, type FilterValue } from "./common";
+import { FILTER_OPTIONS, SearchBox, extensionOptions, formatDelay, formatFileSize, looksLikeFolder, matchesSearch, type FilterValue } from "./common";
 import { L, MeasureSection } from "./tracks/MeasurePane";
-import { DeleteSlotDialog, ImportStreamsDialog, SlotSettings, TrackDelaysDialog, TrackStrip, languageName } from "./tracks/parts";
+import { DeleteSlotDialog, ImportStreamsDialog, TrackDelaysDialog, TrackSheet, TrackTabs, languageName } from "./tracks/parts";
 
 export interface AudioPageProps {
   hidden: boolean;
@@ -57,7 +55,6 @@ export interface AudioPageProps {
   preset?: Preset | null;
   /** Preferences › Measurement; the engine gets these, so they must match AudioSyncMaster's. */
   measurement?: MeasurementSettings;
-  queue: QueueAction;
 }
 
 const defaultTrackConfig: TrackConfig = {
@@ -127,7 +124,7 @@ function rowStatus(file: ExternalFile, currentReferenceTrack: number | undefined
   return entries.map(({ m, pending }) => measureStatus(m, { pending, currentReferenceTrack })).sort((a, b) => rank[a.s] - rank[b.s])[0];
 }
 
-export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, preset, measurement, queue }: AudioPageProps) {
+export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, preset, measurement }: AudioPageProps) {
   const shell = useShell();
   const syncAudioLinks = useCallback((files: ExternalFile[]) => linkExternalFilesByOrder(files, videoFiles), [videoFiles]);
   const {
@@ -153,6 +150,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   }));
   /** The selected row: video n and audio file n. */
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
+  /** The selected file's details popup (a double-click on its row). */
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
   /** Which audio track of each video to measure against, by video id. Empty
@@ -959,29 +958,11 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     </>
   );
 
-  const inspector = () => {
-    if (audioFiles.length === 0) return null;
-    if (selectedRow === null)
-      return (
-        <Box title={`Audio ${activeAudioTrack} files`}>
-          <DL
-            rows={[
-              ["Folder", <span key="f" className="truncate" title={folder}>{folder || "—"}</span>],
-              ["Files", `${audioFiles.length} · ${[...new Set(audioFiles.map((f) => f.name.split(".").pop()?.toUpperCase()))].join(", ")}`],
-              ["Paired", `${audioFiles.length - unlinkedCount} of ${audioFiles.length}`],
-              ["Measured", measuredCount ? `${measuredCount} of ${audioFiles.length}` : "None yet"],
-              ["To apply", String(pendingCount)],
-            ]}
-          />
-        </Box>
-      );
-    if (!selectedFile)
-      return (
-        <Box title={selectedVideo ? <MidText text={selectedVideo.name} tail={14} /> : "Row"}>
-          <span className="t2">No audio file for this video in Audio {activeAudioTrack}.</span>
-          <Links><L icon={<ArrowImportRegular />} onClick={handleImportAudios}>Import from a video…</L></Links>
-        </Box>
-      );
+  /** Everything about one file, in the popup a double-click opens: the
+   *  measurement in full (what the right panel used to show), or its format
+   *  and delay before it is measured. */
+  const details = () => {
+    if (selectedRow === null || !selectedFile) return null;
     const index = selectedRow;
     const fps = audioFpsFor(selectedFile, videoFiles.find((v) => v.id === selectedFile.matchedVideoId));
     const trackEntries = measuredTrackEntries(selectedFile);
@@ -992,14 +973,14 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     })();
     if (!selectedVideo)
       return (
-        <Box title={<MidText text={selectedFile.name} tail={16} />}>
+        <>
           <div><div className="t3">Video</div><div className="big warn">None</div><div className="t2">Row {index + 1} is past the last video, so this file is not muxed.</div></div>
           <DL rows={[["Format", format], ["Size", selectedFile.size ? formatFileSize(selectedFile.size) : "—"]]} />
           <Links><L icon={<DeleteRegular />} onClick={() => removeAudioFile(index)}>Remove</L></Links>
-        </Box>
+        </>
       );
     return (
-      <Box title={<MidText text={selectedFile.name} tail={16} />}>
+      <>
         {selectedFile.measuredDelay ? (
           <MeasureSection
             measured={selectedFile.measuredDelay}
@@ -1059,35 +1040,20 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
             </Links>
           </>
         )}
-      </Box>
+      </>
     );
   };
+
+  const status = useStatus("audio", lcdStatus(lcd));
 
   return (
     <PageView
       hidden={hidden}
-      lcd={lcd}
+      status={status}
       dock={<PageDock common={shell.dock} />}
-      strip={
-        <TrackStrip
-          kind="audio"
-          slots={audioTracks}
-          active={activeAudioTrack}
-          configs={audioTrackConfigs}
-          disabled={isMeasuring}
-          onPick={(slot) => {
-            setActiveAudioTrack(slot);
-            setSelectedRow(null);
-          }}
-          onNew={addNewTrack}
-          onDuplicate={duplicateTrack}
-          onDelete={() => confirmDeleteTrack(activeAudioTrack)}
-        />
-      }
       tools={
         <>
-          <Cmd icon={<FolderOpenRegular />} disabled={isMeasuring} onClick={() => void chooseFolder()}>Choose folder</Cmd>
-          <Cmd icon={<ArrowImportRegular />} title="Import from a video" disabled={isMeasuring} onClick={handleImportAudios} />
+          <Cmd icon={<ArrowImportRegular />} disabled={isMeasuring} onClick={handleImportAudios}>Import from a video</Cmd>
           <Cmd icon={<ArrowSyncRegular />} title="Rescan" disabled={!folder || isMeasuring} onClick={() => void scanAudios(folder)} />
           <Cmd icon={<CopyRegular />} title="Duplicate the file" disabled={!selectedFile || isMeasuring} onClick={() => selectedRow !== null && duplicateAudioFile(selectedRow)} />
           <Cmd icon={<DeleteRegular />} title="Remove (Del)" disabled={!selectedFile || isMeasuring} onClick={() => selectedRow !== null && removeAudioFile(selectedRow)} />
@@ -1102,10 +1068,9 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
             <Btn accent icon={<CheckmarkRegular />} onClick={applyAllMeasuredDelays}>Apply {pendingCount} {pendingCount === 1 ? "delay" : "delays"}</Btn>
           </>
         ) : measuredCount > 0 ? (
-          <>
-            <Btn icon={<ArrowSyncRegular />} title="Measure every file again, including ones already measured" aria-label="Measure every file again" disabled={!measurementAvailable || muxHoldsEngine} onClick={() => void beginMeasuring({ force: true })} />
-            <QueueBtn queue={queue} />
-          </>
+          <Btn icon={<ArrowSyncRegular />} title="Measure every file again, including ones already measured" disabled={!measurementAvailable || muxHoldsEngine} onClick={() => void beginMeasuring({ force: true })}>
+            Measure again
+          </Btn>
         ) : (
           <Btn accent icon={<GaugeRegular />} kbd="Enter" title={measureTitle} disabled={!measurementAvailable || audioFiles.length === 0 || muxHoldsEngine} onClick={() => void beginMeasuring()}>
             Measure delays
@@ -1113,28 +1078,58 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
         )
       }
     >
-      {audioFiles.length > 0 ? (
-        <Box
-          body={false}
-          title={`Audio ${activeAudioTrack}`}
-          sub={folder ? <span title={folder}>{folder}</span> : undefined}
-          end={
+      <Panel
+        label={`Audio ${activeAudioTrack}`}
+        left={
+          <TrackTabs
+            kind="audio"
+            slots={audioTracks}
+            active={activeAudioTrack}
+            configs={audioTrackConfigs}
+            disabled={isMeasuring}
+            onPick={(slot) => {
+              setActiveAudioTrack(slot);
+              setSelectedRow(null);
+            }}
+            onNew={addNewTrack}
+            onDuplicate={duplicateTrack}
+            onDelete={confirmDeleteTrack}
+          />
+        }
+        end={
+          audioFiles.length > 0 && (
             <>
-              <Combo<string> ghost sm w={104} label="Formats to scan" value={currentConfig.extension} options={extensionOptions(AUDIO_EXTENSIONS)} onChange={(extension) => updateCurrentConfig({ extension })} />
               <Combo<FilterValue> ghost sm w={96} label="Rows" value={filter} options={FILTER_OPTIONS} onChange={setFilter} />
-              <Cmd sm icon={<ChevronUpRegular />} title="Move up (Alt+↑)" disabled={!canMoveUp} onClick={() => reorderAudioFile(selectedRow!, selectedRow! - 1)} />
-              <Cmd sm icon={<ChevronDownRegular />} title="Move down (Alt+↓)" disabled={!canMoveDown} onClick={() => reorderAudioFile(selectedRow!, selectedRow! + 1)} />
               <SearchBox value={search} onChange={setSearch} label="Search audio" w={150} />
             </>
-          }
-        >
-          <Table cols="24px minmax(0,1fr) minmax(0,1fr) 72px 136px" head={["#", "Video", "Audio file", " Delay", "Status"]} label={`Audio ${activeAudioTrack}`} bodyRef={bodyRef}>
+          )
+        }
+        sheet={
+          <TrackSheet
+            kind="audio"
+            config={currentConfig}
+            onChange={updateCurrentConfig}
+            muxAfterOptions={muxAfterOptions}
+            disabled={isMeasuring}
+            folder={folder}
+            onBrowse={() => void chooseFolder()}
+            formats={{ value: currentConfig.extension, options: extensionOptions(AUDIO_EXTENSIONS), onChange: (extension) => updateCurrentConfig({ extension }) }}
+          />
+        }
+      >
+        {audioFiles.length > 0 ? (
+          <Table
+            cols="24px minmax(0,1fr) minmax(0,1fr) 72px 56px 104px 148px"
+            head={["#", "Video", "Audio file", " Delay", " Frames", "Confidence", "Status"]}
+            label={`Audio ${activeAudioTrack}`}
+            bodyRef={bodyRef}
+          >
             {rows.map(({ index, video, file }) => {
               const dragProps = drag.rowProps(index);
               const inRun = Boolean(isMeasuring && file && (!run.current?.ids || run.current.ids.has(file.id)));
               const fps = file && video ? audioFpsFor(file, video) : null;
               const measuredStatus = file && video ? rowStatus(file, currentReferenceFor(file)) : null;
-              const status = !file
+              const rowState = !file
                 ? null
                 : !video
                   ? { s: "warn" as St, text: "No video" }
@@ -1144,6 +1139,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
               const pending = file ? hasPendingDelay(file) : false;
               const shownDelay = file ? (file.pendingDelay ?? file.delay) : undefined;
               const running = inRun && measureProgress?.current === file?.name;
+              const measured = file?.measuredDelay && !file.measuredDelay.error ? file.measuredDelay : null;
+              const frames = measured ? frameOffset(measured.appliedMs, measured.primaryFps) : null;
               return (
                 <Tr
                   key={file?.id ?? `video-${video?.id}`}
@@ -1151,31 +1148,48 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                   className={dragProps.className}
                   onPointerDown={file ? dragProps.onPointerDown : undefined}
                   onClick={() => setSelectedRow(index)}
-                  onDoubleClick={() => file && !isMeasuring && openEditDialog(file.id)}
+                  onDoubleClick={() => {
+                    if (!file) return;
+                    setSelectedRow(index);
+                    setDetailsOpen(true);
+                  }}
                   label={file?.name ?? video?.name}
                 >
                   <span className="num t3">{index + 1}</span>
                   {video ? <span className="t2 truncate" title={video.name}>{video.name}</span> : <span className="warn">No video</span>}
                   {file ? <span className="cell"><Grip /><span className="truncate" title={file.name}>{file.name}</span></span> : <span className="nil">—</span>}
                   <span className={cx("r num", pending ? "acc" : "t2")} style={{ display: "flex" }}>{file ? formatDelay(shownDelay) : ""}</span>
-                  {!file ? <span /> : running ? <Status s="run" pct={null} text="Measuring" /> : inRun && status?.s === "ready" ? <Status s="wait" /> : <Status s={status!.s} text={status!.text} />}
+                  <span className="r num t2" style={{ display: "flex" }}>{frames === null ? (file ? "—" : "") : `${frames > 0 ? "+" : ""}${frames}`}</span>
+                  {measured?.confidence != null ? (
+                    <span className="cell num t2"><Meter pct={measured.confidence * 100} />{Math.round(measured.confidence * 100)}%</span>
+                  ) : (
+                    <span className="t3">{file ? "—" : ""}</span>
+                  )}
+                  {!file ? <span /> : running ? <Status s="run" pct={null} text="Measuring" /> : inRun && rowState?.s === "ready" ? <Status s="wait" /> : <Status s={rowState!.s} text={rowState!.text} />}
                 </Tr>
               );
             })}
           </Table>
-        </Box>
-      ) : (
-        <section className="box">
+        ) : (
           <Empty icon={<MusicNote2Regular />} title="Drop a folder of audio files">
             <Btn icon={<FolderOpenRegular />} onClick={() => void chooseFolder()}>Choose folder</Btn>
             <Btn icon={<ArrowImportRegular />} onClick={handleImportAudios}>Import from a video</Btn>
           </Empty>
-        </section>
+        )}
+      </Panel>
+
+      {detailsOpen && selectedFile && (
+        <Dialog
+          size="xl"
+          bodyClass="flush"
+          title={selectedFile.name}
+          sub={selectedVideo ? `Row ${(selectedRow ?? 0) + 1} · with ${selectedVideo.name}` : `Row ${(selectedRow ?? 0) + 1} · no video`}
+          onClose={() => setDetailsOpen(false)}
+          foot={<Btn accent onClick={() => setDetailsOpen(false)}>Close</Btn>}
+        >
+          <div className="box-b" style={{ overflow: "visible" }}>{details()}</div>
+        </Dialog>
       )}
-      <div className="stack">
-        <SlotSettings kind="audio" slot={activeAudioTrack} config={currentConfig} onChange={updateCurrentConfig} muxAfterOptions={muxAfterOptions} disabled={isMeasuring} />
-        {inspector()}
-      </div>
 
       {importStreamsOpen && (
         <ImportStreamsDialog

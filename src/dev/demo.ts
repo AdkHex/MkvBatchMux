@@ -382,10 +382,9 @@ async function run(scenario: string) {
     if (scenario === "applied") clickButton(/^Apply \d+ delays?/);
   }
   if (scenario === "muxing" || scenario === "done") {
+    // The queue is every loaded video: nothing to add, just start.
     go("mux");
-    await nap(200);
-    clickButton(/^Add to queue/);
-    await nap(200);
+    await nap(300);
     key("Enter");
     if (scenario === "done") await waitFor(() => !document.querySelector(".pageview:not([hidden]) .lcd .ring"), 120000);
   }

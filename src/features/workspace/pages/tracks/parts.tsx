@@ -1,10 +1,10 @@
-/** The pieces Audio and Subtitles share: the strip of track slots, the
+/** The pieces Audio and Subtitles share: the track slots as tabs, the
  *  slot's settings, and the dialogs for importing streams from a loaded video,
  *  setting per-track delays and deleting a slot. Each page keeps its own
  *  logic (the two differed in small ways before and still do); these only
  *  draw. */
 
-import { AddRegular, ClosedCaptionRegular, CopyRegular, DeleteRegular, MusicNote2Regular } from "@fluentui/react-icons";
+import { AddRegular, ClosedCaptionRegular, CopyRegular, FolderOpenRegular, MusicNote2Regular } from "@fluentui/react-icons";
 import { useState } from "react";
 
 import { ImportTrackEditButton, ImportTrackEditDialog, type ImportTrackOverride } from "@/features/workspace/components/ImportTrackEditDialog";
@@ -14,7 +14,7 @@ import { CODE_TO_LABEL } from "@/shared/data/languages-iso6393";
 import { parseDelayInput } from "@/shared/lib/delayInput";
 import type { ExternalFile, Track, VideoFile } from "@/shared/types";
 import { Dialog } from "@/ui/frame";
-import { Btn, Chk, Cmd, Combo, Fld, LangCombo, TBox, cx, type Option } from "@/ui/kit";
+import { Btn, Chk, Cmd, Combo, Fld, LangCombo, SheetField, TBox, TrackTab, cx, type Option } from "@/ui/kit";
 
 export type SlotKind = "audio" | "subtitle";
 
@@ -23,9 +23,10 @@ export const languageName = (code: string | undefined) => (code ? (CODE_TO_LABEL
 
 const slotName = (kind: SlotKind) => (kind === "audio" ? "Audio" : "Subtitle");
 
-/** The track slots, as tool modes under the toolbar: Audio 1 · Hindi,
- *  Audio 2 · English, then New track; Duplicate and Delete at the end. */
-export function TrackStrip({
+/** The track slots as tabs on the list's header: Audio 1 Hindi, Audio 2
+ *  English, then + for a new one and a copy of the one showing. A tab's ×
+ *  deletes that slot; the only slot has none. */
+export function TrackTabs({
   kind,
   slots,
   active,
@@ -44,93 +45,93 @@ export function TrackStrip({
   onPick: (slot: string) => void;
   onNew: () => void;
   onDuplicate: () => void;
-  onDelete: () => void;
+  onDelete: (slot: string) => void;
 }) {
   const icon = kind === "audio" ? <MusicNote2Regular /> : <ClosedCaptionRegular />;
   return (
     <>
-      <span className="row" role="tablist" aria-label={`${slotName(kind)} tracks`} style={{ gap: 2 }}>
+      <span className="row" role="tablist" aria-label={`${slotName(kind)} tracks`} style={{ gap: 0, minWidth: 0 }}>
         {slots.map((slot) => (
-          <button
+          <TrackTab
             key={slot}
-            type="button"
-            role="tab"
-            aria-selected={slot === active}
-            className={cx("tool", slot === active && "on")}
-            disabled={disabled && slot !== active}
-            onClick={() => onPick(slot)}
-          >
-            <span className="ic" aria-hidden>{icon}</span>
-            {slotName(kind)} {slot}
-            <span className="t3">· {languageName(configs[slot]?.language)}</span>
-          </button>
+            icon={icon}
+            name={`${slotName(kind)} ${slot}`}
+            detail={languageName(configs[slot]?.language)}
+            on={slot === active}
+            onSelect={() => !disabled && onPick(slot)}
+            onDelete={slots.length > 1 && !disabled ? () => onDelete(slot) : undefined}
+          />
         ))}
       </span>
-      <button type="button" className="tool" disabled={disabled} onClick={onNew} title="New track (Ctrl+N)">
-        <span className="ic" aria-hidden><AddRegular /></span>
-        New track
-      </button>
-      <span className="end">
-        <Cmd sm icon={<CopyRegular />} title={`Duplicate ${slotName(kind)} ${active}`} disabled={disabled} onClick={onDuplicate} />
-        <Cmd sm icon={<DeleteRegular />} title={slots.length > 1 ? `Delete ${slotName(kind)} ${active}` : "The only track cannot be deleted"} disabled={disabled || slots.length <= 1} onClick={onDelete} />
-      </span>
+      <Cmd sm icon={<AddRegular />} title="New track (Ctrl+N)" disabled={disabled} onClick={onNew} />
+      <Cmd sm icon={<CopyRegular />} title={`Duplicate ${slotName(kind)} ${active}`} disabled={disabled} onClick={onDuplicate} />
     </>
   );
 }
 
-/** What every file in a slot is muxed with. */
-export function SlotSettings({
+/** What every file in a slot is muxed with, always in view under the tabs,
+ *  as the old Track configuration was: where the files come from and which
+ *  formats, then language, delay, name, place, and the flags. */
+export function TrackSheet({
   kind,
-  slot,
   config,
   onChange,
   muxAfterOptions,
   disabled,
+  folder,
+  onBrowse,
+  formats,
 }: {
   kind: SlotKind;
-  slot: string;
   config: TrackConfig;
   onChange: (updates: Partial<TrackConfig>) => void;
   muxAfterOptions: Option<string>[];
   disabled?: boolean;
+  folder: string;
+  onBrowse: () => void;
+  formats: { value: string; options: Option<string>[]; onChange: (value: string) => void };
 }) {
   const delay = parseDelayInput(config.delay);
   return (
-    <section className="box" aria-label={`${slotName(kind)} ${slot} settings`}>
-      <div className="box-h"><span className="tt truncate">{slotName(kind)} {slot}</span></div>
-      <div className="box-b">
-        <div className="fgrid">
-          <Fld label="Language">
-            <LangCombo value={config.language} onChange={(language) => onChange({ language })} w="100%" disabled={disabled} />
-          </Fld>
-          <Fld label="Delay">
-            <TBox
-              label="Delay in seconds"
-              className={cx(!delay.valid && "invalid")}
-              mono
-              unit="s"
-              value={config.delay}
-              disabled={disabled}
-              title={delay.error}
-              aria-invalid={!delay.valid}
-              onChange={(value) => onChange({ delay: value })}
-            />
-          </Fld>
-          <Fld label="Track name">
-            <TBox label="Track name" value={config.trackName} placeholder="Keep the file's name" disabled={disabled} onChange={(trackName) => onChange({ trackName })} />
-          </Fld>
-          <Fld label="Place after">
-            <Combo<string> label="Place after" value={config.muxAfter} options={muxAfterOptions} w="100%" disabled={disabled} onChange={(muxAfter) => onChange({ muxAfter })} />
-          </Fld>
-        </div>
-        <span className="row" style={{ gap: 20 }}>
-          <Chk on={config.isDefault} disabled={disabled} onChange={(isDefault) => onChange({ isDefault })}>Default</Chk>
-          {kind === "subtitle" && (
-            <Chk on={config.isForced} disabled={disabled} onChange={(isForced) => onChange({ isForced })}>Forced</Chk>
-          )}
+    <>
+      <SheetField label="Folder" wide>
+        <span className="row" style={{ gap: 4, minWidth: 0 }}>
+          <TBox label="Folder" className="grow" style={{ minWidth: 0 }} value={folder} readOnly placeholder="Choose a folder, or drop one on the window" title={folder || undefined} />
+          <Cmd icon={<FolderOpenRegular />} title="Choose folder (Ctrl+O)" disabled={disabled} onClick={onBrowse} />
         </span>
-      </div>
-    </section>
+      </SheetField>
+      <SheetField label="Language">
+        <LangCombo value={config.language} onChange={(language) => onChange({ language })} w="100%" disabled={disabled} />
+      </SheetField>
+      <SheetField label="Delay">
+        <TBox
+          label="Delay in seconds"
+          className={cx(!delay.valid && "invalid")}
+          mono
+          unit="s"
+          value={config.delay}
+          disabled={disabled}
+          title={delay.error}
+          aria-invalid={!delay.valid}
+          onChange={(value) => onChange({ delay: value })}
+        />
+      </SheetField>
+      <SheetField label="Formats">
+        <Combo<string> label="Formats to load" value={formats.value} options={formats.options} w="100%" disabled={disabled} onChange={formats.onChange} />
+      </SheetField>
+      <SheetField label="Track name">
+        <TBox label="Track name" value={config.trackName} placeholder="Keep the file's name" disabled={disabled} onChange={(trackName) => onChange({ trackName })} />
+      </SheetField>
+      <SheetField label="Place after">
+        <Combo<string> label="Place after" value={config.muxAfter} options={muxAfterOptions} w="100%" disabled={disabled} onChange={(muxAfter) => onChange({ muxAfter })} />
+      </SheetField>
+      <span className="checks">
+        <Chk on={config.isDefault} disabled={disabled} onChange={(isDefault) => onChange({ isDefault })}>Default</Chk>
+        {kind === "subtitle" && (
+          <Chk on={config.isForced} disabled={disabled} onChange={(isForced) => onChange({ isForced })}>Forced</Chk>
+        )}
+      </span>
+    </>
   );
 }
 

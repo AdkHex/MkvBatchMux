@@ -34,7 +34,6 @@ pub const MENU_IDS: &[&str] = &[
     "measure-delays",
     "modify-tracks",
     "media-info",
-    "add-to-queue",
     "validate",
     "start-muxing",
     "tools",
@@ -124,7 +123,6 @@ pub fn app_menu() -> Menu {
             .add_item(item("modify-tracks", "Modify Tracks…", None))
             .add_item(item("media-info", "Media Info", Some("CmdOrCtrl+I")))
             .add_native_item(MenuItem::Separator)
-            .add_item(item("add-to-queue", "Add to Queue", None))
             .add_item(item("validate", "Validate", None))
             .add_item(item("start-muxing", "Start Muxing", Some("CmdOrCtrl+Enter")))
             .add_native_item(MenuItem::Separator)

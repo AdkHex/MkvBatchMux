@@ -1,20 +1,7 @@
-/** Small pieces the pages share: the "Add to queue" accent button, the
- *  search box and sort/filter choices in a list's header, and file helpers. */
+/** Small pieces the pages share: the search box and sort/filter choices in a
+ *  list's header, and file helpers. */
 
 import { SearchRegular } from "@fluentui/react-icons";
-
-import type { QueueAction } from "@/app/Index";
-import { Btn } from "@/ui/kit";
-
-/** The next action on every preparing page: hand the loaded videos to the
- *  queue. The count shows as a key cap; with nothing to add it is off. */
-export function QueueBtn({ queue }: { queue: QueueAction }) {
-  return (
-    <Btn accent disabled={queue.count === 0} onClick={queue.add} kbd={queue.count ? String(queue.count) : undefined}>
-      Add to queue
-    </Btn>
-  );
-}
 
 /** The search box in a list's header. */
 export function SearchBox({ value, onChange, w = 150, label = "Search" }: { value: string; onChange: (value: string) => void; w?: number; label?: string }) {

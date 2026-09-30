@@ -16,9 +16,8 @@ import {
 } from "@fluentui/react-icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { QueueAction } from "@/app/Index";
 import { PageDock } from "@/app/dock";
-import { useShell, usePageCommands } from "@/app/shell";
+import { useShell, usePageCommands, useStatus } from "@/app/shell";
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
@@ -26,10 +25,10 @@ import { pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { delaySecondsOrZero, parseDelayInput } from "@/shared/lib/delayInput";
 import { CHAPTER_EXTENSIONS } from "@/shared/lib/extensions";
 import type { ExternalFile, MuxSettings, Preset, VideoFile } from "@/shared/types";
-import { Box, PageView, type LcdProps } from "@/ui/frame";
-import { Btn, Cmd, Combo, DL, Empty, Fld, Links, MidText, TBox, TRow, Table, Toggle, Tr, cx } from "@/ui/kit";
+import { Dialog, PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
+import { Btn, Chk, Cmd, Combo, DL, Empty, Links, SheetField, TBox, Table, Toggle, Tr, cx } from "@/ui/kit";
 
-import { QueueBtn, SearchBox, extensionOptions, formatDelay, formatFileSize, looksLikeFolder, matchesSearch } from "./common";
+import { SearchBox, extensionOptions, formatDelay, formatFileSize, looksLikeFolder, matchesSearch } from "./common";
 import { L } from "./tracks/MeasurePane";
 
 export interface ChaptersPageProps {
@@ -38,11 +37,11 @@ export interface ChaptersPageProps {
   videoFiles: VideoFile[];
   onChapterFilesChange: (files: ExternalFile[]) => void;
   preset?: Preset | null;
+  muxSettings: MuxSettings;
   onMuxSettingsChange: (settings: Partial<MuxSettings>) => void;
-  queue: QueueAction;
 }
 
-export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesChange, preset, onMuxSettingsChange, queue }: ChaptersPageProps) {
+export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesChange, preset, muxSettings, onMuxSettingsChange }: ChaptersPageProps) {
   const shell = useShell();
   const { chapterTabState, updateChapterTabState } = useTabState((state) => ({
     chapterTabState: state.chapterTabState,
@@ -50,6 +49,8 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
   }));
   const [search, setSearch] = useState("");
   const [selectedChapterIndex, setSelectedChapterIndex] = useState<number | null>(null);
+  /** The selected file's details (a double-click on its row). */
+  const [detailsOpen, setDetailsOpen] = useState(false);
   /** Selected by id, not position, so the highlight survives reordering and
    *  Remove never acts on whatever file later took that slot. */
   const selectedChapterIdRef = useRef<string | null>(null);
@@ -211,14 +212,21 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
   const delayOk = parseDelayInput(chapterDelay).valid;
   const videoOptions = videoFiles.map((video) => ({ value: video.id, label: video.name }));
 
+  const status = useStatus("chapters", lcdStatus(lcd));
+  // One switch, shown here and in Mux › Options: the mux settings hold it.
+  const discard = muxSettings.discardOldChapters;
+  const setDiscard = (enabled: boolean) => {
+    updateChapterTabState({ discardOldChapters: enabled });
+    onMuxSettingsChange({ discardOldChapters: enabled });
+  };
+
   return (
     <PageView
       hidden={hidden}
-      lcd={lcd}
+      status={status}
       dock={<PageDock common={shell.dock} />}
       tools={
         <>
-          <Cmd icon={<FolderOpenRegular />} disabled={!chaptersEnabled} onClick={() => void chooseFolder()}>Choose folder</Cmd>
           <Cmd icon={<ArrowSyncRegular />} title="Rescan" disabled={!chaptersEnabled || !sourceFolder} onClick={() => void scanChapters(sourceFolder)} />
           <Cmd icon={<ChevronDoubleUpRegular />} title={reorderHelp ?? "Move to the top"} disabled={!canUp} onClick={() => reorderChapterFile(sel!, 0)} />
           <Cmd icon={<ChevronUpRegular />} title={reorderHelp ?? "Move up (Alt+↑)"} disabled={!canUp} onClick={() => reorderChapterFile(sel!, sel! - 1)} />
@@ -226,25 +234,68 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
           <Cmd icon={<ChevronDoubleDownRegular />} title={reorderHelp ?? "Move to the bottom"} disabled={!canDown} onClick={() => reorderChapterFile(sel!, chapterFiles.length - 1)} />
         </>
       }
-      primary={<QueueBtn queue={queue} />}
     >
-      {chaptersEnabled && chapterFiles.length > 0 ? (
-        <Box
-          body={false}
-          title="Chapters"
-          sub={sourceFolder ? <span title={sourceFolder}>{sourceFolder}</span> : undefined}
-          end={
-            <>
-              <Combo<string> ghost sm w={104} label="Formats to scan" value={extension} options={extensionOptions(CHAPTER_EXTENSIONS)} onChange={(value) => updateChapterTabState({ extension: value })} />
-              <SearchBox value={search} onChange={setSearch} label="Search chapters" w={150} />
-            </>
-          }
-        >
-          <Table cols="24px minmax(0,1fr) minmax(0,1fr) 72px 88px" head={["#", "Chapter file", "Video", " Delay", "Linked"]} label="Chapters" bodyRef={bodyRef}>
+      <Panel
+        label="Chapters"
+        left={
+          <span className="crumb">
+            Chapters
+            {chapterFiles.length > 0 && <span className="t3">{chapterFiles.length} file{chapterFiles.length === 1 ? "" : "s"} · {linked} linked</span>}
+          </span>
+        }
+        end={chapterFiles.length > 0 && <SearchBox value={search} onChange={setSearch} label="Search chapters" w={150} />}
+        sheet={
+          <>
+            <SheetField label="Folder" wide>
+              <span className="row" style={{ gap: 4, minWidth: 0 }}>
+                <TBox label="Folder" className="grow" style={{ minWidth: 0 }} value={sourceFolder} readOnly placeholder="Choose a folder, or drop one on the window" title={sourceFolder || undefined} />
+                <Cmd icon={<FolderOpenRegular />} title="Choose folder (Ctrl+O)" disabled={!chaptersEnabled} onClick={() => void chooseFolder()} />
+              </span>
+            </SheetField>
+            <span className="checks span2">
+              <label className="ck"><Toggle name="Add chapters from the files" on={chaptersEnabled} onChange={setEnabled} />Add chapters from the files</label>
+              <Chk on={discard} disabled={!chaptersEnabled} onChange={setDiscard}>Discard the videos' own</Chk>
+            </span>
+            <SheetField label="Formats">
+              <Combo<string> label="Formats to scan" value={extension} options={extensionOptions(CHAPTER_EXTENSIONS)} w="100%" disabled={!chaptersEnabled} onChange={(value) => updateChapterTabState({ extension: value })} />
+            </SheetField>
+            <SheetField label="Delay for all" wide>
+              <span className="row" style={{ gap: 8 }}>
+                <TBox
+                  label="Delay for every file"
+                  className={cx(!delayOk && "invalid")}
+                  w={130}
+                  mono
+                  unit="s"
+                  value={chapterDelay}
+                  disabled={!chaptersEnabled}
+                  title={parseDelayInput(chapterDelay).error}
+                  aria-invalid={!delayOk}
+                  onChange={(value) => updateChapterTabState({ delay: value })}
+                />
+                <Btn disabled={!chaptersEnabled || chapterFiles.length === 0 || !delayInputsAreValid(chapterDelay)} onClick={applyDelayToAll}>Apply to every file</Btn>
+              </span>
+            </SheetField>
+          </>
+        }
+      >
+        {chaptersEnabled && chapterFiles.length > 0 ? (
+          <Table cols="24px minmax(0,1fr) minmax(0,1fr) 64px 72px 88px" head={["#", "Chapter file", "Video", " Size", " Delay", "Linked"]} label="Chapters" bodyRef={bodyRef}>
             {visibleChapters.map(({ file, index }) => {
               const dragProps = drag.rowProps(index);
               return (
-                <Tr key={file.id} on={sel === index} className={dragProps.className} onPointerDown={dragProps.onPointerDown} onClick={() => selectChapterIndex(index)} label={file.name}>
+                <Tr
+                  key={file.id}
+                  on={sel === index}
+                  className={dragProps.className}
+                  onPointerDown={dragProps.onPointerDown}
+                  onClick={() => selectChapterIndex(index)}
+                  onDoubleClick={() => {
+                    selectChapterIndex(index);
+                    setDetailsOpen(true);
+                  }}
+                  label={file.name}
+                >
                   <span className="num t3">{index + 1}</span>
                   <span className="cell"><span className="fi" aria-hidden><DocumentRegular /></span><span className="truncate" title={file.name}>{file.name}</span></span>
                   <span className="pairdub" style={{ minWidth: 0 }}>
@@ -259,71 +310,47 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
                       onChange={(videoId) => linkChapterToVideo(index, videoId)}
                     />
                   </span>
+                  <span className="r num t2" style={{ display: "flex" }}>{file.size ? formatFileSize(file.size) : "—"}</span>
                   <span className="r num t2" style={{ display: "flex" }}>{formatDelay(file.delay)}</span>
                   <span className={file.isManuallyLinked ? "" : "t3"}>{file.isManuallyLinked ? "By hand" : "By order"}</span>
                 </Tr>
               );
             })}
           </Table>
-        </Box>
-      ) : (
-        <section className="box">
-          {chaptersEnabled ? (
-            <Empty icon={<BookmarkMultipleRegular />} title="Drop a folder of chapter files">
-              <Btn icon={<FolderOpenRegular />} onClick={() => void chooseFolder()}>Choose folder</Btn>
-            </Empty>
-          ) : (
-            <Empty icon={<BookmarkMultipleRegular />} title="Chapters are off">
-              <Btn onClick={() => setEnabled(true)}>Turn on chapters</Btn>
-            </Empty>
-          )}
-        </section>
+        ) : chaptersEnabled ? (
+          <Empty icon={<BookmarkMultipleRegular />} title="Drop a folder of chapter files">
+            <Btn icon={<FolderOpenRegular />} onClick={() => void chooseFolder()}>Choose folder</Btn>
+          </Empty>
+        ) : (
+          <Empty icon={<BookmarkMultipleRegular />} title="Chapters are off">
+            <Btn onClick={() => setEnabled(true)}>Turn on chapters</Btn>
+          </Empty>
+        )}
+      </Panel>
+      {detailsOpen && chaptersEnabled && selected && sel !== null && (
+        <ChapterDetails
+          key={selected.id}
+          file={selected}
+          index={sel}
+          videoFiles={videoFiles}
+          onClose={() => setDetailsOpen(false)}
+          onChange={(next) => onChapterFilesChange(chapterFiles.map((f, i) => (i === sel ? next : f)))}
+          onApplyToAll={(delay) => onChapterFilesChange(chapterFiles.map((f) => ({ ...f, delay })))}
+          onUnlink={() => unlinkChapter(sel)}
+        />
       )}
-      <div className="stack">
-        <Box title="Chapters">
-          <TRow label="Add chapters from files"><Toggle name="Add chapters from files" on={chaptersEnabled} onChange={setEnabled} /></TRow>
-          <Fld label="Delay for every file">
-            <div className="row" style={{ gap: 8 }}>
-              <span className="grow">
-                <TBox
-                  label="Delay for every file"
-                  className={cx(!delayOk && "invalid")}
-                  mono
-                  unit="s"
-                  value={chapterDelay}
-                  disabled={!chaptersEnabled}
-                  title={parseDelayInput(chapterDelay).error}
-                  aria-invalid={!delayOk}
-                  onChange={(value) => updateChapterTabState({ delay: value })}
-                />
-              </span>
-              <Btn disabled={!chaptersEnabled || chapterFiles.length === 0 || !delayInputsAreValid(chapterDelay)} onClick={applyDelayToAll}>Apply to all</Btn>
-            </div>
-          </Fld>
-          <TRow label="Discard the videos' own chapters">
-            <Toggle
-              name="Discard the videos' own chapters"
-              on={discardOldChapters}
-              disabled={!chaptersEnabled}
-              onChange={(enabled) => {
-                updateChapterTabState({ discardOldChapters: enabled });
-                onMuxSettingsChange({ discardOldChapters: enabled });
-              }}
-            />
-          </TRow>
-        </Box>
-        {chaptersEnabled && selected && sel !== null && <ChapterDetails key={selected.id} file={selected} index={sel} videoFiles={videoFiles} onChange={(next) => onChapterFilesChange(chapterFiles.map((f, i) => (i === sel ? next : f)))} onApplyToAll={(delay) => onChapterFilesChange(chapterFiles.map((f) => ({ ...f, delay })))} onUnlink={() => unlinkChapter(sel)} />}
-      </div>
     </PageView>
   );
 }
 
-/** The selected chapter file, with its delay (the old "Edit Chapter Delay"
- *  dialog, in place). The delay commits on Enter or leaving the box. */
+/** A chapter file's details, from a double-click on its row: its video,
+ *  and its delay (the old "Edit Chapter Delay" dialog). The delay commits on
+ *  Enter, on leaving the box, and on Close. */
 function ChapterDetails({
   file,
   index,
   videoFiles,
+  onClose,
   onChange,
   onApplyToAll,
   onUnlink,
@@ -331,6 +358,7 @@ function ChapterDetails({
   file: ExternalFile;
   index: number;
   videoFiles: VideoFile[];
+  onClose: () => void;
   onChange: (file: ExternalFile) => void;
   onApplyToAll: (delay: number) => void;
   onUnlink: () => void;
@@ -344,7 +372,25 @@ function ChapterDetails({
     if (value !== (file.delay ?? 0)) onChange({ ...file, delay: value });
   };
   return (
-    <Box title={<MidText text={file.name} tail={20} />}>
+    <Dialog
+      size="mid"
+      title={file.name}
+      onClose={() => {
+        commit();
+        onClose();
+      }}
+      foot={
+        <Btn
+          accent
+          onClick={() => {
+            commit();
+            onClose();
+          }}
+        >
+          Close
+        </Btn>
+      }
+    >
       <DL
         rows={[
           ["Video", video ? <span key="v" className="truncate" title={video.name}>{video.name}</span> : <span key="v" className="warn">None</span>],
@@ -364,6 +410,6 @@ function ChapterDetails({
         <L icon={<BookmarkMultipleRegular />} disabled={!delayInputsAreValid(delay)} onClick={() => onApplyToAll(delaySecondsOrZero(delay))}>Use this delay for every file</L>
         {file.isManuallyLinked && <L icon={<LinkDismissRegular />} onClick={onUnlink}>Link by order again</L>}
       </Links>
-    </Box>
+    </Dialog>
   );
 }

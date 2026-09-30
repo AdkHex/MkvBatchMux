@@ -14,6 +14,7 @@
 
 import { createContext, useContext, useEffect, useRef } from "react";
 
+import type { StatusProps } from "@/ui/frame";
 import type { HistoryEntry } from "./history";
 import type { CommonDock } from "./dock";
 
@@ -80,6 +81,12 @@ export interface Shell {
   addHistory: (entry: HistoryEntry) => void;
 
   setCommands: (page: PageId, commands: PageCommands | null) => void;
+
+  /** What a page shows in the toolbar's status; null when idle. */
+  publishStatus: (page: PageId, status: StatusProps | null) => void;
+  /** The status of the run holding the engine (a measurement, a mux), for
+   *  the pages that have nothing of their own to show. */
+  runStatus: { page: PageId; status: StatusProps } | null;
   openPreferences: (tab?: "general" | "presets" | "measure" | "tools" | "updates") => void;
   /** Copy text to the clipboard, with a toast. */
   copy: (text: string) => void;
@@ -133,4 +140,20 @@ export function usePageCommands(page: PageId, commands: PageCommands) {
     return () => setCommands(page, null);
     // Registered once per page; the getters read the latest commands.
   }, [page, setCommands]);
+}
+
+/** The status a page shows: its own while it has one; otherwise the run in
+ *  progress elsewhere, which opens that page when clicked. */
+export function useStatus(page: PageId, own: StatusProps | null): StatusProps | null {
+  const { publishStatus, runStatus, show } = useShell();
+  const key = own ? [own.icon, typeof own.text === "string" ? own.text : "", own.pct ?? "", typeof own.time === "string" ? own.time : "", own.detail ?? ""].join("|") : "";
+  const ownRef = useRef(own);
+  ownRef.current = own;
+  useEffect(() => {
+    publishStatus(page, ownRef.current);
+  }, [page, key, publishStatus]);
+  useEffect(() => () => publishStatus(page, null), [page, publishStatus]);
+  if (own) return own;
+  if (runStatus && runStatus.page !== page) return { ...runStatus.status, onClick: () => show(runStatus.page) };
+  return null;
 }

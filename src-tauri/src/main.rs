@@ -2,6 +2,7 @@
 
 mod audiosync;
 mod menu;
+mod window_size;
 
 use crc32fast::Hasher;
 use fs2::available_space;
@@ -3817,24 +3818,47 @@ fn main() {
             // not on the system PATH. Register it before the first availability probe caches "missing".
             register_tools_on_path(&app.handle());
 
-            // Shrink to fit a smaller-than-default display, leaving room for the
-            // taskbar, and re-centre. Only ever shrinks.
+            // Open at the size it was left at, or 90% of the screen the first
+            // time, centred; maximized if it was closed maximized.
             if let Some(window) = app.get_window("main") {
+                let saved = window_size::load(&app_data_dir.join("window.json"));
                 if let Ok(Some(monitor)) = window.current_monitor() {
-                    let scale = monitor.scale_factor();
-                    let screen = monitor.size().to_logical::<f64>(scale);
-                    if let Ok(size) = window.inner_size() {
-                        let current = size.to_logical::<f64>(scale);
-                        let width = current.width.min(screen.width * 0.9);
-                        let height = current.height.min(screen.height * 0.9);
-                        if width < current.width || height < current.height {
-                            let _ = window.set_size(tauri::LogicalSize::new(width, height));
-                            let _ = window.center();
-                        }
-                    }
+                    let screen = monitor.size().to_logical::<f64>(monitor.scale_factor());
+                    let (width, height) = window_size::initial_size(saved, (screen.width, screen.height));
+                    let _ = window.set_size(tauri::LogicalSize::new(width, height));
+                    let _ = window.center();
+                }
+                if saved.map(|s| s.maximized).unwrap_or(false) {
+                    let _ = window.maximize();
                 }
             }
             Ok(())
+        })
+        .on_window_event(|event| {
+            // Remember the size on close. A maximized window keeps the size it
+            // had before, so un-maximizing next time goes back to it.
+            if let tauri::WindowEvent::CloseRequested { .. } = event.event() {
+                let window = event.window();
+                let Some(dir) = tauri::api::path::app_data_dir(&window.config()) else { return };
+                let path = dir.join("window.json");
+                let maximized = window.is_maximized().unwrap_or(false);
+                let previous = window_size::load(&path);
+                let size = match (maximized, previous) {
+                    (true, Some(previous)) => Some((previous.width, previous.height)),
+                    (true, None) => None,
+                    (false, _) => window
+                        .inner_size()
+                        .ok()
+                        .zip(window.scale_factor().ok())
+                        .map(|(size, scale)| {
+                            let logical = size.to_logical::<f64>(scale);
+                            (logical.width, logical.height)
+                        }),
+                };
+                if let Some((width, height)) = size {
+                    window_size::save(&path, window_size::Saved { width, height, maximized });
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_app_paths,

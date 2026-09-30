@@ -1,11 +1,12 @@
 /** The track table shared by Edit tracks and Modify tracks: one row per
  *  track, with Copy / Default / Forced, the name (double-click to rename), the
- *  language, and remove. Rows reorder by dragging with the pointer. The
- *  checkbox rules are the old dialogs': turning Copy off clears Default and
- *  Forced, and Default or Forced can only be set on a copied track (setting
- *  them for every row copies every row). */
+ *  language, and remove (its × shows on the row under the pointer). Rows
+ *  reorder by dragging with the pointer. The checkbox rules are the old
+ *  dialogs': turning Copy off clears Default and Forced, and Default or Forced
+ *  can only be set on a copied track (setting them for every row copies every
+ *  row). */
 
-import { DeleteRegular } from "@fluentui/react-icons";
+import { DismissRegular } from "@fluentui/react-icons";
 import { useRef, useState } from "react";
 
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
@@ -60,13 +61,13 @@ export function TrackRowsTable<R extends TrackRowView>({
     setEditingName("");
   };
 
-  const cols = `16px 24px 44px 52px 48px ${audio ? "72px " : ""}minmax(0,1fr) 150px 28px`;
+  const cols = `16px 24px 64px 72px 68px ${audio ? "80px " : ""}minmax(0,1fr) 200px 28px`;
   const head = [
     "",
     "#",
     <Chk key="c" name="Copy every track" on={all("copyTrack")} onChange={(on) => onSetAll("copyTrack", on)}>Copy</Chk>,
-    <Chk key="d" name="Make every track default" on={all("setDefault")} onChange={(on) => onSetAll("setDefault", on)}>Def</Chk>,
-    <Chk key="f" name="Make every track forced" on={all("setForced")} onChange={(on) => onSetAll("setForced", on)}>Frc</Chk>,
+    <Chk key="d" name="Make every track default" on={all("setDefault")} onChange={(on) => onSetAll("setDefault", on)}>Default</Chk>,
+    <Chk key="f" name="Make every track forced" on={all("setForced")} onChange={(on) => onSetAll("setForced", on)}>Forced</Chk>,
     ...(audio ? [" Bitrate"] : []),
     "Name",
     "Language",
@@ -74,7 +75,7 @@ export function TrackRowsTable<R extends TrackRowView>({
   ];
 
   return (
-    <Table cols={cols} head={head} label={label} bodyRef={bodyRef} style={{ maxHeight: 300 }}>
+    <Table cols={cols} head={head} label={label} bodyRef={bodyRef}>
       {rows.length === 0 ? (
         <div className="log t3">No tracks of this kind.</div>
       ) : (
@@ -123,7 +124,13 @@ export function TrackRowsTable<R extends TrackRowView>({
                 </span>
               )}
               <LangCombo sm ghost w="100%" label={`Language of track ${index + 1}`} value={row.language} onChange={(language) => onChange(row.id, "language", language)} />
-              {onDelete ? <Cmd sm icon={<DeleteRegular />} title="Remove from the list" onClick={() => onDelete(row.id)} /> : <span />}
+              {onDelete ? (
+                <span className="rx">
+                  <Cmd sm icon={<DismissRegular />} title="Remove from the list" onClick={() => onDelete(row.id)} />
+                </span>
+              ) : (
+                <span />
+              )}
             </Tr>
           );
         })
