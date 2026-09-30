@@ -68,6 +68,8 @@ const shell = (overrides: Partial<Shell> = {}): Shell => ({
 
 const withShell = (children: ReactNode, overrides?: Partial<Shell>) => <ShellContext.Provider value={shell(overrides)}>{children}</ShellContext.Provider>;
 
+const onSettingsChange = vi.fn();
+
 function renderPage(overrides: {
   previewResults?: Record<string, MuxPreviewResult>;
   onStartMuxing?: () => void;
@@ -82,7 +84,7 @@ function renderPage(overrides: {
       <MuxPage
         hidden={false}
         settings={{ ...outputSettings, overwriteExisting: overrides.overwriteExisting ?? false }}
-        onSettingsChange={vi.fn()}
+        onSettingsChange={onSettingsChange}
         muxSettings={muxSettings}
         onMuxSettingsChange={vi.fn()}
         fastMuxAvailable={false}
@@ -228,5 +230,18 @@ describe("MuxPage queue", () => {
     const options = screen.getByRole("dialog", { name: "Mux options" });
     expect(within(options).getByText("Remove from the source")).toBeInTheDocument();
     expect(within(options).getByRole("switch", { name: /remove global tags from the source/i })).toBeInTheDocument();
+  });
+});
+
+describe("MuxPage Overwrite", () => {
+  beforeEach(cleanup);
+
+  it("sits outside Save to, one click away", () => {
+    onSettingsChange.mockClear();
+    renderPage({});
+
+    expect(screen.queryByRole("dialog", { name: "Save to" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Overwrite" }));
+    expect(onSettingsChange).toHaveBeenCalledWith({ overwriteExisting: true });
   });
 });

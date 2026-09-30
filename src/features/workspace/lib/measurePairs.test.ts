@@ -6,6 +6,7 @@ import {
   measurementKey,
   parseMeasurementKey,
   plannedReferenceTrack,
+  referenceForEveryVideo,
 } from "./measurePairs";
 import { buildMuxJobRequests } from "./muxJobBuilder";
 
@@ -646,5 +647,15 @@ describe("the reference track a row should compare itself against", () => {
     expect(plannedReferenceTrack(video(), {})).toBe(0);
     // And an explicit choice is honoured as-is, by both.
     expect(plannedReferenceTrack(video(), { v1: 1 })).toBe(1);
+  });
+});
+
+describe("referenceForEveryVideo", () => {
+  const audio = (id: string): Track => ({ id, type: "audio", codec: "AAC" });
+  it("sets the same track on every video, the last one where a video has fewer", () => {
+    const three = makeVideo("a", "A.mkv", [audio("1"), audio("2"), audio("3")]);
+    const one = makeVideo("b", "B.mkv", [audio("1")]);
+    const none = makeVideo("c", "C.mkv", []);
+    expect(referenceForEveryVideo([three, one, none], 2)).toEqual({ a: 2, b: 0 });
   });
 });

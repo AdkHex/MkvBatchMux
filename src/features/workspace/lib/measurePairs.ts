@@ -60,6 +60,18 @@ export interface BuildMeasurementPlanInput {
  *  Index is among the video's audio tracks, not all tracks — the engine counts audio streams from zero, same as AudioSyncMaster's default. */
 export const DEFAULT_REFERENCE_TRACK = 0;
 
+/** The same reference track for every video: the one at `index` among its
+ *  audio tracks, or its last one when it has fewer. Videos with no audio
+ *  track are left out. */
+export function referenceForEveryVideo(videos: VideoFile[], index: number): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const video of videos) {
+    const count = (video.tracks ?? []).filter((track) => track.type === "audio").length;
+    if (count > 0) out[video.id] = Math.max(0, Math.min(index, count - 1));
+  }
+  return out;
+}
+
 /** The video audio track the next measurement of this file would use; matches what `buildMeasurementPlan` will reach. */
 export function plannedReferenceTrack(
   video: VideoFile,

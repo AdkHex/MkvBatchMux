@@ -9,6 +9,7 @@ import {
   CheckmarkRegular,
   CopyRegular,
   DeleteRegular,
+  DismissRegular,
   EditRegular,
   FolderOpenRegular,
   GaugeRegular,
@@ -26,7 +27,7 @@ import { useMeasureDelays } from "@/features/workspace/hooks/useMeasureDelays";
 import { acceptWithheldMeasurement, applyAllPendingDelays, hasPendingDelay, markDelayAsManual } from "@/features/workspace/lib/applyMeasurement";
 import { audioFpsFor, formatAudioFps, needsRateChange } from "@/features/workspace/lib/audioFps";
 import { measureFindings, measureOutcome, measureStatus, measurementsOf } from "@/features/workspace/lib/measureVerdict";
-import { DEFAULT_REFERENCE_TRACK, plannedReferenceTrack } from "@/features/workspace/lib/measurePairs";
+import { DEFAULT_REFERENCE_TRACK, plannedReferenceTrack, referenceForEveryVideo } from "@/features/workspace/lib/measurePairs";
 import { frameOffset } from "@/features/workspace/lib/delayConversion";
 import { applyTimelineDelay } from "@/features/workspace/lib/timelineScan";
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
@@ -39,12 +40,12 @@ import { AUDIO_EXTENSIONS } from "@/shared/lib/extensions";
 import { getUnlinkedExternalFiles, linkExternalFilesByOrder } from "@/shared/lib/matchUtils";
 import type { ExternalFile, MeasurementSettings, Preset, StretchSetting, VideoFile } from "@/shared/types";
 import { Dialog, PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
-import { Btn, Chk, Cmd, Combo, DL, Empty, Fld, Grip, LangCombo, Links, Meter, Status, TBox, TRow, Table, Toggle, Tr, cx, type St } from "@/ui/kit";
+import { Btn, Chk, Cmd, Combo, DL, Empty, Fld, Grip, LangCombo, Links, Meter, SheetField, Status, TBox, Table, Tr, cx, type St } from "@/ui/kit";
 import { toast } from "@/ui/toast";
 
 import { FILTER_OPTIONS, SearchBox, extensionOptions, formatDelay, formatFileSize, looksLikeFolder, matchesSearch, type FilterValue } from "./common";
 import { L, MeasureSection } from "./tracks/MeasurePane";
-import { DeleteSlotDialog, ImportStreamsDialog, TrackDelaysDialog, TrackSheet, TrackTabs, languageName } from "./tracks/parts";
+import { DeleteSlotDialog, FileTrackRow, FileTracks, ImportStreamsDialog, TrackDelaysDialog, TrackSheet, TrackTabs, languageName } from "./tracks/parts";
 
 export interface AudioPageProps {
   hidden: boolean;
@@ -63,7 +64,7 @@ const defaultTrackConfig: TrackConfig = {
   language: "hin",
   trackName: "",
   delay: "0.000",
-  isDefault: false,
+  isDefault: true,
   isForced: false,
   muxAfter: "video",
 };
@@ -102,6 +103,14 @@ const measuredTrackEntries = (file: ExternalFile) => {
 
 const createExternalId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const audioTracksOf = (video: VideoFile | undefined) => (video?.tracks ?? []).filter((track) => track.type === "audio");
+
+/** "2 · Korean": a reference track, short, for the Against column. */
+function shortReference(track: { language?: string }, index: number): string {
+  const language = track.language ? (CODE_TO_LABEL[track.language] ?? track.language) : null;
+  return language ? `${index + 1} · ${language}` : `${index + 1}`;
+}
 
 /** A reference track's name: enough to tell a dub from a commentary. */
 function referenceLabel(track: { language?: string; name?: string; codec?: string }, index: number): string {
@@ -1046,6 +1055,18 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
   const status = useStatus("audio", lcdStatus(lcd));
 
+  // Reference: which of the source's audio tracks every dub is measured
+  // against. The choices come from the video with the most audio tracks; a
+  // video with fewer takes its last one.
+  const referenceChoices = (() => {
+    const richest = videoFiles.reduce<VideoFile | undefined>((best, video) => (audioTracksOf(video).length > audioTracksOf(best).length ? video : best), undefined);
+    return audioTracksOf(richest).map((track, index) => ({ value: index, label: referenceLabel(track, index) }));
+  })();
+  const withAudio = videoFiles.filter((video) => audioTracksOf(video).length > 0);
+  const references = new Set(withAudio.map((video) => referenceTrackByVideoId[video.id] ?? DEFAULT_REFERENCE_TRACK));
+  const sharedReference = references.size <= 1 ? ([...references][0] ?? DEFAULT_REFERENCE_TRACK) : null;
+  const setReferenceForAll = (index: number) => setReferenceTrackByVideoId(referenceForEveryVideo(videoFiles, index));
+
   return (
     <PageView
       hidden={hidden}
@@ -1114,13 +1135,26 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
             folder={folder}
             onBrowse={() => void chooseFolder()}
             formats={{ value: currentConfig.extension, options: extensionOptions(AUDIO_EXTENSIONS), onChange: (extension) => updateCurrentConfig({ extension }) }}
+            extra={
+              <SheetField label="Reference" wide>
+                <Combo<number>
+                  label="Measure every dub against"
+                  value={referenceChoices.length ? (sharedReference ?? -1) : null}
+                  placeholder="The videos' first audio track"
+                  options={[...referenceChoices, ...(sharedReference === null ? [{ value: -1, label: "Differs by video" }] : [])]}
+                  w="100%"
+                  disabled={isMeasuring || referenceChoices.length < 2}
+                  onChange={(index) => index >= 0 && setReferenceForAll(index)}
+                />
+              </SheetField>
+            }
           />
         }
       >
         {audioFiles.length > 0 ? (
           <Table
-            cols="24px minmax(0,1fr) minmax(0,1fr) 72px 56px 104px 148px"
-            head={["#", "Video", "Audio file", " Delay", " Frames", "Confidence", "Status"]}
+            cols="24px minmax(0,1fr) minmax(0,1fr) 112px 72px 56px 104px 148px"
+            head={["#", "Video", "Audio file", "Against", " Delay", " Frames", "Confidence", "Status"]}
             label={`Audio ${activeAudioTrack}`}
             bodyRef={bodyRef}
           >
@@ -1158,6 +1192,20 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                   <span className="num t3">{index + 1}</span>
                   {video ? <span className="t2 truncate" title={video.name}>{video.name}</span> : <span className="warn">No video</span>}
                   {file ? <span className="cell"><Grip /><span className="truncate" title={file.name}>{file.name}</span></span> : <span className="nil">—</span>}
+                  {video && audioTracksOf(video).length > 1 ? (
+                    <Combo<number>
+                      ghost
+                      sm
+                      w="100%"
+                      label={`Measure ${file?.name ?? video.name} against`}
+                      value={referenceTrackByVideoId[video.id] ?? DEFAULT_REFERENCE_TRACK}
+                      options={audioTracksOf(video).map((track, i) => ({ value: i, label: shortReference(track, i) }))}
+                      disabled={isMeasuring}
+                      onChange={(i) => setReferenceTrackByVideoId((prev) => ({ ...prev, [video.id]: i }))}
+                    />
+                  ) : (
+                    <span className="t3 truncate">{video && audioTracksOf(video)[0] ? shortReference(audioTracksOf(video)[0], 0) : "—"}</span>
+                  )}
                   <span className={cx("r num", pending ? "acc" : "t2")} style={{ display: "flex" }}>{file ? formatDelay(shownDelay) : ""}</span>
                   <span className="r num t2" style={{ display: "flex" }}>{frames === null ? (file ? "—" : "") : `${frames > 0 ? "+" : ""}${frames}`}</span>
                   {measured?.confidence != null ? (
@@ -1218,10 +1266,19 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
       {editDialogOpen && editingFile && (
         <Dialog
-          size="mid"
+          size="form"
           title="Edit audio file"
-          sub={<span className="truncate" title={editingFile.name}>{editingFile.name}</span>}
+          sub={[editingFile.name, videoFiles.find((video) => video.id === editingFile.matchedVideoId)?.name].filter(Boolean).join(" · with ")}
           onClose={closeEdit}
+          left={
+            <>
+              <span className="t3">For every file</span>
+              <Chk on={editForm.applyDelayToAll} onChange={(applyDelayToAll) => setEditForm((prev) => ({ ...prev, applyDelayToAll }))}>This delay</Chk>
+              <span title="Track choices apply by position">
+                <Chk on={editForm.applyToAllFiles} onChange={(applyToAllFiles) => setEditForm((prev) => ({ ...prev, applyToAllFiles }))}>Every setting</Chk>
+              </span>
+            </>
+          }
           foot={
             <>
               <Btn onClick={closeEdit}>Cancel</Btn>
@@ -1229,150 +1286,149 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
             </>
           }
         >
-          <div className="fgrid">
+          <div className="egrid">
             <Fld label="Language"><LangCombo value={editForm.language} onChange={(language) => setEditForm((prev) => ({ ...prev, language }))} w="100%" /></Fld>
             <Fld label="Track name"><TBox label="Track name" value={editForm.trackName} placeholder="Keep the file's name" onChange={(trackName) => setEditForm((prev) => ({ ...prev, trackName }))} /></Fld>
             <DelayField value={editForm.delay} onChange={(delay) => setEditForm((prev) => ({ ...prev, delay }))} />
             <Fld label="Place after"><Combo<string> label="Place after" value={editForm.muxAfter} options={muxAfterOptions} w="100%" onChange={(muxAfter) => setEditForm((prev) => ({ ...prev, muxAfter }))} /></Fld>
           </div>
           {/* No "Forced": audio is never forced in practice. */}
-          <div className="col" style={{ gap: 4 }}>
-            <TRow label="Default audio" d="The first included track becomes the default"><Toggle name="Default audio" on={editForm.isDefault} onChange={(isDefault) => setEditForm((prev) => ({ ...prev, isDefault }))} /></TRow>
-            <TRow label="Use this delay for every file"><Toggle name="Use this delay for every file" on={editForm.applyDelayToAll} onChange={(applyDelayToAll) => setEditForm((prev) => ({ ...prev, applyDelayToAll }))} /></TRow>
-            <TRow label="Use every setting for every file" d="Track choices apply by position"><Toggle name="Use every setting for every file" on={editForm.applyToAllFiles} onChange={(applyToAllFiles) => setEditForm((prev) => ({ ...prev, applyToAllFiles }))} /></TRow>
+          <div className="row" style={{ gap: 28 }}>
+            <span title="The first included track becomes the default">
+              <Chk on={editForm.isDefault} onChange={(isDefault) => setEditForm((prev) => ({ ...prev, isDefault }))}>Default</Chk>
+            </span>
           </div>
           {editingFile.tracks && editingFile.tracks.length > 0 && (
+            <FileTracks
+              title="Audio tracks in this file"
+              tools={
+                <>
+                  {editingFile.tracks.filter((track) => track.type === "audio").length > 1 && (
+                    <Cmd sm icon={<TimelineRegular />} onClick={() => openMultiDelayDialog(editingFile.id, "audio")}>Track delays…</Cmd>
+                  )}
+                  <Cmd sm icon={<CheckmarkRegular />} onClick={() => setEditForm((prev) => ({ ...prev, includedTrackIds: getAudioTrackIds(editingFile) }))}>All</Cmd>
+                  <Cmd sm icon={<DismissRegular />} onClick={() => setEditForm((prev) => ({ ...prev, includedTrackIds: [] }))}>None</Cmd>
+                </>
+              }
+            >
+              {editingFile.tracks
+                .filter((track) => track.type === "audio")
+                .map((track, index) => {
+                  const trackId = Number(track.id);
+                  return (
+                    <FileTrackRow
+                      key={track.id}
+                      index={index}
+                      label={[languageName(track.language), track.codec, track.name].filter(Boolean).join(" · ")}
+                      on={editForm.includedTrackIds.includes(trackId)}
+                      onChange={(on) => {
+                        const next = new Set(editForm.includedTrackIds);
+                        if (on) {
+                          if (!Number.isNaN(trackId)) next.add(trackId);
+                        } else next.delete(trackId);
+                        setEditForm((prev) => ({ ...prev, includedTrackIds: Array.from(next) }));
+                      }}
+                      isDefault={track.isDefault}
+                      onEdit={() => openTrackEdit(editingFile.id, trackId, "audio")}
+                    />
+                  );
+                })}
+            </FileTracks>
+          )}
+          {editingFile.tracks?.some((track) => track.type === "subtitle") && (
             <>
-              <div className="frame">
-                <div className="dtabs">
-                  <span className="tab on">Audio tracks in this file</span>
-                  <span className="tools">
-                    {editingFile.tracks.filter((track) => track.type === "audio").length > 1 && (
-                      <Cmd sm icon={<TimelineRegular />} onClick={() => openMultiDelayDialog(editingFile.id, "audio")}>Track delays…</Cmd>
-                    )}
-                    <Cmd sm icon={<CheckmarkRegular />} onClick={() => setEditForm((prev) => ({ ...prev, includedTrackIds: getAudioTrackIds(editingFile) }))}>All</Cmd>
-                    <Cmd sm icon={<DeleteRegular />} onClick={() => setEditForm((prev) => ({ ...prev, includedTrackIds: [] }))}>None</Cmd>
-                  </span>
-                </div>
-                <div className="box-b" style={{ gap: 0, padding: "4px 12px 8px 16px" }}>
-                  {editingFile.tracks
-                    .filter((track) => track.type === "audio")
-                    .map((track, index) => {
-                      const trackId = Number(track.id);
-                      return (
-                        <div key={track.id} className="trk">
-                          <Chk
-                            name={`Include audio track ${index + 1}`}
-                            on={editForm.includedTrackIds.includes(trackId)}
-                            onChange={(on) => {
-                              const next = new Set(editForm.includedTrackIds);
-                              if (on) {
-                                if (!Number.isNaN(trackId)) next.add(trackId);
-                              } else next.delete(trackId);
-                              setEditForm((prev) => ({ ...prev, includedTrackIds: Array.from(next) }));
-                            }}
-                          />
-                          <span className="num t3" style={{ width: 14 }}>{index + 1}</span>
-                          <span className="grow truncate">{[languageName(track.language), track.codec, track.name].filter(Boolean).join(" · ")}</span>
-                          <span className="fl">{track.isDefault ? "Default" : ""}</span>
-                          <Cmd sm icon={<EditRegular />} title="Language, name and delay" onClick={() => openTrackEdit(editingFile.id, trackId, "audio")} />
-                        </div>
-                      );
-                    })}
-                </div>
+              <div className="row" style={{ gap: 28 }}>
+                <span title="Subtitle tracks inside this audio file">
+                  <Chk
+                    on={editForm.includeSubtitles}
+                    onChange={(on) =>
+                      setEditForm((prev) => ({
+                        ...prev,
+                        includeSubtitles: on,
+                        includedSubtitleTrackIds: on ? getSubtitleTrackIds(editingFile) : [],
+                        includedSubtitlesDefault: on ? prev.includedSubtitlesDefault : false,
+                        includedSubtitlesForced: on ? prev.includedSubtitlesForced : false,
+                        includedSubtitlesFirst: on ? prev.includedSubtitlesFirst : false,
+                      }))
+                    }
+                  >
+                    Copy its subtitles
+                  </Chk>
+                </span>
+                <span title="Before the video's own subtitles, the first one default">
+                  <Chk
+                    on={editForm.includedSubtitlesFirst && editForm.includedSubtitlesDefault}
+                    onChange={(on) =>
+                      setEditForm((prev) => ({
+                        ...prev,
+                        includeSubtitles: true,
+                        includedSubtitleTrackIds: prev.includedSubtitleTrackIds.length ? prev.includedSubtitleTrackIds : getSubtitleTrackIds(editingFile),
+                        includedSubtitlesFirst: on,
+                        includedSubtitlesDefault: on,
+                      }))
+                    }
+                  >
+                    First and default
+                  </Chk>
+                </span>
+                <span title="Forced display for the copied subtitles">
+                  <Chk
+                    on={editForm.includedSubtitlesForced}
+                    onChange={(on) =>
+                      setEditForm((prev) => ({
+                        ...prev,
+                        includeSubtitles: true,
+                        includedSubtitleTrackIds: prev.includedSubtitleTrackIds.length ? prev.includedSubtitleTrackIds : getSubtitleTrackIds(editingFile),
+                        includedSubtitlesForced: on,
+                      }))
+                    }
+                  >
+                    Forced
+                  </Chk>
+                </span>
               </div>
-              {editingFile.tracks.some((track) => track.type === "subtitle") && (
-                <div className="frame">
-                  <div className="dtabs">
-                    <span className="tab on">Subtitles in this file</span>
-                    <span className="tools">
-                      {editingFile.tracks.filter((track) => track.type === "subtitle").length > 1 && (
-                        <Cmd sm icon={<TimelineRegular />} onClick={() => openMultiDelayDialog(editingFile.id, "subtitle")}>Track delays…</Cmd>
-                      )}
-                      <Cmd sm icon={<CheckmarkRegular />} onClick={() => setEditForm((prev) => ({ ...prev, includeSubtitles: true, includedSubtitleTrackIds: getSubtitleTrackIds(editingFile) }))}>All</Cmd>
-                      <Cmd
-                        sm
-                        icon={<DeleteRegular />}
-                        onClick={() =>
-                          setEditForm((prev) => ({ ...prev, includeSubtitles: false, includedSubtitleTrackIds: [], includedSubtitlesDefault: false, includedSubtitlesForced: false, includedSubtitlesFirst: false }))
-                        }
-                      >
-                        None
-                      </Cmd>
-                    </span>
-                  </div>
-                  <div className="box-b" style={{ gap: 4, padding: "8px 12px 8px 16px" }}>
-                    <TRow label="Copy the subtitles" d="Subtitle tracks inside this audio file">
-                      <Toggle
-                        name="Copy the subtitles"
-                        on={editForm.includeSubtitles}
-                        onChange={(on) =>
-                          setEditForm((prev) => ({
-                            ...prev,
-                            includeSubtitles: on,
-                            includedSubtitleTrackIds: on ? getSubtitleTrackIds(editingFile) : [],
-                            includedSubtitlesDefault: on ? prev.includedSubtitlesDefault : false,
-                            includedSubtitlesForced: on ? prev.includedSubtitlesForced : false,
-                            includedSubtitlesFirst: on ? prev.includedSubtitlesFirst : false,
-                          }))
-                        }
+              <FileTracks
+                title="Subtitles in this file"
+                tools={
+                  <>
+                    {editingFile.tracks.filter((track) => track.type === "subtitle").length > 1 && (
+                      <Cmd sm icon={<TimelineRegular />} onClick={() => openMultiDelayDialog(editingFile.id, "subtitle")}>Track delays…</Cmd>
+                    )}
+                    <Cmd sm icon={<CheckmarkRegular />} onClick={() => setEditForm((prev) => ({ ...prev, includeSubtitles: true, includedSubtitleTrackIds: getSubtitleTrackIds(editingFile) }))}>All</Cmd>
+                    <Cmd
+                      sm
+                      icon={<DismissRegular />}
+                      onClick={() =>
+                        setEditForm((prev) => ({ ...prev, includeSubtitles: false, includedSubtitleTrackIds: [], includedSubtitlesDefault: false, includedSubtitlesForced: false, includedSubtitlesFirst: false }))
+                      }
+                    >
+                      None
+                    </Cmd>
+                  </>
+                }
+              >
+                {editingFile.tracks
+                  .filter((track) => track.type === "subtitle")
+                  .map((track, index) => {
+                    const trackId = Number(track.id);
+                    return (
+                      <FileTrackRow
+                        key={track.id}
+                        index={index}
+                        label={[languageName(track.language), track.codec, track.name].filter(Boolean).join(" · ")}
+                        on={editForm.includedSubtitleTrackIds.includes(trackId)}
+                        onChange={(on) => {
+                          const next = new Set(editForm.includedSubtitleTrackIds);
+                          if (on) {
+                            if (!Number.isNaN(trackId)) next.add(trackId);
+                          } else next.delete(trackId);
+                          setEditForm((prev) => ({ ...prev, includeSubtitles: true, includedSubtitleTrackIds: Array.from(next) }));
+                        }}
+                        onEdit={() => openTrackEdit(editingFile.id, trackId, "subtitle")}
                       />
-                    </TRow>
-                    <TRow label="First and default" d="Before the video's own subtitles, first one default">
-                      <Toggle
-                        name="First and default"
-                        on={editForm.includedSubtitlesFirst && editForm.includedSubtitlesDefault}
-                        onChange={(on) =>
-                          setEditForm((prev) => ({
-                            ...prev,
-                            includeSubtitles: true,
-                            includedSubtitleTrackIds: prev.includedSubtitleTrackIds.length ? prev.includedSubtitleTrackIds : getSubtitleTrackIds(editingFile),
-                            includedSubtitlesFirst: on,
-                            includedSubtitlesDefault: on,
-                          }))
-                        }
-                      />
-                    </TRow>
-                    <TRow label="Forced" d="Forced display for the copied subtitles">
-                      <Toggle
-                        name="Forced copied subtitles"
-                        on={editForm.includedSubtitlesForced}
-                        onChange={(on) =>
-                          setEditForm((prev) => ({
-                            ...prev,
-                            includeSubtitles: true,
-                            includedSubtitleTrackIds: prev.includedSubtitleTrackIds.length ? prev.includedSubtitleTrackIds : getSubtitleTrackIds(editingFile),
-                            includedSubtitlesForced: on,
-                          }))
-                        }
-                      />
-                    </TRow>
-                    {editingFile.tracks
-                      .filter((track) => track.type === "subtitle")
-                      .map((track, index) => {
-                        const trackId = Number(track.id);
-                        return (
-                          <div key={track.id} className="trk">
-                            <Chk
-                              name={`Include subtitle track ${index + 1}`}
-                              on={editForm.includedSubtitleTrackIds.includes(trackId)}
-                              onChange={(on) => {
-                                const next = new Set(editForm.includedSubtitleTrackIds);
-                                if (on) {
-                                  if (!Number.isNaN(trackId)) next.add(trackId);
-                                } else next.delete(trackId);
-                                setEditForm((prev) => ({ ...prev, includeSubtitles: true, includedSubtitleTrackIds: Array.from(next) }));
-                              }}
-                            />
-                            <span className="num t3" style={{ width: 14 }}>{index + 1}</span>
-                            <span className="grow truncate">{[languageName(track.language), track.codec, track.name].filter(Boolean).join(" · ")}</span>
-                            <Cmd sm icon={<EditRegular />} title="Language, name and delay" onClick={() => openTrackEdit(editingFile.id, trackId, "subtitle")} />
-                          </div>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
+                    );
+                  })}
+              </FileTracks>
             </>
           )}
         </Dialog>

@@ -126,11 +126,13 @@
 /* ------------------------------------------------------------ track sheet */
 /* The settings under the tabs: four columns, labels in their own column,
    so every control lines up. */
-.sheet { flex-shrink: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 28px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--divider); background: var(--sunken); }
-.sheet .pf { display: grid; grid-template-columns: 80px minmax(0, 1fr); align-items: center; gap: 10px; min-width: 0; }
+/* Roomier: taller controls, more space between them, and on a wide window
+   the columns stop at a readable width instead of stretching. */
+.sheet { flex-shrink: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 420px)); justify-content: start; gap: 14px 28px; align-items: center; padding: 18px 20px; border-bottom: 1px solid var(--divider); background: var(--sunken); }
+.sheet .pf { display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: center; gap: 12px; min-width: 0; }
+.sheet .tbox, .sheet .combo { height: 34px; }
 .sheet .pf.wide { grid-column: span 2; }
 .sheet .pf .lb { color: var(--text-2); white-space: nowrap; }
-.sheet .pf .tbox, .sheet .pf .combo { height: 30px; }
 .sheet .checks { display: flex; align-items: center; gap: 24px; }
 .sheet .checks.span2 { grid-column: span 2; }
 
@@ -138,3 +140,18 @@
    takes. */
 .rev .tbl .th { overflow: hidden; scrollbar-gutter: stable; scrollbar-width: thin; }
 .rev .tbl .tb { scrollbar-gutter: stable; }
+
+/* Save to: Overwrite beside Browse. */
+.destck { margin-left: 12px; }
+
+/* A file's own editor: a dialog that fits its content. */
+.dialog.xl.fit { width: min(780px, calc(100% - 80px)); height: auto; max-height: calc(100% - 64px); }
+.dialog.xl .db.edit { padding: 20px 24px 22px; gap: 20px; background: var(--base); border-top: 1px solid var(--divider); }
+.egrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px 20px; }
+.egrid .tbox, .egrid .combo { height: 34px; }
+.elist { border: 1px solid var(--divider); border-radius: 6px; background: var(--layer); padding: 4px; }
+.erow { height: 40px; display: flex; align-items: center; gap: 12px; padding: 0 6px 0 10px; border-radius: 4px; }
+.erow:hover { background: var(--hover); }
+.erow .rx { opacity: 0; }
+.erow:hover .rx { opacity: 1; }
+.dialog.xl .df .l { align-items: center; gap: 18px; }

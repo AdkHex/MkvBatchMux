@@ -311,6 +311,19 @@ export function MuxPage({
       <button type="button" className="destb" title="Choose the folder" aria-label="Choose the output folder" disabled={running} onClick={() => void browse()}>
         <FolderOpenRegular />
       </button>
+      <span className="destck" title="Replace files that are already there: the sources themselves when no folder is set">
+        <Chk
+          name="Overwrite"
+          on={settings.overwriteExisting}
+          disabled={running}
+          onChange={(on) => {
+            onSettingsChange({ overwriteExisting: on });
+            onMuxSettingsChange({ overwriteSource: on });
+          }}
+        >
+          Overwrite
+        </Chk>
+      </span>
     </span>
   );
 
@@ -435,18 +448,7 @@ export function MuxPage({
             </span>
             <span className="sm t3 truncate" title={namingPreview}>{namingPreview}</span>
           </Fld>
-          <label className="ck">
-            <Toggle
-              name="Overwrite the source when no folder is set"
-              on={settings.overwriteExisting}
-              onChange={(on) => {
-                onSettingsChange({ overwriteExisting: on });
-                onMuxSettingsChange({ overwriteSource: on });
-              }}
-            />
-            Overwrite the source when no folder is set
-          </label>
-          {willOverwrite && <span className="warn sm">This replaces the original files.</span>}
+          {willOverwrite && <span className="warn sm">No folder and Overwrite on: muxing replaces the original files.</span>}
         </Popover>
       )}
 

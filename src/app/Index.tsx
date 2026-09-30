@@ -503,6 +503,9 @@ export default function Index() {
       // Every track of the new file: the source's, then the added files; the
       // removed ones last, for the Job details list.
       const flagsOf = (isDefault?: boolean, isForced?: boolean) => [isDefault ? "Default" : null, isForced ? "Forced" : null].filter((flag): flag is string => Boolean(flag));
+      // An added file marked default takes the flag from the source's tracks
+      // of its type, as the mux does.
+      const addedDefault = { audio: job.audios.some((file) => file.isDefault), subtitle: job.subtitles.some((file) => file.isDefault) };
       const sourceTracks: ReportTrack[] = (job.video.tracks || [])
         .filter((track) => track.type !== "chapter")
         .map((track, index) => ({
@@ -510,7 +513,7 @@ export default function Index() {
           language: track.language,
           name: [track.codec, track.name].filter(Boolean).join(" · ") || `Track ${index + 1}`,
           from: "Source",
-          flags: flagsOf(track.isDefault, track.isForced),
+          flags: flagsOf(track.isDefault && !(track.type === "audio" ? addedDefault.audio : track.type === "subtitle" ? addedDefault.subtitle : false), track.isForced),
           removed: track.action === "remove",
         }));
       const added = (type: "audio" | "subtitle", files: ExternalFile[]): ReportTrack[] =>

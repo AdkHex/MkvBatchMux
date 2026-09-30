@@ -4,13 +4,15 @@ import { createRoot } from "react-dom/client";
 import "../styles.css";
 import "./revision.css";
 import { Ctx, type Proto } from "../shell";
-import { Attachments2, Audio2, AudioFile, Chapters2, EditTracks2, JobDetails, Mux2, Prefs2, Subs2, Videos2 } from "./screens";
+import { Attachments2, Audio2, AudioFile, Chapters2, EditTracks2, JobDetails, Mux2, Prefs2, Subs2, SubsEdit2, Videos2 } from "./screens";
 
 interface Screen {
   id: string;
   label: string;
   render: () => ReactNode;
   note: ReactNode;
+  /** A window size other than 1180 × 780. */
+  size?: [number, number];
 }
 
 const SCREENS: Screen[] = [
@@ -48,19 +50,50 @@ const SCREENS: Screen[] = [
     render: () => <Subs2 />,
     note: (
       <>
-        <b>Track settings always in view</b>, as the old Track configuration was: two rows under the track tabs, labels in one column.
+        <b>A roomier settings area:</b> taller boxes and more space between them. <b>Default</b> is ticked on every new track.
         <ul>
-          <li>Tabs on the list itself: × on hover deletes a track, + adds one.</li>
-          <li>No big status box in the toolbar. A small status only shows up when something is running or has news.</li>
+          <li>Tabs sit on the list itself: × on hover deletes a track, + adds one.</li>
+          <li>Double-click a row to edit that file.</li>
         </ul>
       </>
     ),
   },
   {
+    id: "subs-wide",
+    label: "Subtitles · wide window",
+    render: () => <Subs2 />,
+    size: [1920, 1040],
+    note: <><b>On a wide monitor</b> the settings columns stop at a readable width, so the boxes don't stretch into long thin bars.</>,
+  },
+  {
+    id: "subs-edit",
+    label: "Subtitles · edit a file (double-click)",
+    render: () => <SubsEdit2 />,
+    note: (
+      <>
+        <b>The file's editor, clean and a size up (780 px):</b>
+        <ul>
+          <li>the four fields in two columns;</li>
+          <li>Default, Forced and First and default on one line, with their explanations on hover;</li>
+          <li>the file's tracks as a list, with an edit button on the row under the pointer;</li>
+          <li>"For every file" (this delay, every setting) on one line by the buttons.</li>
+        </ul>
+      </>
+    )
+  },
+  {
     id: "audio",
     label: "Audio",
     render: () => <Audio2 />,
-    note: <><b>The same tabs and settings.</b> "Against" sits beside search. The small status shows the result: 12 measured, 4 to check. Double-click a row for everything about that file.</>,
+    note: (
+      <>
+        <b>The reference audio is back:</b> "Reference" in the settings picks which of the source's audio tracks every dub is measured against.
+        <ul>
+          <li>The <b>Against</b> column changes it for a single video, when one has its tracks in another order.</li>
+          <li>Default is ticked. The measurement is in the columns, and a double-click opens the full result.</li>
+        </ul>
+      </>
+    )
   },
   {
     id: "audio-file",
@@ -119,20 +152,19 @@ const SCREENS: Screen[] = [
     render: () => <Mux2 phase="ready" />,
     note: (
       <>
-        <b>Where the files go, in the toolbar's middle:</b> the folder and the name they get. Click it to change them.
+        <b>Overwrite</b> sits beside Save to and Browse. Ticked, files that are already there get replaced without asking: the sources themselves when no folder is set.
         <ul>
-          <li><b>Options</b> (next to Validate) keeps everything else out of sight until you open it: audio and subtitle languages, defaults, jobs at once, and the switches.</li>
-          <li>The queue gets the whole page: every loaded video, no checkboxes. Double-click a job for its details.</li>
-          <li>The bin beside Start muxing clears the queue.</li>
+          <li><b>Options</b> keeps everything else out of sight until opened.</li>
+          <li>The queue is every loaded video. Double-click a job for its details.</li>
         </ul>
       </>
-    ),
+    )
   },
   {
     id: "mux-edit",
     label: "Mux · Save to open",
     render: () => <Mux2 phase="ready" open="save" />,
-    note: <><b>Save to</b> opens under the box: the folder, the file name and the name it makes, and the overwrite switch.</>,
+    note: <><b>Save to</b> opens under the box: the folder, the file name and the name it makes. Overwrite is not in here: it sits outside, beside Browse.</>,
   },
   {
     id: "mux-options",
@@ -164,8 +196,6 @@ const SCREENS: Screen[] = [
 ];
 
 const find = (id: string) => SCREENS.find((s) => s.id === id) ?? SCREENS[0];
-const W = 1180;
-const H = 780;
 
 function read() {
   const h = new URLSearchParams(location.hash.slice(1));
@@ -203,6 +233,8 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [st.s, go]);
 
+  const screen = find(st.s);
+  const [W, H] = screen.size ?? [1180, 780];
   const desk = useRef<HTMLDivElement>(null);
   const [k, setK] = useState(1);
   useLayoutEffect(() => {
@@ -214,10 +246,9 @@ function App() {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [W, H]);
 
   const live: Proto = { go, live: true, theme: st.theme, mac: false };
-  const screen = find(st.s);
 
   return (
     <div className={`stage ${st.theme}`}>
@@ -237,7 +268,7 @@ function App() {
         <div className="foot">← → step · T theme. Rows are clickable: click selects, double-click opens.</div>
       </aside>
       <div className="desk" ref={desk}>
-        <div id="shot" style={{ position: "absolute", left: "50%", top: "50%", width: W, height: H, transform: `translate(-50%, -50%) scale(${k})` }}>
+        <div id="shot" style={{ position: "absolute", left: "50%", top: "50%", width: W, height: H, transform: `translate(-50%, -50%) scale(${k})`, ["--win-w" as string]: `${W}px`, ["--win-h" as string]: `${H}px` }}>
           <Ctx.Provider value={live}>
             <div key={`${st.s}-${nonce}`}>{screen.render()}</div>
           </Ctx.Provider>
