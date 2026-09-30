@@ -1,7 +1,7 @@
 /** Tauri's own updater dialog is disabled; this checks quietly and only ever offers. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "@/shared/hooks/use-toast";
+import { toast } from "@/ui/toast";
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 

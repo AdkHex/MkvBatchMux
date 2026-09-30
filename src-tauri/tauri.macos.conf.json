@@ -1,0 +1,22 @@
+{
+  "tauri": {
+    "windows": [
+      {
+        "title": "MKVBatchMux",
+        "width": 1600,
+        "height": 1000,
+        "minWidth": 900,
+        "minHeight": 600,
+        "fullscreen": false,
+        "maximized": false,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "fileDropEnabled": true,
+        "center": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ]
+  }
+}

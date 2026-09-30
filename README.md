@@ -51,7 +51,7 @@ once, and let it run through the queue with MKVToolNix.
 | | |
 |---|---|
 | **Batch muxing** | Scan a folder, auto-load metadata, queue every file, mux with MKVToolNix |
-| **One tab per track type** | Video, Audio, Subtitle, Chapter and Attachment tabs, each with its own workflow |
+| **One page per track type** | Videos, Subtitles, Audio, Chapters, Attachments and Mux pages, each with its own workflow |
 | **External tracks** | Inject audio and subtitles from separate files, with per-track overrides |
 | **Multi-track sources** | Pick and include several tracks from a single external file |
 | **Full track control** | Language, name, default flag, delay, and drag-to-reorder |
@@ -59,7 +59,7 @@ once, and let it run through the queue with MKVToolNix.
 | **Measured delays** | Measure each external audio track's offset against its video and fill the delay in for you |
 | **Safe queue** | Validation, change reports, progress tracking, pause and resume |
 | **Advanced mux settings** | Chapters, attachments, tags, safety checks |
-| **Calm dark UI** | Live dependency and update status in Settings |
+| **Desktop workspace** | Menu bar, docked list and inspector, an Output log and a History of past runs, dark and light themes |
 
 ---
 
@@ -195,10 +195,23 @@ warns: the delay written is still the measured one.
 
 ```bash
 npm ci                                  # install dependencies
-npm run dev                             # run in development
+npm run tauri:dev                       # run the app in development
+npm run typecheck                       # type-check the app, build scripts and mockup
+npm run lint                            # lint
+npm test                                # run the tests
 npm run tauri:build                     # build the desktop app
 npm run tauri:build -- --bundles nsis   # build the Windows installer
 ```
+
+`npm run dev` serves the UI alone in a browser. Add `?demo=<scenario>` to the
+URL to fill it with a scripted example season instead of the Tauri backend:
+`empty`, `ready`, `measured`, `applied`, `muxing`, `done`, `unlinked` or
+`engine`, optionally with `&page=audio`, `&speed=0.2` (faster) or `&os=mac`.
+The demo code is only imported in development and is not in a production
+build.
+
+`design/mockup/` holds the clickable mockup the UI was built from; see its
+`DESIGN.md`.
 
 The installer lands in `src-tauri/target/release/bundle/nsis/`. No extra
 toolchain is needed; the bundler ships its own NSIS.
@@ -308,10 +321,13 @@ npx tauri signer generate -w ~/.tauri/mkvbatchmux.key
 
 ```text
 src/
-  app/        App entry, routes, and global styles
-  features/   Workspace, history, and session-specific code
-  shared/     Reusable UI, shared components, utilities, types, and data
-src-tauri/    Rust backend and Tauri configuration
+  ui/         The design system: frame (title bar, menus, page bar, dialogs), controls, styles
+  app/        The shell: pages, menus, shortcuts, Output and History docks, Preferences
+  features/   The workspace pages, their dialogs, hooks and logic
+  shared/     Types, data and backend calls shared across features
+  dev/        The browser demo (development only)
+design/       The clickable mockup the UI follows
+src-tauri/    Rust backend, Tauri configuration and the macOS menu
 docs/         Project documentation and screenshots
 scripts/      Project maintenance scripts
 ```

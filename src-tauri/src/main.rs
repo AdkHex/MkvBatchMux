@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audiosync;
+mod menu;
 
 use crc32fast::Hasher;
 use fs2::available_space;
@@ -3788,7 +3789,14 @@ mod tests {
 }
 
 fn main() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // macOS keeps its menus in the system bar; Windows draws them in the
+    // window's own title bar (src/ui/frame.tsx).
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(menu::app_menu()).on_menu_event(|event| {
+        let _ = event.window().emit("app-menu", event.menu_item_id());
+    });
+    builder
         .setup(|app| {
             let app_data_dir = tauri::api::path::app_data_dir(&app.config())
                 .ok_or("Failed to resolve app data directory")?;

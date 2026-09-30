@@ -2,7 +2,7 @@
  *  cancelled batch keeps everything it already measured. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "@/shared/hooks/use-toast";
+import { toast } from "@/ui/toast";
 import type { ExternalFile, MeasurementSettings, VideoFile } from "@/shared/types";
 import type { EngineStatus, MeasureStartRequest, SyncResult, TimelineScan } from "@/shared/types/audiosync";
 import { ENGINE_DEFAULTS, WIDE_SEARCH_MS } from "@/shared/types/audiosync";

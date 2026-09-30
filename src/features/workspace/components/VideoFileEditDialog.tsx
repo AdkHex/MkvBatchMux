@@ -1,32 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronUp, ChevronDown, RotateCcw, Film, Subtitles, Volume2, GripVertical, Trash2, Plus, Download } from "lucide-react";
-import { Button } from "@/shared/ui/button";
-import { Checkbox } from "@/shared/ui/checkbox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/shared/ui/select";
-import { TextField } from "@/shared/components/Fields";
-import { BaseModal } from "@/shared/components/BaseModal";
-import { LanguageSelect } from "@/features/workspace/components/LanguageSelect";
-import {
-  ReorderableTable,
-  ReorderableTableHeader,
-  ReorderableTableBody,
-  ReorderableRow,
-  ReorderableTableCell,
-  ReorderHandle,
-} from "@/shared/components/ReorderableTable";
-import { cn } from "@/shared/lib/utils";
-import { delayInputsAreValid } from "@/shared/components/DelayField";
-import { delaySecondsOrZero, parseDelayInput } from "@/shared/lib/delayInput";
-import { pickFiles } from "@/shared/lib/backend";
-import { AUDIO_EXTENSIONS, SUBTITLE_EXTENSIONS } from "@/shared/lib/extensions";
-import type { VideoFile, Track, ExternalFile } from "@/shared/types";
+/** Edit tracks: one video's own tracks (keep, flags, names, languages,
+ *  order) and the files added to it alone — an audio or subtitle file, or
+ *  streams imported from another loaded video. The rules are the old dialog's:
+ *  a dropped track is marked "remove", a changed one "modify", and the
+ *  original name, language and flags are kept so the report can show them. */
+
+import { AddRegular, ArrowDownRegular, ArrowImportRegular, ArrowUpRegular, CheckmarkRegular, DeleteRegular } from "@fluentui/react-icons";
+import { useEffect, useState } from "react";
+
 import { moveTrackRow } from "@/features/workspace/lib/modifyTracks";
-import {
-  ImportTrackEditDialog,
-  ImportTrackEditButton,
-  type ImportTrackOverride,
-} from "./ImportTrackEditDialog";
-import { getAutoScrollDelta, getReorderIndexFromPointer, hasDragStarted } from "@/features/workspace/lib/reorderDrag";
+import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
+import { CODE_TO_LABEL } from "@/shared/data/languages-iso6393";
+import { pickFiles } from "@/shared/lib/backend";
+import { delaySecondsOrZero } from "@/shared/lib/delayInput";
+import { AUDIO_EXTENSIONS, SUBTITLE_EXTENSIONS } from "@/shared/lib/extensions";
+import type { ExternalFile, Track, VideoFile } from "@/shared/types";
+import { Dialog, DockTabs } from "@/ui/frame";
+import { Btn, Chk, Cmd, Combo, Fld, LangCombo, TBox, TRow, Toggle } from "@/ui/kit";
+
+import { ImportTrackEditButton, ImportTrackEditDialog, type ImportTrackOverride } from "./ImportTrackEditDialog";
+import { TrackRowsTable, type TrackFlag } from "./TrackRowsTable";
 
 interface VideoFileEditDialogProps {
   open: boolean;
@@ -38,14 +30,7 @@ interface VideoFileEditDialogProps {
     type: "audio" | "subtitle",
     videoFileId: string,
     paths: string[],
-    config: {
-      trackName: string;
-      language: string;
-      delay: number;
-      isDefault: boolean;
-      isForced: boolean;
-      muxAfter: string;
-    },
+    config: { trackName: string; language: string; delay: number; isDefault: boolean; isForced: boolean; muxAfter: string },
   ) => void;
   externalAudioFiles?: ExternalFile[];
   externalSubtitleFiles?: ExternalFile[];
@@ -65,14 +50,45 @@ interface TrackRow {
   source: "internal" | "external";
   originalTrack?: Track;
   externalFile?: ExternalFile;
+  bitrate?: number;
+  external?: boolean;
 }
 
-
-const tabConfig: { id: TrackTab; label: string; icon: React.ComponentType<{ className?: string }>; trackType: Track["type"] }[] = [
-  { id: "videos", label: "Videos", icon: Film, trackType: "video" },
-  { id: "subtitles", label: "Subtitles", icon: Subtitles, trackType: "subtitle" },
-  { id: "audios", label: "Audios", icon: Volume2, trackType: "audio" },
+const TABS: { id: TrackTab; label: string; type: Track["type"] }[] = [
+  { id: "videos", label: "Videos", type: "video" },
+  { id: "subtitles", label: "Subtitles", type: "subtitle" },
+  { id: "audios", label: "Audio", type: "audio" },
 ];
+
+const toTrackRows = (tracks: Track[], type: Track["type"]): TrackRow[] =>
+  tracks
+    .filter((t) => t.type === type)
+    .map((t, idx) => ({
+      id: t.id,
+      trackIndex: idx + 1,
+      copyTrack: t.action !== "remove",
+      setDefault: t.isDefault || false,
+      setForced: t.isForced || false,
+      trackName: t.name || t.codec || `Track ${idx + 1}`,
+      language: t.language || "und",
+      source: "internal",
+      originalTrack: t,
+      bitrate: t.bitrate,
+    }));
+
+const toExternalRows = (files: ExternalFile[]): TrackRow[] =>
+  files.map((file, idx) => ({
+    id: file.id,
+    trackIndex: idx + 1,
+    copyTrack: true,
+    setDefault: file.isDefault || false,
+    setForced: file.isForced || false,
+    trackName: file.trackName || file.name || `External ${idx + 1}`,
+    language: file.language || "und",
+    source: "external",
+    externalFile: file,
+    external: true,
+  }));
 
 export function VideoFileEditDialog({
   open,
@@ -90,76 +106,31 @@ export function VideoFileEditDialog({
   const [videoTracks, setVideoTracks] = useState<TrackRow[]>([]);
   const [subtitleTracks, setSubtitleTracks] = useState<TrackRow[]>([]);
   const [audioTracks, setAudioTracks] = useState<TrackRow[]>([]);
-  const [editingTrackId, setEditingTrackId] = useState<string | null>(null);
-  const [editingName, setEditingName] = useState("");
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-  const scrollBodyRef = useRef<HTMLDivElement | null>(null);
-  const isNoDragTarget = (target: EventTarget | null) =>
-    target instanceof HTMLElement && Boolean(target.closest("[data-no-drag='true']"));
   const [addExternalOpen, setAddExternalOpen] = useState(false);
   const [pendingExternalPaths, setPendingExternalPaths] = useState<string[]>([]);
   const [addExternalType, setAddExternalType] = useState<"audio" | "subtitle" | null>(null);
-  const [addExternalForm, setAddExternalForm] = useState({
-    trackName: "",
-    language: "und",
-    delay: "0.000",
-    isDefault: false,
-    isForced: false,
-    muxAfter: "audio",
-  });
+  const [addExternalForm, setAddExternalForm] = useState({ trackName: "", language: "und", delay: "0.000", isDefault: false, isForced: false, muxAfter: "audio" });
   const [importStreamsOpen, setImportStreamsOpen] = useState(false);
   const [importSourceVideoId, setImportSourceVideoId] = useState("");
   const [importSelectedTrackIds, setImportSelectedTrackIds] = useState<number[]>([]);
   // Per-stream language, name and delay for an import, keyed by track id.
-  const [importOverrides, setImportOverrides] = useState<
-    Record<number, ImportTrackOverride>
-  >({});
+  const [importOverrides, setImportOverrides] = useState<Record<number, ImportTrackOverride>>({});
   const [importEditingId, setImportEditingId] = useState<number | null>(null);
 
+  const load = () => {
+    if (!videoFile) return;
+    const fileTracks = videoFile.tracks || [];
+    const externalAudio = (externalAudioFiles || []).filter((file) => file.matchedVideoId === videoFile.id);
+    const externalSubtitle = (externalSubtitleFiles || []).filter((file) => file.matchedVideoId === videoFile.id);
+    setVideoTracks(toTrackRows(fileTracks, "video"));
+    setSubtitleTracks([...toTrackRows(fileTracks, "subtitle"), ...toExternalRows(externalSubtitle)]);
+    setAudioTracks([...toTrackRows(fileTracks, "audio"), ...toExternalRows(externalAudio)]);
+  };
+
   useEffect(() => {
-    if (videoFile && open) {
-      const fileTracks = videoFile.tracks || [];
-
-      const toTrackRows = (tracks: Track[], type: Track["type"]): TrackRow[] =>
-        tracks
-          .filter((t) => t.type === type)
-          .map((t, idx) => ({
-            id: t.id,
-            trackIndex: idx + 1,
-            copyTrack: t.action !== "remove",
-            setDefault: t.isDefault || false,
-            setForced: t.isForced || false,
-            trackName: t.name || t.codec || `Track ${idx + 1}`,
-            language: t.language || "und",
-            source: "internal",
-            originalTrack: t,
-          }));
-
-      const toExternalRows = (files: ExternalFile[]): TrackRow[] =>
-        files.map((file, idx) => ({
-          id: file.id,
-          trackIndex: idx + 1,
-          copyTrack: true,
-          setDefault: file.isDefault || false,
-          setForced: file.isForced || false,
-          trackName: file.trackName || file.name || `External ${idx + 1}`,
-          language: file.language || "und",
-          source: "external",
-          externalFile: file,
-        }));
-
-      const externalAudio = (externalAudioFiles || []).filter(
-        (file) => file.matchedVideoId === videoFile.id,
-      );
-      const externalSubtitle = (externalSubtitleFiles || []).filter(
-        (file) => file.matchedVideoId === videoFile.id,
-      );
-
-      setVideoTracks(toTrackRows(fileTracks, "video"));
-      setSubtitleTracks([...toTrackRows(fileTracks, "subtitle"), ...toExternalRows(externalSubtitle)]);
-      setAudioTracks([...toTrackRows(fileTracks, "audio"), ...toExternalRows(externalAudio)]);
-    }
+    if (videoFile && open) load();
+    // Re-read whenever the video or its added files change while open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoFile, open, externalAudioFiles, externalSubtitleFiles]);
 
   useEffect(() => {
@@ -176,231 +147,47 @@ export function VideoFileEditDialog({
   }, [open]);
 
   const currentTracks = activeTab === "videos" ? videoTracks : activeTab === "subtitles" ? subtitleTracks : audioTracks;
-  const setCurrentTracks =
-    activeTab === "videos" ? setVideoTracks : activeTab === "subtitles" ? setSubtitleTracks : setAudioTracks;
-  const importableSourceVideos = (allVideoFiles && allVideoFiles.length > 0 ? allVideoFiles : videoFile ? [videoFile] : []).filter(
-    (file) => file.id !== videoFile?.id,
-  );
+  const setCurrentTracks = activeTab === "videos" ? setVideoTracks : activeTab === "subtitles" ? setSubtitleTracks : setAudioTracks;
+  const importableSourceVideos = (allVideoFiles && allVideoFiles.length > 0 ? allVideoFiles : videoFile ? [videoFile] : []).filter((file) => file.id !== videoFile?.id);
   const selectedImportSource = importableSourceVideos.find((file) => file.id === importSourceVideoId) || null;
-  const importStreamType: Track["type"] | null =
-    activeTab === "audios" ? "audio" : activeTab === "subtitles" ? "subtitle" : null;
+  const importStreamType: Track["type"] | null = activeTab === "audios" ? "audio" : activeTab === "subtitles" ? "subtitle" : null;
   const importableTracks =
-    importStreamType && selectedImportSource
-      ? (selectedImportSource.tracks || []).filter(
-          (track) => track.type === importStreamType && track.action !== "remove",
-        )
-      : [];
-  const allCopyChecked = currentTracks.length > 0 && currentTracks.every((track) => track.copyTrack);
-  const allDefaultChecked = currentTracks.length > 0 && currentTracks.every((track) => track.setDefault);
-  const allForcedChecked = currentTracks.length > 0 && currentTracks.every((track) => track.setForced);
+    importStreamType && selectedImportSource ? (selectedImportSource.tracks || []).filter((track) => track.type === importStreamType && track.action !== "remove") : [];
+  const selectedIndex = currentTracks.findIndex((t) => t.id === selectedTrackId);
 
-  const handleTrackChange = (trackId: string, field: keyof TrackRow, value: boolean | string) => {
+  const handleTrackChange = (trackId: string, field: TrackFlag | "trackName" | "language", value: boolean | string) => {
     setCurrentTracks((prev) =>
       prev.map((t) => {
         if (t.id !== trackId) return t;
-        if (field === "copyTrack" && value === false) {
-          return { ...t, copyTrack: false, setDefault: false, setForced: false };
-        }
+        if (field === "copyTrack" && value === false) return { ...t, copyTrack: false, setDefault: false, setForced: false };
         return { ...t, [field]: value };
       }),
     );
   };
 
-  const startEditing = (track: TrackRow) => {
-    setEditingTrackId(track.id);
-    setEditingName(track.trackName);
-  };
-
-  const finishEditing = () => {
-    if (editingTrackId && editingName.trim()) {
-      handleTrackChange(editingTrackId, "trackName", editingName.trim());
-    }
-    setEditingTrackId(null);
-    setEditingName("");
-  };
+  const setAll = (field: TrackFlag, value: boolean) =>
+    setCurrentTracks((prev) =>
+      prev.map((track) =>
+        field === "copyTrack"
+          ? { ...track, copyTrack: value, setDefault: value ? track.setDefault : false, setForced: value ? track.setForced : false }
+          : { ...track, copyTrack: value ? true : track.copyTrack, [field]: value },
+      ),
+    );
 
   const deleteTrack = (trackId: string) => {
     setCurrentTracks((prev) => prev.filter((t) => t.id !== trackId));
-    if (selectedTrackId === trackId) {
-      setSelectedTrackId(null);
-    }
-  };
-
-  const setAllCopy = (value: boolean) => {
-    setCurrentTracks((prev) =>
-      prev.map((track) => ({
-        ...track,
-        copyTrack: value,
-        setDefault: value ? track.setDefault : false,
-        setForced: value ? track.setForced : false,
-      })),
-    );
-  };
-
-  const setAllDefault = (value: boolean) => {
-    setCurrentTracks((prev) =>
-      prev.map((track) => ({
-        ...track,
-        copyTrack: value ? true : track.copyTrack,
-        setDefault: value,
-      })),
-    );
-  };
-
-  const setAllForced = (value: boolean) => {
-    setCurrentTracks((prev) =>
-      prev.map((track) => ({
-        ...track,
-        copyTrack: value ? true : track.copyTrack,
-        setForced: value,
-      })),
-    );
+    if (selectedTrackId === trackId) setSelectedTrackId(null);
   };
 
   const moveTrack = (direction: "up" | "down") => {
-    if (!selectedTrackId) return;
-    const tracks = currentTracks;
-    const idx = tracks.findIndex((t) => t.id === selectedTrackId);
+    const idx = selectedIndex;
     if (idx < 0) return;
-    if (direction === "up" && idx > 0) {
-      setCurrentTracks((prev) => {
-        const newTracks = [...prev];
-        [newTracks[idx - 1], newTracks[idx]] = [newTracks[idx], newTracks[idx - 1]];
-        return newTracks;
-      });
-    } else if (direction === "down" && idx < tracks.length - 1) {
-      setCurrentTracks((prev) => {
-        const newTracks = [...prev];
-        [newTracks[idx + 1], newTracks[idx]] = [newTracks[idx], newTracks[idx + 1]];
-        return newTracks;
-      });
-    }
+    if (direction === "up" && idx > 0) setCurrentTracks((prev) => moveTrackRow(prev, idx, idx - 1));
+    else if (direction === "down" && idx < currentTracks.length - 1) setCurrentTracks((prev) => moveTrackRow(prev, idx, idx + 1));
   };
-
-  const dragItem = useRef<number | null>(null);
-  const dragOverItem = useRef<number | null>(null);
-  const pointerDragActive = useRef(false);
-  const pointerIdRef = useRef<number | null>(null);
-  const pointerYRef = useRef(0);
-  const autoScrollFrameRef = useRef<number | null>(null);
-  // A press on a row that has not travelled far enough to be a drag yet.
-  const pendingDrag = useRef<{ row: HTMLElement; pointerId: number; index: number; x: number; y: number } | null>(null);
-
-  const updateDragTarget = useCallback(
-    (pointerY: number) => {
-      const container = scrollBodyRef.current;
-      if (!container || currentTracks.length === 0) return;
-      const firstRow = container.querySelector("[data-reorder-index]") as HTMLElement | null;
-      const rowHeight = firstRow?.offsetHeight || 48;
-      const idx = getReorderIndexFromPointer({
-        containerRect: container.getBoundingClientRect(),
-        scrollTop: container.scrollTop,
-        rowHeight,
-        rowCount: currentTracks.length,
-        pointerY,
-      });
-      if (idx === dragOverItem.current) return;
-      dragOverItem.current = idx;
-      setDragOverIndex(idx);
-    },
-    [currentTracks.length],
-  );
-
-  const handleDragEnd = useCallback(() => {
-    if (autoScrollFrameRef.current !== null) {
-      cancelAnimationFrame(autoScrollFrameRef.current);
-      autoScrollFrameRef.current = null;
-    }
-    if (
-      dragItem.current !== null &&
-      dragOverItem.current !== null &&
-      dragItem.current !== dragOverItem.current
-    ) {
-      setCurrentTracks((prev) => moveTrackRow(prev, dragItem.current!, dragOverItem.current!));
-    }
-    dragItem.current = null;
-    dragOverItem.current = null;
-    setDraggedIndex(null);
-    setDragOverIndex(null);
-  }, [setCurrentTracks]);
-
-  const handleRowPointerDown = (event: React.PointerEvent, index: number, trackId: string) => {
-    setSelectedTrackId(trackId);
-    if (isNoDragTarget(event.target)) return;
-    pendingDrag.current = {
-      row: event.currentTarget as HTMLElement,
-      pointerId: event.pointerId,
-      index,
-      x: event.clientX,
-      y: event.clientY,
-    };
-  };
-
-  useEffect(() => {
-    const tickAutoScroll = () => {
-      if (!pointerDragActive.current) {
-        autoScrollFrameRef.current = null;
-        return;
-      }
-      const container = scrollBodyRef.current;
-      if (!container) {
-        autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
-        return;
-      }
-      const delta = getAutoScrollDelta({
-        containerRect: container.getBoundingClientRect(),
-        pointerY: pointerYRef.current,
-      });
-      if (delta !== 0) {
-        container.scrollTop += delta;
-        updateDragTarget(pointerYRef.current);
-      }
-      autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
-    };
-
-    const handlePointerMove = (event: PointerEvent) => {
-      const pending = pendingDrag.current;
-      if (pending && pending.pointerId === event.pointerId) {
-        if (!hasDragStarted({ start: pending, current: { x: event.clientX, y: event.clientY } })) return;
-        pendingDrag.current = null;
-        pointerDragActive.current = true;
-        pointerIdRef.current = pending.pointerId;
-        pending.row.setPointerCapture(pending.pointerId);
-        dragItem.current = pending.index;
-        dragOverItem.current = pending.index;
-        setDraggedIndex(pending.index);
-        setDragOverIndex(pending.index);
-        autoScrollFrameRef.current = requestAnimationFrame(tickAutoScroll);
-      }
-      if (!pointerDragActive.current || pointerIdRef.current !== event.pointerId) return;
-      pointerYRef.current = event.clientY;
-      updateDragTarget(event.clientY);
-    };
-
-    const handlePointerUp = (event: PointerEvent) => {
-      if (pendingDrag.current?.pointerId === event.pointerId) pendingDrag.current = null;
-      if (!pointerDragActive.current || pointerIdRef.current !== event.pointerId) return;
-      pointerDragActive.current = false;
-      pointerIdRef.current = null;
-      handleDragEnd();
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-    window.addEventListener("pointercancel", handlePointerUp);
-    return () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      window.removeEventListener("pointercancel", handlePointerUp);
-      if (autoScrollFrameRef.current !== null) {
-        cancelAnimationFrame(autoScrollFrameRef.current);
-      }
-    };
-  }, [handleDragEnd, updateDragTarget]);
 
   const handleApplyChanges = () => {
     if (!videoFile) return;
-
     const rowsToTracks = (rows: TrackRow[]): Track[] =>
       rows
         .filter((row) => row.source === "internal" && row.originalTrack)
@@ -408,11 +195,8 @@ export function VideoFileEditDialog({
           const original = row.originalTrack!;
           const originalName = original.originalName ?? original.name ?? original.codec ?? "";
           const originalLanguage = original.originalLanguage ?? original.language ?? "";
-          const originalDefault =
-            original.originalDefault !== undefined ? original.originalDefault : original.isDefault ?? false;
-          const originalForced =
-            original.originalForced !== undefined ? original.originalForced : original.isForced ?? false;
-
+          const originalDefault = original.originalDefault !== undefined ? original.originalDefault : (original.isDefault ?? false);
+          const originalForced = original.originalForced !== undefined ? original.originalForced : (original.isForced ?? false);
           const nameChanged = row.trackName !== (original.name || original.codec || row.trackName);
           const languageChanged = (row.language || "") !== (original.language || "");
           const defaultChanged = row.setDefault !== (original.isDefault ?? false);
@@ -432,117 +216,35 @@ export function VideoFileEditDialog({
             originalForced,
           };
         });
-
-    const updatedTracks: Track[] = [
-      ...rowsToTracks(videoTracks),
-      ...rowsToTracks(subtitleTracks),
-      ...rowsToTracks(audioTracks),
-    ];
-
+    const updatedTracks: Track[] = [...rowsToTracks(videoTracks), ...rowsToTracks(subtitleTracks), ...rowsToTracks(audioTracks)];
     if (onExternalFilesChange) {
-      const updatedExternalAudio = audioTracks
-        .filter((row) => row.source === "external" && row.externalFile && row.copyTrack)
-        .map((row) => ({
-          ...row.externalFile!,
-          trackName: row.trackName,
-          language: row.language,
-          isDefault: row.setDefault,
-          isForced: row.setForced,
-          matchedVideoId: videoFile.id,
-        }));
-      const updatedExternalSubtitle = subtitleTracks
-        .filter((row) => row.source === "external" && row.externalFile && row.copyTrack)
-        .map((row) => ({
-          ...row.externalFile!,
-          trackName: row.trackName,
-          language: row.language,
-          isDefault: row.setDefault,
-          isForced: row.setForced,
-          matchedVideoId: videoFile.id,
-        }));
-      onExternalFilesChange(videoFile.id, "audio", updatedExternalAudio);
-      onExternalFilesChange(videoFile.id, "subtitle", updatedExternalSubtitle);
+      const external = (rows: TrackRow[]) =>
+        rows
+          .filter((row) => row.source === "external" && row.externalFile && row.copyTrack)
+          .map((row) => ({ ...row.externalFile!, trackName: row.trackName, language: row.language, isDefault: row.setDefault, isForced: row.setForced, matchedVideoId: videoFile.id }));
+      onExternalFilesChange(videoFile.id, "audio", external(audioTracks));
+      onExternalFilesChange(videoFile.id, "subtitle", external(subtitleTracks));
     }
-
-    onSave({
-      ...videoFile,
-      tracks: updatedTracks,
-    });
+    onSave({ ...videoFile, tracks: updatedTracks });
     onOpenChange(false);
   };
 
-  const handleReset = () => {
-    if (videoFile) {
-      const fileTracks = videoFile.tracks || [];
-
-      const toTrackRows = (tracks: Track[], type: Track["type"]): TrackRow[] =>
-        tracks
-          .filter((t) => t.type === type)
-          .map((t, idx) => ({
-            id: t.id,
-            trackIndex: idx + 1,
-            copyTrack: t.action !== "remove",
-            setDefault: t.isDefault || false,
-            setForced: t.isForced || false,
-            trackName: t.name || t.codec || `Track ${idx + 1}`,
-            language: t.language || "und",
-            source: "internal",
-            originalTrack: t,
-          }));
-
-      const toExternalRows = (files: ExternalFile[]): TrackRow[] =>
-        files.map((file, idx) => ({
-          id: file.id,
-          trackIndex: idx + 1,
-          copyTrack: true,
-          setDefault: file.isDefault || false,
-          setForced: file.isForced || false,
-          trackName: file.trackName || file.name || `External ${idx + 1}`,
-          language: file.language || "und",
-          source: "external",
-          externalFile: file,
-        }));
-
-      const externalAudio = (externalAudioFiles || []).filter(
-        (file) => file.matchedVideoId === videoFile.id,
-      );
-      const externalSubtitle = (externalSubtitleFiles || []).filter(
-        (file) => file.matchedVideoId === videoFile.id,
-      );
-
-      setVideoTracks(toTrackRows(fileTracks, "video"));
-      setSubtitleTracks([...toTrackRows(fileTracks, "subtitle"), ...toExternalRows(externalSubtitle)]);
-      setAudioTracks([...toTrackRows(fileTracks, "audio"), ...toExternalRows(externalAudio)]);
-    }
-  };
-
   const openAddExternalDialog = async (type: "audio" | "subtitle") => {
-    const filters =
-      type === "subtitle"
-        ? [{ name: "Subtitle Files", extensions: [...SUBTITLE_EXTENSIONS] }]
-        : [{ name: "Audio Files", extensions: [...AUDIO_EXTENSIONS] }];
+    const filters = type === "subtitle" ? [{ name: "Subtitle Files", extensions: [...SUBTITLE_EXTENSIONS] }] : [{ name: "Audio Files", extensions: [...AUDIO_EXTENSIONS] }];
     const files = await pickFiles(filters);
     if (files.length === 0) return;
     setPendingExternalPaths(files);
     setAddExternalType(type);
-    setAddExternalForm({
-      trackName: "",
-      language: "und",
-      delay: "0.000",
-      isDefault: false,
-      isForced: false,
-      muxAfter: type === "subtitle" ? "audio" : "video",
-    });
+    setAddExternalForm({ trackName: "", language: "und", delay: "0.000", isDefault: false, isForced: false, muxAfter: type === "subtitle" ? "audio" : "video" });
     setAddExternalOpen(true);
   };
 
   const handleConfirmAddExternal = () => {
     if (!videoFile || !addExternalType || !onAddExternalFiles) return;
-    const delayValue = delaySecondsOrZero(addExternalForm.delay);
     onAddExternalFiles(addExternalType, videoFile.id, pendingExternalPaths, {
       trackName: addExternalForm.trackName,
       language: addExternalForm.language || "und",
-      delay: delayValue,
+      delay: delaySecondsOrZero(addExternalForm.delay),
       isDefault: addExternalForm.isDefault,
       isForced: addExternalForm.isForced,
       muxAfter: addExternalForm.muxAfter,
@@ -560,7 +262,6 @@ export function VideoFileEditDialog({
 
   const handleConfirmImportStreams = () => {
     if (!selectedImportSource || !importStreamType || importSelectedTrackIds.length === 0 || !videoFile) return;
-
     const rows: TrackRow[] = importableTracks
       .filter((track) => importSelectedTrackIds.includes(Number(track.id)))
       .map((track, idx) => {
@@ -568,19 +269,14 @@ export function VideoFileEditDialog({
         // Each imported stream becomes its own ExternalFile, so overrides
         // belong at file level rather than in trackOverrides.
         const override = Number.isFinite(numericId) ? importOverrides[numericId] : undefined;
-        const trackLabel =
-          override?.trackName ||
-          track.name ||
-          track.codec ||
-          `${importStreamType === "audio" ? "Audio" : "Subtitle"} ${idx + 1}`;
+        const trackLabel = override?.trackName || track.name || track.codec || `${importStreamType === "audio" ? "Audio" : "Subtitle"} ${idx + 1}`;
         const language = override?.language || track.language || "und";
         const delay = override?.delay ?? 0;
-
         const externalFile: ExternalFile = {
           id: `import-${importStreamType}-${selectedImportSource.id}-${track.id}-${Date.now()}-${idx}`,
           name: selectedImportSource.name,
           path: selectedImportSource.path,
-          type: importStreamType,
+          type: importStreamType as ExternalFile["type"],
           source: "per-file",
           language,
           trackName: trackLabel,
@@ -594,26 +290,11 @@ export function VideoFileEditDialog({
           tracks: [track],
           includedTrackIds: Number.isFinite(numericId) ? [numericId] : [],
         };
-
-        return {
-          id: externalFile.id,
-          trackIndex: 0,
-          copyTrack: true,
-          setDefault: false,
-          setForced: false,
-          trackName: trackLabel,
-          language,
-          source: "external",
-          externalFile,
-        };
+        return { id: externalFile.id, trackIndex: 0, copyTrack: true, setDefault: false, setForced: false, trackName: trackLabel, language, source: "external" as const, externalFile, external: true };
       });
-
     if (rows.length === 0) return;
-    if (activeTab === "audios") {
-      setAudioTracks((prev) => [...prev, ...rows]);
-    } else if (activeTab === "subtitles") {
-      setSubtitleTracks((prev) => [...prev, ...rows]);
-    }
+    if (activeTab === "audios") setAudioTracks((prev) => [...prev, ...rows]);
+    else if (activeTab === "subtitles") setSubtitleTracks((prev) => [...prev, ...rows]);
     setImportStreamsOpen(false);
     setImportSourceVideoId("");
     setImportSelectedTrackIds([]);
@@ -622,580 +303,179 @@ export function VideoFileEditDialog({
     setImportOverrides({});
   };
 
-  if (!videoFile) return null;
+  if (!videoFile || !open) return null;
+  const counts: Record<TrackTab, number> = { videos: videoTracks.length, subtitles: subtitleTracks.length, audios: audioTracks.length };
+  const noun = activeTab === "audios" ? "audio" : "subtitle";
+  const editingTrack = importEditingId !== null ? importableTracks.find((t) => Number(t.id) === importEditingId) : undefined;
 
   return (
-    <BaseModal
-      open={open}
-      onOpenChange={onOpenChange}
-      title="Edit Video Tracks"
-      subtitle={videoFile.name}
-      icon={<Film className="w-5 h-5 text-primary" />}
-      className="max-w-4xl"
-      bodyClassName="p-0"
-      footerLeft={
-        <Button
-          variant="ghost"
-          className="h-[30px] px-4 text-sm text-muted-foreground hover:text-foreground gap-2"
-          onClick={handleReset}
-        >
-          <RotateCcw className="w-4 h-4" />
-          Reset
-        </Button>
-      }
-      footerRight={
-        <>
-          <Button variant="outline" className="h-[30px] px-5 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button className="h-[30px] px-5 text-sm" onClick={handleApplyChanges}>
-            Apply Changes
-          </Button>
-        </>
-      }
-    >
-      <div className="px-6 h-11 border-b border-panel-border flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {tabConfig.map((tab) => {
-            const Icon = tab.icon;
-            const count =
-              tab.id === "videos"
-                ? videoTracks.length
-                : tab.id === "subtitles"
-                  ? subtitleTracks.length
-                  : audioTracks.length;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  "flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-all",
-                  activeTab === tab.id
-                    ? "bg-accent/60 text-primary border border-primary/30"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/40 border border-transparent",
+    <>
+      <Dialog
+        size="wide"
+        title="Edit tracks"
+        sub={videoFile.name}
+        onClose={() => onOpenChange(false)}
+        left={<Btn onClick={load}>Reset</Btn>}
+        foot={
+          <>
+            <Btn onClick={() => onOpenChange(false)}>Cancel</Btn>
+            <Btn accent onClick={handleApplyChanges}>Apply</Btn>
+          </>
+        }
+      >
+        <div className="frame">
+          <DockTabs<TrackTab>
+            tabs={TABS.map((t) => ({ id: t.id, label: `${t.label} ${counts[t.id]}` }))}
+            on={activeTab}
+            onTab={setActiveTab}
+            tools={
+              <>
+                {activeTab !== "videos" && onAddExternalFiles && (
+                  <Cmd sm icon={<AddRegular />} onClick={() => void openAddExternalDialog(activeTab === "audios" ? "audio" : "subtitle")}>
+                    {activeTab === "audios" ? "Add an audio file…" : "Add a subtitle file…"}
+                  </Cmd>
                 )}
+                {activeTab !== "videos" && <Cmd sm icon={<ArrowImportRegular />} onClick={handleOpenImportStreams}>Import from a video…</Cmd>}
+                {activeTab !== "videos" && <span className="vsep" />}
+                <Cmd sm icon={<ArrowUpRegular />} title="Move up" disabled={selectedIndex <= 0} onClick={() => moveTrack("up")} />
+                <Cmd sm icon={<ArrowDownRegular />} title="Move down" disabled={selectedIndex < 0 || selectedIndex >= currentTracks.length - 1} onClick={() => moveTrack("down")} />
+              </>
+            }
+          />
+          <TrackRowsTable
+            rows={currentTracks}
+            audio={activeTab === "audios"}
+            label={`${TABS.find((t) => t.id === activeTab)!.label} tracks`}
+            selectedId={selectedTrackId}
+            onSelect={setSelectedTrackId}
+            onChange={handleTrackChange}
+            onSetAll={setAll}
+            onDelete={deleteTrack}
+            onMove={(from, to) => setCurrentTracks((prev) => moveTrackRow(prev, from, to))}
+          />
+        </div>
+      </Dialog>
+
+      {addExternalOpen && addExternalType && (
+        <Dialog
+          size="mid"
+          title={addExternalType === "audio" ? "Add an audio file" : "Add a subtitle file"}
+          sub={pendingExternalPaths.length === 1 ? pendingExternalPaths[0] : `${pendingExternalPaths.length} files`}
+          onClose={() => setAddExternalOpen(false)}
+          foot={
+            <>
+              <Btn onClick={() => setAddExternalOpen(false)}>Cancel</Btn>
+              <Btn accent disabled={!delayInputsAreValid(addExternalForm.delay)} onClick={handleConfirmAddExternal}>Add</Btn>
+            </>
+          }
+        >
+          <div className="fgrid">
+            <Fld label="Language"><LangCombo value={addExternalForm.language} onChange={(language) => setAddExternalForm((prev) => ({ ...prev, language }))} w="100%" /></Fld>
+            <Fld label="Track name"><TBox label="Track name" value={addExternalForm.trackName} placeholder="Optional" onChange={(trackName) => setAddExternalForm((prev) => ({ ...prev, trackName }))} /></Fld>
+          </div>
+          <DelayField value={addExternalForm.delay} onChange={(delay) => setAddExternalForm((prev) => ({ ...prev, delay }))} />
+          <div className="col" style={{ gap: 4 }}>
+            <TRow label="Default"><Toggle name="Default" on={addExternalForm.isDefault} onChange={(isDefault) => setAddExternalForm((prev) => ({ ...prev, isDefault }))} /></TRow>
+            <TRow label="Forced"><Toggle name="Forced" on={addExternalForm.isForced} onChange={(isForced) => setAddExternalForm((prev) => ({ ...prev, isForced }))} /></TRow>
+          </div>
+        </Dialog>
+      )}
+
+      {importStreamsOpen && (
+        <Dialog
+          size="mid"
+          title={activeTab === "audios" ? "Import audio from a video" : "Import subtitles from a video"}
+          sub={`Into ${videoFile.name}`}
+          onClose={() => {
+            setImportStreamsOpen(false);
+            setImportOverrides({});
+          }}
+          foot={
+            <>
+              <Btn
+                onClick={() => {
+                  setImportStreamsOpen(false);
+                  setImportOverrides({});
+                }}
               >
-                <Icon className="w-4 h-4" />
-                {tab.label}
-                <span className="text-xs text-muted-foreground">({count})</span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="flex items-center gap-3">
-          {activeTab === "subtitles" && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-[30px] px-3"
-              onClick={() => openAddExternalDialog("subtitle")}
-            >
-              <Plus className="w-4 h-4" />
-              Add Subtitle Track
-            </Button>
-          )}
-          {activeTab === "audios" && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-[30px] px-3"
-              onClick={() => openAddExternalDialog("audio")}
-            >
-              <Plus className="w-4 h-4" />
-              Add Audio Track
-            </Button>
-          )}
-          {(activeTab === "audios" || activeTab === "subtitles") && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-[30px] px-3"
-              onClick={handleOpenImportStreams}
-            >
-              <Download className="w-4 h-4" />
-              {activeTab === "audios" ? "Import Audio…" : "Import Subtitles…"}
-            </Button>
-          )}
-          <div className="flex items-center">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-[30px] w-[30px] text-muted-foreground hover:text-foreground rounded-l-md rounded-r-none border border-panel-border"
-              onClick={() => moveTrack("up")}
-              disabled={!selectedTrackId}
-            >
-              <ChevronUp className="w-4 h-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-[30px] w-[30px] text-muted-foreground hover:text-foreground rounded-r-md rounded-l-none border border-l-0 border-panel-border"
-              onClick={() => moveTrack("down")}
-              disabled={!selectedTrackId}
-            >
-              <ChevronDown className="w-4 h-4" />
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex flex-col overflow-hidden px-6 py-2 h-[280px]">
-        <ReorderableTable className="h-full min-h-0">
-          <ReorderableTableHeader
-            className={cn(
-              "grid items-center py-2",
-              activeTab === "audios"
-                ? "grid-cols-[28px_56px_84px_84px_84px_96px_1fr_180px_44px]"
-                : "grid-cols-[28px_56px_84px_84px_84px_1fr_180px_44px]",
-            )}
-          >
-            <ReorderableTableCell className="center" />
-            <ReorderableTableCell className="center">#</ReorderableTableCell>
-            <ReorderableTableCell className="center">
-              <div className="flex flex-col items-center gap-0.5">
-                <span className="text-xs text-muted-foreground">Copy</span>
-                <Checkbox
-                  className="h-3.5 w-7"
-                  checked={allCopyChecked}
-                  onCheckedChange={(checked) => setAllCopy(checked as boolean)}
-                />
-              </div>
-            </ReorderableTableCell>
-            <ReorderableTableCell className="center">
-              <div className="flex flex-col items-center gap-0.5">
-                <span className="text-xs text-muted-foreground">Default</span>
-                <Checkbox
-                  className="h-3.5 w-7"
-                  checked={allDefaultChecked}
-                  onCheckedChange={(checked) => setAllDefault(checked as boolean)}
-                />
-              </div>
-            </ReorderableTableCell>
-            <ReorderableTableCell className="center">
-              <div className="flex flex-col items-center gap-0.5">
-                <span className="text-xs text-muted-foreground">Forced</span>
-                <Checkbox
-                  className="h-3.5 w-7"
-                  checked={allForcedChecked}
-                  onCheckedChange={(checked) => setAllForced(checked as boolean)}
-                />
-              </div>
-            </ReorderableTableCell>
-            {activeTab === "audios" && <ReorderableTableCell className="center">Bitrate</ReorderableTableCell>}
-            <ReorderableTableCell>Track name</ReorderableTableCell>
-            <ReorderableTableCell className="right">Language</ReorderableTableCell>
-            <ReorderableTableCell className="center" />
-          </ReorderableTableHeader>
-
-          <ReorderableTableBody ref={scrollBodyRef} className="max-h-[220px] overflow-y-auto">
-            {currentTracks.length === 0 ? (
-              <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
-                No {activeTab} tracks found in this file
-              </div>
-            ) : (
-              currentTracks.map((track, index) => (
-                <ReorderableRow
-                  key={track.id}
-                  onClick={() => setSelectedTrackId(track.id)}
-                  onPointerDown={(event) => handleRowPointerDown(event, index, track.id)}
-                  selected={selectedTrackId === track.id}
-                  dragging={draggedIndex === index}
-                  dropTarget={dragOverIndex === index}
-                  data-reorder-index={index}
-                  className={cn(
-                    "grid items-center cursor-pointer h-12",
-                    activeTab === "audios"
-                      ? "grid-cols-[28px_56px_84px_84px_84px_96px_1fr_180px_44px]"
-                      : "grid-cols-[28px_56px_84px_84px_84px_1fr_180px_44px]",
-                  )}
-                >
-                  <ReorderableTableCell className="center">
-                    <ReorderHandle className="flex items-center justify-center touch-none">
-                      <GripVertical className="w-4 h-4" />
-                    </ReorderHandle>
-                  </ReorderableTableCell>
-                  <ReorderableTableCell className="center text-primary font-mono">
-                    {String(index + 1).padStart(2, "0")}
-                  </ReorderableTableCell>
-                  <ReorderableTableCell
-                    data-no-drag="true"
-                    className="center"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleTrackChange(track.id, "copyTrack", !track.copyTrack);
-                    }}
-                  >
-                    <Checkbox
-                      checked={track.copyTrack}
-                      onCheckedChange={(checked) => handleTrackChange(track.id, "copyTrack", checked as boolean)}
-                      className="h-3.5 w-7"
-                    />
-                  </ReorderableTableCell>
-                  <ReorderableTableCell
-                    data-no-drag="true"
-                    className="center"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!track.copyTrack) return;
-                      handleTrackChange(track.id, "setDefault", !track.setDefault);
-                    }}
-                  >
-                    <Checkbox
-                      checked={track.setDefault}
-                      disabled={!track.copyTrack}
-                      onCheckedChange={(checked) => handleTrackChange(track.id, "setDefault", checked as boolean)}
-                      className={cn("h-3.5 w-7", !track.copyTrack && "opacity-30 cursor-not-allowed")}
-                    />
-                  </ReorderableTableCell>
-                  <ReorderableTableCell
-                    data-no-drag="true"
-                    className="center"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!track.copyTrack) return;
-                      handleTrackChange(track.id, "setForced", !track.setForced);
-                    }}
-                  >
-                    <Checkbox
-                      checked={track.setForced}
-                      disabled={!track.copyTrack}
-                      onCheckedChange={(checked) => handleTrackChange(track.id, "setForced", checked as boolean)}
-                      className={cn("h-3.5 w-7", !track.copyTrack && "opacity-30 cursor-not-allowed")}
-                    />
-                  </ReorderableTableCell>
-                  {activeTab === "audios" && (
-                    <ReorderableTableCell className="center text-muted-foreground font-mono">
-                      {track.source === "external"
-                        ? track.externalFile?.bitrate
-                          ? `${Math.round(track.externalFile.bitrate / 1000)} kbps`
-                          : "—"
-                        : track.originalTrack?.bitrate
-                          ? `${Math.round(track.originalTrack.bitrate / 1000)} kbps`
-                          : "—"}
-                    </ReorderableTableCell>
-                  )}
-                  <ReorderableTableCell className="pr-2" onClick={(e) => e.stopPropagation()}>
-                    {editingTrackId === track.id ? (
-                      <TextField
-                        data-no-drag="true"
-                        value={editingName}
-                        onChange={(e) => setEditingName(e.target.value)}
-                        onBlur={finishEditing}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") finishEditing();
-                          if (e.key === "Escape") {
-                            setEditingTrackId(null);
-                            setEditingName("");
-                          }
-                        }}
-                        autoFocus
-                        className="h-[26px] text-sm"
-                      />
-                    ) : (
-                      <div
-                        className="text-sm text-foreground truncate cursor-text hover:text-primary transition-colors"
-                        onDoubleClick={() => startEditing(track)}
-                        title="Double-click to edit"
-                      >
-                        <span className="truncate">{track.trackName}</span>
-                        {track.source === "external" && (
-                          <span className="ml-2 inline-flex items-center rounded-full border border-panel-border bg-panel-header/60 px-2 py-0.5 text-xs text-muted-foreground">
-                            External
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </ReorderableTableCell>
-                  <ReorderableTableCell data-no-drag="true" className="right" onClick={(e) => e.stopPropagation()}>
-                    <LanguageSelect
-                      value={track.language}
-                      onChange={(value) => handleTrackChange(track.id, "language", value)}
-                      className="h-[30px] justify-end bg-input/40 border border-panel-border hover:bg-input/60"
-                    />
-                  </ReorderableTableCell>
-                  <ReorderableTableCell data-no-drag="true" className="center" onClick={(e) => e.stopPropagation()}>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-[26px] w-[26px] text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                      onClick={() => deleteTrack(track.id)}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </ReorderableTableCell>
-                </ReorderableRow>
-              ))
-            )}
-          </ReorderableTableBody>
-        </ReorderableTable>
-      </div>
-      <BaseModal
-        open={addExternalOpen}
-        onOpenChange={setAddExternalOpen}
-        title={addExternalType === "audio" ? "Add Audio Track" : "Add Subtitle Track"}
-        subtitle={
-          pendingExternalPaths.length > 1
-            ? `${pendingExternalPaths.length} files selected`
-            : pendingExternalPaths[0] || ""
-        }
-        icon={addExternalType === "audio" ? <Volume2 className="w-5 h-5 text-primary" /> : <Subtitles className="w-5 h-5 text-primary" />}
-        className="max-w-lg"
-        bodyClassName="px-5 py-4"
-        footerRight={
-          <>
-            <Button
-              variant="ghost"
-              className="h-[30px] px-5 text-sm text-muted-foreground hover:text-foreground"
-              onClick={() => setAddExternalOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              className="h-[30px] px-5 text-sm"
-              onClick={handleConfirmAddExternal}
-              disabled={!delayInputsAreValid(addExternalForm.delay)}
-            >
-              Add Track
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div className="grid gap-3">
-            <label className="text-xs text-muted-foreground">Track name</label>
-            <TextField
-              value={addExternalForm.trackName}
-              onChange={(e) => setAddExternalForm((prev) => ({ ...prev, trackName: e.target.value }))}
-              placeholder="Optional"
-              className="h-[30px]"
-            />
-          </div>
-          <div className="grid gap-3">
-            <label className="text-xs text-muted-foreground">Language</label>
-            <LanguageSelect
-              value={addExternalForm.language}
-              onChange={(value) => setAddExternalForm((prev) => ({ ...prev, language: value }))}
-              className="h-[30px]"
-            />
-          </div>
-          <div className="grid gap-3">
-            <label className="text-xs text-muted-foreground">Delay (sec)</label>
-            <TextField
-              value={addExternalForm.delay}
-              onChange={(e) => setAddExternalForm((prev) => ({ ...prev, delay: e.target.value }))}
-              aria-invalid={!parseDelayInput(addExternalForm.delay).valid}
-              className={cn(
-                "h-[30px] w-32",
-                !parseDelayInput(addExternalForm.delay).valid &&
-                  "border-destructive focus-visible:ring-destructive",
-              )}
-            />
-            {!parseDelayInput(addExternalForm.delay).valid ? (
-              <p role="alert" className="text-xs text-destructive">
-                {parseDelayInput(addExternalForm.delay).error}
-              </p>
-            ) : null}
-          </div>
-          <div className="flex items-center gap-6">
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-              <Checkbox
-                checked={addExternalForm.isDefault}
-                onCheckedChange={(checked) =>
-                  setAddExternalForm((prev) => ({ ...prev, isDefault: checked as boolean }))
-                }
-              />
-              Default
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-              <Checkbox
-                checked={addExternalForm.isForced}
-                onCheckedChange={(checked) =>
-                  setAddExternalForm((prev) => ({ ...prev, isForced: checked as boolean }))
-                }
-              />
-              Forced
-            </label>
-          </div>
-        </div>
-      </BaseModal>
-      <BaseModal
-        open={importStreamsOpen}
-        onOpenChange={setImportStreamsOpen}
-        title={activeTab === "audios" ? "Import Audio Streams" : "Import Subtitle Streams"}
-        subtitle="Select a loaded video and choose streams to import."
-        icon={<Download className="w-5 h-5 text-primary" />}
-        className="max-w-xl"
-        bodyClassName="px-5 py-4"
-        footerRight={
-          <>
-            <Button
-              variant="ghost"
-              className="h-[30px] px-5 text-sm text-muted-foreground hover:text-foreground"
-              onClick={() => {
-                setImportStreamsOpen(false);
-                setImportOverrides({});
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              className="h-[30px] px-5 text-sm"
-              disabled={!importSourceVideoId || importSelectedTrackIds.length === 0}
-              onClick={handleConfirmImportStreams}
-            >
-              Import
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div className="grid gap-2">
-            <label className="text-xs text-muted-foreground">Source video File</label>
-            <Select
-              value={importSourceVideoId}
-              onValueChange={(value) => {
+                Cancel
+              </Btn>
+              <Btn accent disabled={!selectedImportSource || importSelectedTrackIds.length === 0} onClick={handleConfirmImportStreams}>
+                {importSelectedTrackIds.length ? `Import ${importSelectedTrackIds.length}` : "Import"}
+              </Btn>
+            </>
+          }
+        >
+          <Fld label="From">
+            <Combo<string>
+              label="Source video"
+              w="100%"
+              value={importSourceVideoId || null}
+              placeholder={importableSourceVideos.length ? "Choose a loaded video" : "No other loaded videos"}
+              disabled={importableSourceVideos.length === 0}
+              options={importableSourceVideos.map((file) => ({ value: file.id, label: file.name }))}
+              onChange={(value) => {
                 setImportSourceVideoId(value);
                 setImportSelectedTrackIds([]);
                 setImportOverrides({});
               }}
-            >
-              <SelectTrigger className="h-[30px]">
-                <SelectValue placeholder="Select loaded video file" />
-              </SelectTrigger>
-              <SelectContent>
-                {importableSourceVideos.length === 0 ? (
-                  <SelectItem value="__no_videos" disabled>
-                    No other loaded videos available
-                  </SelectItem>
-                ) : (
-                  importableSourceVideos.map((file) => (
-                    <SelectItem key={file.id} value={file.id}>
-                      {file.name}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="rounded-md border border-panel-border bg-panel-header px-3 py-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="text-xs font-semibold text-muted-foreground">
-                {activeTab === "audios" ? "Audio Streams" : "Subtitle Streams"}
-              </div>
+            />
+          </Fld>
+          <div className="frame">
+            <div className="dtabs">
+              <span className="tab on">{activeTab === "audios" ? "Audio streams" : "Subtitle streams"}</span>
               {importableTracks.length > 0 && (
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-[26px] px-2 text-xs"
-                    onClick={() =>
-                      setImportSelectedTrackIds(
-                        importableTracks
-                          .map((track) => Number(track.id))
-                          .filter((id) => Number.isFinite(id)),
-                      )
-                    }
-                  >
-                    Select All
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-[26px] px-2 text-xs"
-                    onClick={() => setImportSelectedTrackIds([])}
-                  >
-                    Clear
-                  </Button>
-                </div>
+                <span className="tools">
+                  <Cmd sm icon={<CheckmarkRegular />} onClick={() => setImportSelectedTrackIds(importableTracks.map((t) => Number(t.id)).filter(Number.isFinite))}>All</Cmd>
+                  <Cmd sm icon={<DeleteRegular />} onClick={() => setImportSelectedTrackIds([])}>None</Cmd>
+                </span>
               )}
             </div>
-            {!importSourceVideoId ? (
-              <p className="text-xs text-muted-foreground">Choose a source video to load its streams.</p>
-            ) : importableTracks.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No {activeTab === "audios" ? "audio" : "subtitle"} streams found in this file.
-              </p>
-            ) : (
-              <div className="max-h-52 overflow-y-auto pr-1 space-y-2 scrollbar-thin">
-                {importableTracks.map((track, index) => {
-                  const numericTrackId = Number(track.id);
-                  const checked = importSelectedTrackIds.includes(numericTrackId);
-                  const override = importOverrides[numericTrackId];
-                  const edited = Boolean(
-                    override && (override.delay || override.language || override.trackName),
-                  );
+            <div className="box-b" style={{ gap: 0, padding: "4px 12px 8px 16px" }}>
+              {!selectedImportSource ? (
+                <span className="t3" style={{ padding: "6px 0" }}>Choose a video to list its streams.</span>
+              ) : importableTracks.length === 0 ? (
+                <span className="t3" style={{ padding: "6px 0" }}>This video has no {noun} streams.</span>
+              ) : (
+                importableTracks.map((track, index) => {
+                  const id = Number(track.id);
+                  const override = importOverrides[id];
+                  const edited = Boolean(override && (override.delay || override.language || override.trackName));
+                  const lang = override?.language || track.language;
+                  const label = [lang ? (CODE_TO_LABEL[lang] ?? lang) : null, track.codec, override?.trackName || track.name].filter(Boolean).join(" · ") || "Unnamed";
                   return (
-                    <label
-                      key={`${track.id}-${index}`}
-                      className="flex items-center gap-3 text-sm text-foreground/90 cursor-pointer"
-                    >
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={(value) => {
-                          if (!Number.isFinite(numericTrackId)) return;
-                          setImportSelectedTrackIds((prev) => {
-                            if (value) return [...prev, numericTrackId];
-                            return prev.filter((id) => id !== numericTrackId);
-                          });
-                        }}
+                    <div key={`${track.id}-${index}`} className="trk">
+                      <Chk
+                        name={`Import stream ${index + 1}`}
+                        on={importSelectedTrackIds.includes(id)}
+                        onChange={(on) => setImportSelectedTrackIds((prev) => (on ? [...new Set([...prev, id])] : prev.filter((x) => x !== id)))}
                       />
-                      <span className="text-xs text-muted-foreground min-w-[22px]">#{index + 1}</span>
-                      <span className="truncate flex-1 min-w-0">
-                        {override?.trackName || track.name || track.codec || "Unnamed"}
-                        {override?.language || track.language
-                          ? ` • ${override?.language || track.language}`
-                          : ""}
-                      </span>
-                      {override?.delay ? (
-                        <span className="font-mono text-xs text-primary shrink-0">
-                          {override.delay > 0 ? "+" : ""}
-                          {override.delay}s
-                        </span>
-                      ) : null}
-                      <ImportTrackEditButton
-                        edited={edited}
-                        label={`Edit stream ${index + 1}`}
-                        onClick={() => {
-                          if (Number.isFinite(numericTrackId)) setImportEditingId(numericTrackId);
-                        }}
-                      />
-                    </label>
+                      <span className="num t3" style={{ width: 14 }}>{index + 1}</span>
+                      <span className="grow truncate">{label}</span>
+                      {edited && override?.delay ? <span className="num acc sm">{override.delay > 0 ? "+" : ""}{override.delay} s</span> : null}
+                      <ImportTrackEditButton edited={edited} label={`Edit stream ${index + 1}`} onClick={() => setImportEditingId(id)} />
+                    </div>
                   );
-                })}
-              </div>
-            )}
+                })
+              )}
+            </div>
           </div>
-        </div>
-      </BaseModal>
+        </Dialog>
+      )}
 
       <ImportTrackEditDialog
         open={importEditingId !== null}
-        onOpenChange={(next) => {
-          if (!next) setImportEditingId(null);
-        }}
-        kind={importStreamType === "audio" ? "audio" : "subtitle"}
-        trackLabel={(() => {
-          if (importEditingId === null) return "";
-          const index = importableTracks.findIndex(
-            (track) => Number(track.id) === importEditingId,
-          );
-          const track = importableTracks[index];
-          if (!track) return "";
-          const name = track.name || track.codec || "Unnamed";
-          return `#${index + 1} · ${name}${track.language ? ` · ${track.language}` : ""}`;
-        })()}
+        onOpenChange={(value) => !value && setImportEditingId(null)}
+        kind={noun}
+        trackLabel={editingTrack ? [editingTrack.codec, editingTrack.name].filter(Boolean).join(" · ") : ""}
         value={importEditingId !== null ? (importOverrides[importEditingId] ?? {}) : {}}
         onSave={(next) => {
           if (importEditingId === null) return;
           setImportOverrides((prev) => ({ ...prev, [importEditingId]: next }));
           // Editing a stream implies wanting it, so select it too.
-          setImportSelectedTrackIds((prev) =>
-            prev.includes(importEditingId) ? prev : [...prev, importEditingId],
-          );
+          setImportSelectedTrackIds((prev) => (prev.includes(importEditingId) ? prev : [...prev, importEditingId]));
         }}
       />
-    </BaseModal>
+    </>
   );
 }

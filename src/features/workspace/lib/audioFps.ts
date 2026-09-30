@@ -2,7 +2,7 @@
  *  mediainfo's audio `FrameRate` field is a per-codec constant (SamplingRate/SamplesPerFrame), not this — don't use it. */
 
 import type { ExternalFile, MeasuredDelay, VideoFile } from "@/shared/types";
-import { conversionBetween, type RateConversion } from "./delayConversion";
+import { conversionBetween, formatFps, type RateConversion } from "./delayConversion";
 
 /** Frame rates real releases actually use; keep in sync with `EXACT_RATES` in delayConversion.ts.
  *  Decimals suffice here — matched against a duration ratio already noisier than the 1e-6 gap to the exact rational. */
@@ -116,4 +116,14 @@ export function audioFpsFor(file: ExternalFile, video: VideoFile | undefined): A
   }
 
   return estimateFpsFromDurations(file.durationSeconds, video?.durationSeconds, videoFps);
+}
+
+/** The rate a file's audio was timed at, as its row reads it:
+ *  "25.000 → 23.976 fps" when it needs converting, "23.976 fps" when it
+ *  already matches, with ~ when it is estimated from the durations. */
+export function formatAudioFps(value: AudioFps): string {
+  const estimated = value.basis === "estimated" ? "~" : "";
+  return needsRateChange(value)
+    ? `${estimated}${formatFps(value.fps)} → ${formatFps(value.videoFps)} fps`
+    : `${estimated}${formatFps(value.fps)} fps`;
 }

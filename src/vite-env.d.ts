@@ -1,10 +1,4 @@
 /// <reference types="vite/client" />
 
-declare global {
-  interface Window {
-    __audiosAddTrack?: () => void;
-    __subtitlesAddTrack?: () => void;
-  }
-}
-
-export {};
+/** The app's version, from package.json (vite.config.ts). */
+declare const __APP_VERSION__: string;

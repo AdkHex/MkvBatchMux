@@ -1,26 +1,14 @@
-import { Toaster } from "@/shared/ui/toaster";
-import { Toaster as Sonner } from "@/shared/ui/sonner";
-import { TooltipProvider } from "@/shared/ui/tooltip";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import WorkspacePage from "./routes/WorkspacePage";
-import NotFoundPage from "./routes/NotFoundPage";
+import { Toaster } from "sonner";
 
-const queryClient = new QueryClient();
+import "@/ui/ui.css";
+import Index from "./Index";
 
-const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<WorkspacePage />} />
-          <Route path="*" element={<NotFoundPage />} />
-        </Routes>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
-);
-
-export default App;
+/** Single-window desktop app: no router, and one toast system. */
+export default function App() {
+  return (
+    <>
+      <Index />
+      <Toaster position="bottom-right" offset={64} closeButton theme="system" toastOptions={{ duration: 4000, className: "mbm-toast" }} />
+    </>
+  );
+}

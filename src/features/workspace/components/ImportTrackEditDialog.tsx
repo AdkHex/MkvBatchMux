@@ -1,11 +1,10 @@
-import * as React from "react";
-import { Pencil } from "lucide-react";
-import { BaseModal } from "@/shared/components/BaseModal";
+import { EditRegular } from "@fluentui/react-icons";
+import { useEffect, useState } from "react";
+
 import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
 import { parseDelayInput } from "@/shared/lib/delayInput";
-import { Button } from "@/shared/ui/button";
-import { Input } from "@/shared/ui/input";
-import { LanguageSelect } from "./LanguageSelect";
+import { Dialog } from "@/ui/frame";
+import { Btn, Cmd, Fld, LangCombo, TBox } from "@/ui/kit";
 
 /** Per-track overrides applied to an imported stream. */
 export interface ImportTrackOverride {
@@ -22,111 +21,76 @@ interface ImportTrackEditDialogProps {
   value: ImportTrackOverride;
   onSave: (next: ImportTrackOverride) => void;
   kind: "audio" | "subtitle";
+  /** The dialog's title; "Edit the audio stream" by default. */
+  title?: string;
 }
 
-/** Edits one imported stream's language, name and delay. */
-export function ImportTrackEditDialog({
-  open,
-  onOpenChange,
-  trackLabel,
-  value,
-  onSave,
-  kind,
-}: ImportTrackEditDialogProps) {
-  const [language, setLanguage] = React.useState(value.language ?? "");
-  const [trackName, setTrackName] = React.useState(value.trackName ?? "");
-  const [delay, setDelay] = React.useState(String(value.delay ?? 0));
+/** Edits one stream's language, name and delay: a stream being imported, or
+ *  one track inside a file. */
+export function ImportTrackEditDialog({ open, onOpenChange, trackLabel, value, onSave, kind, title }: ImportTrackEditDialogProps) {
+  const [language, setLanguage] = useState(value.language ?? "");
+  const [trackName, setTrackName] = useState(value.trackName ?? "");
+  const [delay, setDelay] = useState(String(value.delay ?? 0));
 
   // Reset when a different track is opened, otherwise the previous track's
   // edits would be shown against the new one.
-  React.useEffect(() => {
+  useEffect(() => {
     if (!open) return;
     setLanguage(value.language ?? "");
     setTrackName(value.trackName ?? "");
     setDelay(String(value.delay ?? 0));
   }, [open, value.language, value.trackName, value.delay]);
 
+  if (!open) return null;
+
   const handleSave = () => {
     const parsed = parseDelayInput(delay);
     // The button is disabled while this is false, so this is belt-and-braces
     // rather than the path anyone takes.
     if (!parsed.valid) return;
-    onSave({
-      language: language || undefined,
-      trackName: trackName || undefined,
-      delay: parsed.value,
-    });
+    onSave({ language: language || undefined, trackName: trackName || undefined, delay: parsed.value });
     onOpenChange(false);
   };
 
   return (
-    <BaseModal
-      open={open}
-      onOpenChange={onOpenChange}
-      title={`Edit ${kind} stream`}
-      subtitle={trackLabel}
-      className="max-w-md"
-      footerRight={
+    <Dialog
+      size="mid"
+      title={title ?? `Edit the ${kind} stream`}
+      sub={trackLabel}
+      onClose={() => onOpenChange(false)}
+      foot={
         <>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave} disabled={!delayInputsAreValid(delay)}>
-            Save
-          </Button>
+          <Btn onClick={() => onOpenChange(false)}>Cancel</Btn>
+          <Btn accent disabled={!delayInputsAreValid(delay)} onClick={handleSave}>Save</Btn>
         </>
       }
     >
-      <div className="space-y-3">
-        <div className="space-y-1.5">
-          <label className="text-xs text-muted-foreground">Language</label>
-          <LanguageSelect value={language} onChange={setLanguage} />
-        </div>
-        <div className="space-y-1.5">
-          <label className="text-xs text-muted-foreground">Track name</label>
-          <Input
-            value={trackName}
-            onChange={(event) => setTrackName(event.target.value)}
-            placeholder="Leave empty to keep the original"
-          />
-        </div>
-        <DelayField
-          value={delay}
-          onChange={setDelay}
-          label="Delay (seconds)"
-          hint="Positive delays this stream; negative plays it earlier. Other streams are unaffected."
-        />
+      <div className="fgrid">
+        <Fld label="Language">
+          <LangCombo value={language || undefined} onChange={setLanguage} w="100%" placeholder="Keep the original" />
+        </Fld>
+        <Fld label="Track name">
+          <TBox label="Track name" value={trackName} onChange={setTrackName} placeholder="Keep the original" />
+        </Fld>
       </div>
-    </BaseModal>
+      <DelayField value={delay} onChange={setDelay} hint="Positive plays this stream later; negative, earlier. Other streams are unaffected." />
+    </Dialog>
   );
 }
 
-/** The pencil affordance shown on each importable stream row. */
-export function ImportTrackEditButton({
-  onClick,
-  edited,
-  label,
-}: {
-  onClick: () => void;
-  edited: boolean;
-  label: string;
-}) {
+/** The pencil beside a stream: opens its editor without toggling the row. */
+export function ImportTrackEditButton({ onClick, edited, label }: { onClick: () => void; edited?: boolean; label: string }) {
   return (
-    <Button
-      variant="ghost"
-      size="icon"
-      className="h-[26px] w-[26px] shrink-0"
+    <Cmd
+      sm
+      icon={<EditRegular className={edited ? "acc" : undefined} />}
+      title={edited ? "Edited — click to change" : "Language, name and delay"}
+      aria-label={label}
       onClick={(event) => {
-        // The row is a <label> wrapping a checkbox; without this the click
-        // would toggle selection instead of opening the editor.
         event.preventDefault();
         event.stopPropagation();
         onClick();
       }}
-      aria-label={label}
-      title={edited ? "Edited — click to change" : "Set delay, name or language"}
-    >
-      <Pencil className={edited ? "w-3.5 h-3.5 text-primary" : "w-3.5 h-3.5"} />
-    </Button>
+    />
   );
 }

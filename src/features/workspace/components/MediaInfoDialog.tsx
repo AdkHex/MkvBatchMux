@@ -1,7 +1,12 @@
-import { BaseModal } from "@/shared/components/BaseModal";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
-import type { VideoFile, Track } from "@/shared/types";
-import { BarChart2 } from "lucide-react";
+/** Media info: what is inside up to five selected videos, side by side as
+ *  pivots. Read-only. */
+
+import { useEffect, useState } from "react";
+
+import { CODE_TO_LABEL } from "@/shared/data/languages-iso6393";
+import type { Track, VideoFile } from "@/shared/types";
+import { Dialog, DockTabs } from "@/ui/frame";
+import { Btn, DL } from "@/ui/kit";
 
 interface MediaInfoDialogProps {
   open: boolean;
@@ -21,205 +26,75 @@ function formatFileSize(bytes?: number): string {
 function formatBitrate(bps?: number): string {
   if (!bps) return "";
   const kbps = bps / 1000;
-  if (kbps >= 1000) return (kbps / 1000).toFixed(2) + " Mbps";
-  return Math.round(kbps) + " kbps";
+  return kbps >= 1000 ? `${(kbps / 1000).toFixed(2)} Mb/s` : `${Math.round(kbps)} kb/s`;
 }
 
-function formatFps(fps?: number): string {
-  if (!fps) return "—";
-  return fps.toFixed(3).replace(/\.?0+$/, "") + " fps";
-}
+const formatFps = (fps?: number) => (fps ? `${fps.toFixed(3).replace(/\.?0+$/, "")} fps` : "—");
+const language = (code?: string) => (code && code !== "und" ? (CODE_TO_LABEL[code] ?? code) : null);
+/** A pivot's label: short, the full name in its tooltip. */
+const short = (name: string) => (name.length > 22 ? `${name.slice(0, 10)}…${name.slice(-10)}` : name);
 
-function Badge({ children, variant = "default" }: { children: React.ReactNode; variant?: "default" | "primary" | "teal" }) {
-  const cls =
-    variant === "primary"
-      ? "bg-primary/15 text-primary border-primary/20"
-      : variant === "teal"
-      ? "bg-accent-teal/15 text-accent-teal border-accent-teal/20"
-      : "bg-muted/60 text-muted-foreground border-panel-border";
+function Tracks({ title, tracks }: { title: string; tracks: Track[] }) {
   return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>
-      {children}
-    </span>
-  );
-}
-
-function SectionHeader({ title, count }: { title: string; count: number }) {
-  return (
-    <div className="flex items-center gap-2 mb-2">
-      <span className="text-xs font-semibold text-muted-foreground">
-        {title}
+    <div className="col" style={{ gap: 2 }}>
+      <span className="sec">
+        {title} <span className="t3" style={{ fontWeight: 400 }}>{tracks.length}</span>
       </span>
-      <span className="text-xs font-mono text-muted-foreground/60">({count})</span>
+      {tracks.map((track, index) => (
+        <div key={`${track.id}-${index}`} className="trk">
+          <span className="num t3" style={{ width: 16 }}>{index + 1}</span>
+          <span className="grow truncate">{[track.codec?.toUpperCase() || "Unknown", language(track.language), track.name].filter(Boolean).join(" · ")}</span>
+          <span className="fl">{[track.isDefault ? "Default" : null, track.isForced ? "Forced" : null, formatBitrate(track.bitrate) || null].filter(Boolean).join(" · ")}</span>
+        </div>
+      ))}
     </div>
   );
-}
-
-function TrackRow({ track, index }: { track: Track; index: number }) {
-  const codecLabel = track.codec?.toUpperCase() || "Unknown";
-  const bitrate = formatBitrate(track.bitrate);
-
-  return (
-    <div className="flex items-center gap-3 px-3 py-2 rounded-md border border-panel-border bg-panel-header/30">
-      <span className="text-xs font-mono text-muted-foreground/50 w-5 shrink-0">{index + 1}</span>
-
-      <span className="text-xs font-mono font-medium text-foreground w-16 shrink-0">{codecLabel}</span>
-
-      <div className="flex items-center gap-1.5 flex-1 flex-wrap">
-        {track.language && track.language !== "und" && (
-          <Badge>{track.language.toUpperCase()}</Badge>
-        )}
-        {track.name && (
-          <span className="text-xs text-muted-foreground truncate max-w-[160px]">{track.name}</span>
-        )}
-        {track.isDefault && <Badge variant="primary">Default</Badge>}
-        {track.isForced && <Badge variant="teal">Forced</Badge>}
-      </div>
-
-      {bitrate && (
-        <span className="text-xs font-mono text-muted-foreground/70 shrink-0">{bitrate}</span>
-      )}
-    </div>
-  );
-}
-
-function FileMediaInfo({ file }: { file: VideoFile }) {
-  const videoTracks = file.tracks.filter((t) => t.type === "video");
-  const audioTracks = file.tracks.filter((t) => t.type === "audio");
-  const subtitleTracks = file.tracks.filter((t) => t.type === "subtitle");
-  const hasNoTracks = file.tracks.length === 0;
-
-  return (
-    <div className="space-y-4 py-1">
-      {/* General */}
-      <div className="rounded-lg border border-panel-border bg-card px-4 py-3 space-y-2">
-        <div className="text-xs font-semibold text-muted-foreground mb-2">
-          General
-        </div>
-        <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-xs">
-          <div className="flex gap-2">
-            <span className="text-muted-foreground/60 w-20 shrink-0">Filename</span>
-            <span className="font-mono text-foreground/90 truncate" title={file.name}>{file.name}</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="text-muted-foreground/60 w-20 shrink-0">Size</span>
-            <span className="font-mono">{formatFileSize(file.size)}</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="text-muted-foreground/60 w-20 shrink-0">Duration</span>
-            <span className="font-mono">{file.duration || "—"}</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="text-muted-foreground/60 w-20 shrink-0">Frame rate</span>
-            <span className="font-mono">{formatFps(file.fps)}</span>
-          </div>
-          <div className="col-span-2 flex gap-2">
-            <span className="text-muted-foreground/60 w-20 shrink-0">Path</span>
-            <span className="font-mono text-muted-foreground/70 text-xs truncate" title={file.path}>
-              {file.path}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {hasNoTracks ? (
-        <div className="text-center py-6 text-sm text-muted-foreground/60">
-          Track details not yet loaded. Scan the file to inspect tracks.
-        </div>
-      ) : (
-        <>
-          {/* Video Tracks */}
-          {videoTracks.length > 0 && (
-            <div>
-              <SectionHeader title="Video" count={videoTracks.length} />
-              <div className="space-y-1.5">
-                {videoTracks.map((track, i) => (
-                  <TrackRow key={track.id} track={track} index={i} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Audio Tracks */}
-          {audioTracks.length > 0 && (
-            <div>
-              <SectionHeader title="Audio" count={audioTracks.length} />
-              <div className="space-y-1.5">
-                {audioTracks.map((track, i) => (
-                  <TrackRow key={track.id} track={track} index={i} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Subtitle Tracks */}
-          {subtitleTracks.length > 0 && (
-            <div>
-              <SectionHeader title="Subtitles" count={subtitleTracks.length} />
-              <div className="space-y-1.5">
-                {subtitleTracks.map((track, i) => (
-                  <TrackRow key={track.id} track={track} index={i} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {videoTracks.length === 0 && audioTracks.length === 0 && subtitleTracks.length === 0 && (
-            <div className="text-center py-6 text-sm text-muted-foreground/60">
-              No track information available.
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-function truncateTabLabel(name: string, maxLen = 20): string {
-  if (name.length <= maxLen) return name;
-  return name.slice(0, maxLen - 1) + "…";
 }
 
 export function MediaInfoDialog({ open, onOpenChange, files }: MediaInfoDialogProps) {
-  if (files.length === 0) return null;
-
+  const [activeId, setActiveId] = useState(files[0]?.id ?? "");
+  useEffect(() => {
+    if (open) setActiveId(files[0]?.id ?? "");
+  }, [open, files]);
+  if (!open || files.length === 0) return null;
+  const file = files.find((f) => f.id === activeId) ?? files[0];
+  const tracks = file.tracks || [];
+  const video = tracks.filter((t) => t.type === "video");
+  const audio = tracks.filter((t) => t.type === "audio");
+  const subtitles = tracks.filter((t) => t.type === "subtitle");
   return (
-    <BaseModal
-      open={open}
-      onOpenChange={onOpenChange}
-      title="Media Info"
-      subtitle={
-        files.length === 1
-          ? files[0].name
-          : `Comparing ${files.length} files`
-      }
-      icon={<BarChart2 className="w-5 h-5 text-primary" />}
-      className="max-w-2xl"
-      bodyClassName="px-5 py-3"
+    <Dialog
+      size="wide"
+      title="Media info"
+      sub={files.length > 1 ? `Comparing ${files.length} videos` : file.name}
+      onClose={() => onOpenChange(false)}
+      foot={<Btn accent onClick={() => onOpenChange(false)}>Close</Btn>}
     >
-      {files.length === 1 ? (
-        <FileMediaInfo file={files[0]} />
-      ) : (
-        <Tabs defaultValue={files[0].id}>
-          <TabsList className="mb-3 h-[30px] gap-1 bg-panel-header/60 border border-panel-border p-0.5">
-            {files.map((file) => (
-              <TabsTrigger
-                key={file.id}
-                value={file.id}
-                className="h-[26px] px-3 text-xs"
-                title={file.name}
-              >
-                {truncateTabLabel(file.name)}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-          {files.map((file) => (
-            <TabsContent key={file.id} value={file.id} className="mt-0">
-              <FileMediaInfo file={file} />
-            </TabsContent>
-          ))}
-        </Tabs>
-      )}
-    </BaseModal>
+      <div className="frame" style={{ overflow: "visible" }}>
+        {files.length > 1 && (
+          <DockTabs tabs={files.map((f) => ({ id: f.id, label: short(f.name) }))} on={file.id} onTab={setActiveId} />
+        )}
+        <div className="box-b" style={{ gap: 14 }}>
+          <DL
+            rows={[
+              ["File", <span key="n" className="truncate" title={file.name}>{file.name}</span>],
+              ["Size", formatFileSize(file.size)],
+              ["Duration", file.duration || "—"],
+              ["Frame rate", formatFps(file.fps)],
+              ["Path", <span key="p" className="truncate" title={file.path}>{file.path}</span>],
+            ]}
+          />
+          {tracks.length === 0 ? (
+            <span className="t3">Track details are not read yet. Scan the folder to read them.</span>
+          ) : (
+            <>
+              {video.length > 0 && <Tracks title="Video" tracks={video} />}
+              {audio.length > 0 && <Tracks title="Audio" tracks={audio} />}
+              {subtitles.length > 0 && <Tracks title="Subtitles" tracks={subtitles} />}
+            </>
+          )}
+        </div>
+      </div>
+    </Dialog>
   );
 }

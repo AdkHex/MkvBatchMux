@@ -1,57 +1,43 @@
-import * as React from "react";
-import { Input } from "@/shared/ui/input";
-import { cn } from "@/shared/lib/utils";
+import { useId, type ReactNode } from "react";
+
 import { parseDelayInput } from "@/shared/lib/delayInput";
+import { TBox, cx } from "@/ui/kit";
 
 interface DelayFieldProps {
   value: string;
   onChange: (value: string) => void;
   label?: string;
-  className?: string;
   disabled?: boolean;
   /** Shown under the field when the value is fine, for context like a hint. */
-  hint?: React.ReactNode;
+  hint?: ReactNode;
+  w?: number | string;
 }
 
-/** A delay input that shows an inline error instead of an alert when the value cannot be used. */
-export function DelayField({
-  value,
-  onChange,
-  label = "Delay (sec)",
-  className,
-  disabled,
-  hint,
-}: DelayFieldProps) {
-  const fieldId = React.useId();
-  const messageId = `${fieldId}-message`;
+/** A delay in seconds, labelled above like every inspector field, that says
+ *  why a value cannot be used instead of silently treating it as zero. */
+export function DelayField({ value, onChange, label = "Delay", disabled, hint, w }: DelayFieldProps) {
+  const messageId = `${useId()}-message`;
   const parsed = parseDelayInput(value);
-
   return (
-    <div className="space-y-1.5">
-      <label className="text-xs font-medium text-muted-foreground" htmlFor={fieldId}>
-        {label}
-      </label>
-      <Input
-        id={fieldId}
+    <div className="fld">
+      <span className="lb" aria-hidden>{label}</span>
+      <TBox
+        className={cx(!parsed.valid && "invalid")}
+        label={label}
+        mono
+        unit="s"
+        w={w}
         value={value}
         disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
+        spellCheck={false}
+        onChange={onChange}
         aria-invalid={!parsed.valid}
         aria-describedby={!parsed.valid || hint ? messageId : undefined}
-        className={cn(
-          "h-[30px] font-mono",
-          !parsed.valid && "border-destructive focus-visible:ring-destructive",
-          className,
-        )}
       />
       {!parsed.valid ? (
-        <p id={messageId} role="alert" className="text-xs text-destructive">
-          {parsed.error}
-        </p>
+        <span id={messageId} role="alert" className="sm bad">{parsed.error}</span>
       ) : hint ? (
-        <p id={messageId} className="text-xs text-muted-foreground">
-          {hint}
-        </p>
+        <span id={messageId} className="sm t3">{hint}</span>
       ) : null}
     </div>
   );

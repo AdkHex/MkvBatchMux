@@ -67,13 +67,14 @@
         "title": "MKVBatchMux",
         "width": 1600,
         "height": 1000,
+        "minWidth": 900,
+        "minHeight": 600,
         "fullscreen": false,
         "maximized": false,
         "resizable": true,
-        "decorations": false,
+        "decorations": true,
         "transparent": false,
-        "minWidth": 1100,
-        "minHeight": 700,
+        "fileDropEnabled": true,
         "center": true
       }
     ],
