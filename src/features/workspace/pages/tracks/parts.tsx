@@ -4,8 +4,8 @@
  *  logic (the two differed in small ways before and still do); these only
  *  draw. */
 
-import { AddRegular, ClosedCaptionRegular, CopyRegular, FolderOpenRegular, MusicNote2Regular } from "@fluentui/react-icons";
-import { useState } from "react";
+import { AddRegular, ClosedCaptionRegular, CopyRegular, EditRegular, FolderOpenRegular, MusicNote2Regular } from "@fluentui/react-icons";
+import { useState, type ReactNode } from "react";
 
 import { ImportTrackEditButton, ImportTrackEditDialog, type ImportTrackOverride } from "@/features/workspace/components/ImportTrackEditDialog";
 import type { TrackConfig } from "@/features/workspace/store/useTabState";
@@ -81,6 +81,7 @@ export function TrackSheet({
   folder,
   onBrowse,
   formats,
+  extra,
 }: {
   kind: SlotKind;
   config: TrackConfig;
@@ -90,6 +91,8 @@ export function TrackSheet({
   folder: string;
   onBrowse: () => void;
   formats: { value: string; options: Option<string>[]; onChange: (value: string) => void };
+  /** More settings after the flags (Audio's Reference). */
+  extra?: ReactNode;
 }) {
   const delay = parseDelayInput(config.delay);
   return (
@@ -131,7 +134,50 @@ export function TrackSheet({
           <Chk on={config.isForced} disabled={disabled} onChange={(isForced) => onChange({ isForced })}>Forced</Chk>
         )}
       </span>
+      {extra}
     </>
+  );
+}
+
+/** "Tracks in this file" in a file's editor: a title with its commands,
+ *  then one row per track. */
+export function FileTracks({ title, tools, children }: { title: string; tools?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      <div className="row" style={{ gap: 4 }}>
+        <span className="strong grow">{title}</span>
+        {tools}
+      </div>
+      <div className="elist">{children}</div>
+    </div>
+  );
+}
+
+/** One track in FileTracks: include it, its number and description, whether
+ *  it is default, and its own editor (on the row under the pointer). */
+export function FileTrackRow({
+  index,
+  label,
+  on,
+  onChange,
+  isDefault,
+  onEdit,
+}: {
+  index: number;
+  label: string;
+  on: boolean;
+  onChange: (on: boolean) => void;
+  isDefault?: boolean;
+  onEdit: () => void;
+}) {
+  return (
+    <div className="erow">
+      <Chk name={`Include track ${index + 1}`} on={on} onChange={onChange} />
+      <span className="num t3">{index + 1}</span>
+      <span className="grow truncate" title={label}>{label}</span>
+      {isDefault && <span className="t3 sm">Default</span>}
+      <span className="rx"><Cmd sm icon={<EditRegular />} title="Language, name and delay" onClick={onEdit} /></span>
+    </div>
   );
 }
 

@@ -17,7 +17,7 @@ const defaultAudioConfig: TrackConfig = {
   language: "hin",
   trackName: "",
   delay: "0.000",
-  isDefault: false,
+  isDefault: true,
   isForced: false,
   muxAfter: "video",
 };
@@ -28,7 +28,7 @@ const defaultSubtitleConfig: TrackConfig = {
   language: "eng",
   trackName: "",
   delay: "0.000",
-  isDefault: false,
+  isDefault: true,
   isForced: false,
   muxAfter: "audio",
 };

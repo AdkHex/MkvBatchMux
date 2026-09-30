@@ -693,7 +693,9 @@ export function Dialog({
   children?: ReactNode;
   foot: ReactNode;
   left?: ReactNode;
-  size?: "mid" | "wide" | "xl";
+  /** "xl": a large dialog with its own header and footer; "form": the same,
+   *  780 px and only as tall as its content. */
+  size?: "mid" | "wide" | "xl" | "form";
   onClose?: () => void;
   /** Accessible name when the title is not plain text. */
   label?: string;
@@ -705,10 +707,10 @@ export function Dialog({
   /** "xl" only: classes for the body ("flush", "compact"). */
   bodyClass?: string;
 }) {
-  if (size === "xl")
+  if (size === "xl" || size === "form")
     return (
       <Modal onClose={onClose}>
-        <div className="dialog xl" role="dialog" aria-modal="true" aria-label={label ?? (typeof title === "string" ? title : undefined)}>
+        <div className={cx("dialog xl", size === "form" && "fit")} role="dialog" aria-modal="true" aria-label={label ?? (typeof title === "string" ? title : undefined)}>
           <div className="dh">
             <div className="grow col" style={{ minWidth: 0 }}>
               <div className="dt truncate" role="heading" aria-level={2}>{title}</div>

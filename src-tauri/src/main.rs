@@ -2134,6 +2134,23 @@ fn first_default_track_per_type(tracks: &[TrackInfo]) -> HashMap<String, usize> 
     winners
 }
 
+/// The default flag a kept source track is written with, if it has one. An
+/// added file of the same type marked default takes the flag: the source's
+/// tracks of that type are then never default. Otherwise only the first
+/// flagged track of the type keeps it (first_default_track_per_type).
+fn source_track_default(
+    track: &TrackInfo,
+    track_id: usize,
+    winners: &HashMap<String, usize>,
+    external_default: bool,
+) -> Option<bool> {
+    let is_default = track.is_default?;
+    if external_default {
+        return Some(false);
+    }
+    Some(is_default && winners.get(&track.track_type) == Some(&track_id))
+}
+
 fn intersect_ids(left: Vec<usize>, right: Vec<usize>) -> Vec<usize> {
     left.into_iter().filter(|id| right.contains(id)).collect()
 }
@@ -2631,14 +2648,16 @@ fn build_mkvmerge_command(
         }
     }
 
-    if let Some(language) = &settings.make_audio_default_language {
+    // "Default audio: <language>" picks among the source's tracks, so it
+    // gives way when an added audio file is the default already.
+    if let Some(language) = settings.make_audio_default_language.as_ref().filter(|_| !external_audio_default) {
         let ids = collect_track_ids_by_language(&job.video.tracks, "audio", &[language.clone()]);
         for id in ids {
             args.push("--default-track-flag".to_string());
             args.push(format!("{}:yes", id));
         }
     }
-    if let Some(language) = &settings.make_subtitle_default_language {
+    if let Some(language) = settings.make_subtitle_default_language.as_ref().filter(|_| !external_subtitle_default) {
         let ids = collect_track_ids_by_language(&job.video.tracks, "subtitle", &[language.clone()]);
         for id in ids {
             args.push("--default-track-flag".to_string());
@@ -2695,13 +2714,15 @@ fn build_mkvmerge_command(
             args.push(format!("{}:{}", track_id, language));
         }
 
-        // Default flag - apply individual track defaults from ModifyTracksDialog
-        // These override the bulk operations (external defaults, language filters) for specific tracks
-        if let Some(is_default) = track.is_default {
-            // Only the first flagged track of this type keeps the flag; see
-            // first_default_track_per_type.
-            let wins = is_default
-                && default_winners.get(&track.track_type) == Some(&track_id);
+        // Default flag, from the file or set in Edit/Modify tracks. Written
+        // after the bulk flags above, so it must not undo them: when an added
+        // file of this type is the default, the source's tracks are not.
+        let external_default = match track.track_type.as_str() {
+            "audio" => external_audio_default,
+            "subtitle" => external_subtitle_default,
+            _ => false,
+        };
+        if let Some(wins) = source_track_default(track, track_id, &default_winners, external_default) {
             args.push("--default-track-flag".to_string());
             args.push(format!("{}:{}", track_id, if wins { "yes" } else { "no" }));
         }
@@ -3711,6 +3732,25 @@ mod tests {
         assert_eq!(winners.get("video"), Some(&0));
         assert_eq!(winners.get("audio"), Some(&1));
         assert_eq!(winners.get("subtitle"), Some(&3));
+    }
+
+    #[test]
+    fn an_added_default_file_takes_the_flag_from_the_source_tracks_of_its_type() {
+        let tracks = vec![track("1", "audio", Some(true)), track("2", "subtitle", Some(true))];
+        let winners = first_default_track_per_type(&tracks);
+
+        // An added default audio: the source's audio is written not default,
+        // even though the file itself marks it default.
+        assert_eq!(source_track_default(&tracks[0], 1, &winners, true), Some(false));
+        // Nothing added of that type: the source keeps its own flag.
+        assert_eq!(source_track_default(&tracks[1], 2, &winners, false), Some(true));
+    }
+
+    #[test]
+    fn a_track_with_no_flag_of_its_own_is_left_alone() {
+        let untouched = track("1", "audio", None);
+        let winners = first_default_track_per_type(std::slice::from_ref(&untouched));
+        assert_eq!(source_track_default(&untouched, 1, &winners, true), None);
     }
 
     #[test]

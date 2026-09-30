@@ -160,18 +160,25 @@ function TrackSheet({ kind, lang, dir }: { kind: "audio" | "subs"; lang: string;
       <P label="Track name"><TBox ph="Keep the file's name" /></P>
       <P label="Place after"><Combo value={kind === "audio" ? "Video" : "Audio"} w="100%" /></P>
       <span className="checks">
-        <label className="ck"><Chk on={false} />Default</label>
+        <label className="ck"><Chk on />Default</label>
         {kind === "subs" && <label className="ck"><Chk on={false} />Forced</label>}
       </span>
+      {kind === "audio" && (
+        <P label="Reference" wide>
+          <Combo value="Audio 1 · Korean · FLAC 2.0, in every video" w="100%" />
+        </P>
+      )}
     </>
   );
 }
 
-export function Subs2() {
+export function Subs2({ overlay }: { overlay?: ReactNode } = {}) {
+  const { go } = useProto();
   const [sel, setSel] = useState<number | null>(2);
   return (
     <Window2
       page="subtitles"
+      overlay={overlay}
       cols="minmax(0,1fr)"
       tools={
         <>
@@ -195,7 +202,7 @@ export function Subs2() {
       >
         <Table cols="24px minmax(0,1fr) minmax(0,1fr) 72px" head={["#", "Video", "Subtitle file", " Delay"]}>
           {VIDEOS.map((v, i) => (
-            <Tr key={v.name} on={sel === i} onClick={() => setSel(i)}>
+            <Tr key={v.name} on={sel === i} onClick={() => setSel(i)} onDoubleClick={() => go("subs-edit")}>
               <span className="num t3">{i + 1}</span>
               <span className="truncate t2">{v.name}</span>
               <span className="cell"><Grip /><span className="truncate">{SUBS[i].name}</span></span>
@@ -248,10 +255,10 @@ export function Audio2({ overlay }: { overlay?: ReactNode }) {
             <Cmd sm icon={<AddRegular />} title="New track" />
           </>
         }
-        end={<><span className="t3">Against</span><Combo ghost sm value="1 · Korean · FLAC" w={148} /><Combo ghost sm value="All rows" w={96} /><SearchBox /></>}
+        end={<><Combo ghost sm value="All rows" w={96} /><SearchBox /></>}
         sheet={<TrackSheet kind="audio" lang="Hindi" dir={DUB_DIR} />}
       >
-        <Table cols="24px minmax(0,1fr) minmax(0,1fr) 68px 56px 104px 148px" head={["#", "Video", "Audio file", " Delay", " Frames", "Confidence", "Status"]}>
+        <Table cols="24px minmax(0,1fr) minmax(0,1fr) 112px 68px 56px 104px 148px" head={["#", "Video", "Audio file", "Against", " Delay", " Frames", "Confidence", "Status"]}>
           {DUBS.map((d, i) => {
             const m = d.m;
             const filled = m.kind === "ok" || m.kind === "rate";
@@ -260,6 +267,7 @@ export function Audio2({ overlay }: { overlay?: ReactNode }) {
                 <span className="num t3">{i + 1}</span>
                 <span className="truncate t2">{VIDEOS[i].name}</span>
                 <span className="cell"><Grip /><span className="truncate">{d.name}</span></span>
+                <Combo ghost sm value={i === 7 ? "2 · Korean" : "1 · Korean"} w="100%" />
                 <span className={cx("r num", !filled && "t3")} style={{ display: "flex", color: filled ? "var(--accent-text)" : undefined }}>{filled && "delay" in m ? m.delay : "0.000"}</span>
                 <span className="r num t2" style={{ display: "flex" }}>{m.kind === "ok" ? `+${m.frames}` : <Dash />}</span>
                 {"conf" in m ? <span className="cell num t2"><Meter pct={m.conf} />{m.conf}%</span> : <Dash />}
@@ -447,6 +455,80 @@ export function Attachments2() {
   );
 }
 
+/* ------------------------------------------------------ subtitle file edit */
+
+type Stream = { n: number; text: string; def?: boolean };
+const STREAMS: Stream[] = [
+  { n: 1, text: "English · SubRip/SRT · English / 4kHDHub.com" },
+  { n: 2, text: "English · SubRip/SRT · English / SDH / 4kHDHub.com", def: true },
+];
+
+/** A subtitle file's own settings, from a double-click on its row: the same
+ *  fields as the track, laid out in two columns; the flags on one line,
+ *  their explanations on hover; the file's tracks as a list; and "for every
+ *  file" on one line at the end. */
+export function SubsEdit2() {
+  const { go } = useProto();
+  return (
+    <Subs2
+      overlay={
+        <div className="smoke">
+          <div className="dialog xl fit" role="dialog" aria-label="Edit subtitle file">
+            <div className="dh">
+              <div className="grow col" style={{ minWidth: 0 }}>
+                <div className="dt">Edit subtitle file</div>
+                <div className="ds truncate">Goblin.S01E03.en.srt · with {VIDEOS[2].name}</div>
+              </div>
+              <Cmd icon={<DismissRegular />} title="Close (Esc)" onClick={() => go("subs")} />
+            </div>
+            <div className="db edit">
+              <div className="egrid">
+                <Fld label="Language"><Combo value="English" w="100%" /></Fld>
+                <Fld label="Track name"><TBox ph="Keep the file's name" /></Fld>
+                <Fld label="Delay"><TBox value="0.000" unit="s" mono /></Fld>
+                <Fld label="Place after"><Combo value="After audio tracks" w="100%" /></Fld>
+              </div>
+              <div className="row" style={{ gap: 28 }}>
+                <label className="ck" title="The first included track becomes the default"><Chk on />Default</label>
+                <label className="ck" title="Forced display for the copied tracks"><Chk on={false} />Forced</label>
+                <label className="ck" title="Before the video's own subtitles, the first one default"><Chk on={false} />First and default</label>
+              </div>
+              <div className="col" style={{ gap: 6 }}>
+                <div className="row" style={{ gap: 4 }}>
+                  <span className="strong grow">Tracks in this file</span>
+                  <Cmd sm icon={<TimelineRegular />}>Track delays…</Cmd>
+                  <Cmd sm icon={<CheckmarkRegular />}>All</Cmd>
+                  <Cmd sm icon={<DismissRegular />}>None</Cmd>
+                </div>
+                <div className="elist">
+                  {STREAMS.map((st) => (
+                    <div key={st.n} className="erow">
+                      <Chk on />
+                      <span className="num t3">{st.n}</span>
+                      <span className="grow truncate">{st.text}</span>
+                      {st.def && <span className="t3 sm">Default</span>}
+                      <span className="rx"><Cmd sm icon={<EditRegular />} title="Language, name and delay" /></span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="df">
+              <span className="l">
+                <span className="t3">For every file</span>
+                <label className="ck"><Chk on={false} />This delay</label>
+                <label className="ck"><Chk on={false} />Every setting</label>
+              </span>
+              <Btn onClick={() => go("subs")}>Cancel</Btn>
+              <Btn accent onClick={() => go("subs")}>Save</Btn>
+            </div>
+          </div>
+        </div>
+      }
+    />
+  );
+}
+
 /* ------------------------------------------------------------ edit tracks */
 
 type Row = { name: string; lang: string; copy: boolean; def?: boolean; forced?: boolean; added?: boolean };
@@ -560,6 +642,10 @@ function SaveToBox({ on }: { on?: boolean }) {
         <span className="ch"><ChevronDownRegular /></span>
       </button>
       <button type="button" className="destb" title="Choose the folder" aria-label="Choose the folder"><FolderOpenRegular /></button>
+      <label className="ck destck" title="Replace files that are already there: the sources themselves when no folder is set">
+        <Chk on={false} />
+        Overwrite
+      </label>
     </span>
   );
 }
@@ -577,7 +663,6 @@ function SaveTo() {
         </span>
         <span className="sm t3 truncate">Goblin.S01E01.1080p.BluRay.x264-HDEX.mkv</span>
       </Fld>
-      <label className="ck"><Toggle on={false} />Overwrite the source when no folder is set</label>
     </div>
   );
 }
