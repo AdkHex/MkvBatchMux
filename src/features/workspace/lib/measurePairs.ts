@@ -2,7 +2,7 @@
  *  No movie/series mode: measuring anything other than the mux's resolved mapping risks measuring pair A while muxing pair B. */
 
 import type { ExternalFile, VideoFile } from "@/shared/types";
-import type { MeasurePair } from "@/shared/types/audiosync";
+import type { MeasurePair, SyncResult } from "@/shared/types/audiosync";
 import { buildStrictVideoMatcher } from "./muxJobBuilder";
 
 /** A pair plus the identifiers needed to write the result back. */
@@ -59,6 +59,44 @@ export interface BuildMeasurementPlanInput {
 /** The video audio stream measured against when the user has not chosen one.
  *  Index is among the video's audio tracks, not all tracks — the engine counts audio streams from zero, same as AudioSyncMaster's default. */
 export const DEFAULT_REFERENCE_TRACK = 0;
+
+const slashes = (path: string) => path.replace(/\\/g, "/");
+const baseName = (path: string) => slashes(path).replace(/^.*\//, "");
+
+/** A pair whose dub is the video's own track: the same file, the same audio
+ *  stream. Its delay is zero by definition, so it is not worth an engine run
+ *  -- which on a 4K remux is minutes of decoding to confirm it. */
+export function isSameTrack(pair: Pick<MeasurePair, "primaryPath" | "secondaryPath" | "primaryTrack" | "secondaryTrack">): boolean {
+  return pair.primaryTrack === pair.secondaryTrack && slashes(pair.primaryPath) === slashes(pair.secondaryPath);
+}
+
+/** The result a same-track pair would measure, given without measuring. */
+export function sameTrackResult(pair: MeasurePair, fps?: number | null): SyncResult {
+  return {
+    videoFile: baseName(pair.primaryPath),
+    audioFile: baseName(pair.secondaryPath),
+    primaryPath: pair.primaryPath,
+    secondaryPath: pair.secondaryPath,
+    delayMs: 0,
+    delayAtStartMs: 0,
+    confidence: 1,
+    driftMsPerS: 0,
+    totalDriftMs: 0,
+    hasSignificantDrift: false,
+    startDelayMs: 0,
+    endDelayMs: 0,
+    windowsUsed: null,
+    windowsTotal: null,
+    error: null,
+    elapsedMs: 0,
+    primaryTrack: pair.primaryTrack,
+    secondaryTrack: pair.secondaryTrack,
+    primaryFps: fps ?? null,
+    secondaryFps: fps ?? null,
+    method: "survey",
+    warnings: ["The audio file is the video itself, the same track, so its delay is 0. Check the pairing."],
+  };
+}
 
 /** The same reference track for every video: the one at `index` among its
  *  audio tracks, or its last one when it has fewer. Videos with no audio

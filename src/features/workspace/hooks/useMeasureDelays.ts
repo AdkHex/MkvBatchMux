@@ -9,6 +9,7 @@ import { ENGINE_DEFAULTS, WIDE_SEARCH_MS } from "@/shared/types/audiosync";
 import {
   audiosyncEngineStatus,
   listenMeasureDelaysDone,
+  listenMeasureDelaysFile,
   listenMeasureDelaysProgress,
   listenMeasureDelaysResult,
   listenTimelineScanDone,
@@ -27,16 +28,18 @@ import {
 } from "@/features/workspace/lib/timelineScan";
 import {
   buildMeasurementPlan,
+  isSameTrack,
   parseMeasurementKey,
+  sameTrackResult,
   type PlannedMeasurement,
 } from "@/features/workspace/lib/measurePairs";
+import { pairDone, pairMoved, type RunProgress } from "@/features/workspace/lib/measureProgress";
 
-export interface MeasureProgress {
+export interface MeasureProgress extends RunProgress {
   /** Measuring delays; then either searching wider for the pairs that found nothing, or, when
    *  the whole-timeline option is on, scanning each pair's full timeline for cuts. */
   phase: "measure" | "wide" | "scan";
-  processed: number;
-  total: number;
+  /** The video of the pair that finished last. */
   current: string | null;
 }
 
@@ -80,6 +83,8 @@ export function useMeasureDelays({
   });
   const maxWorkersRef = useRef<number>(ENGINE_DEFAULTS.maxWorkers);
   const scansRef = useRef<TimelineScan[]>([]);
+  // Videos whose pair finished this pass, so a late event cannot put one back in flight.
+  const finishedRef = useRef<Set<string>>(new Set());
   // Pairs the engine already laid along the whole timeline while measuring: their plan came
   // back with the result, so scanning them again would only repeat the slowest work.
   const scannedByMeasureRef = useRef<Set<string>>(new Set());
@@ -189,7 +194,7 @@ export function useMeasureDelays({
       .map((planned) => planned.pair)
       .filter((pair) => !scannedByMeasureRef.current.has(pair.key));
     if (pairs.length === 0) return false;
-    setProgress({ phase: "scan", processed: 0, total: pairs.length, current: null });
+    setProgress({ phase: "scan", processed: 0, total: pairs.length, current: null, active: {} });
     try {
       await scanTimelineStart({ runId, pairs, maxWorkers: maxWorkersRef.current });
       return true;
@@ -209,7 +214,8 @@ export function useMeasureDelays({
     const settings = settingsRef.current;
     passRef.current = "wide";
     runIdRef.current = runId;
-    setProgress({ phase: "wide", processed: 0, total: pairs.length, current: null });
+    finishedRef.current = new Set();
+    setProgress({ phase: "wide", processed: 0, total: pairs.length, current: null, active: {} });
     try {
       await measureDelaysStart({
         runId,
@@ -238,12 +244,18 @@ export function useMeasureDelays({
 
     listenMeasureDelaysProgress((payload) => {
       if (payload.runId !== runIdRef.current) return;
-      setProgress({
+      // The engine names the pair that just finished, not one being measured.
+      if (payload.current) finishedRef.current.add(payload.current);
+      setProgress((prev) => ({
+        ...pairDone(prev ?? { active: {}, processed: 0, total: payload.total }, payload.current, payload.processed, payload.total),
         phase: passRef.current,
-        processed: payload.processed,
-        total: payload.total,
         current: payload.current,
-      });
+      }));
+    }).then(collect);
+
+    listenMeasureDelaysFile((payload) => {
+      if (payload.runId !== runIdRef.current) return;
+      setProgress((prev) => (prev ? pairMoved(prev, payload.file, payload.percent, finishedRef.current) : prev));
     }).then(collect);
 
     listenMeasureDelaysResult((payload) => {
@@ -290,13 +302,11 @@ export function useMeasureDelays({
 
     listenTimelineScanProgress((payload) => {
       if (payload.runId !== runIdRef.current) return;
-      const planned = payload.key ? planRef.current.get(payload.key) : undefined;
-      const name = planned?.pair.secondaryPath.split(/[\\/]/).pop() ?? null;
-      setProgress({
-        phase: "scan",
-        processed: payload.processed,
-        total: payload.total,
-        current: name && payload.percent < 100 ? `${name} (${payload.percent}%)` : null,
+      const video = (payload.key ? planRef.current.get(payload.key) : undefined)?.videoName;
+      setProgress((prev) => {
+        const base: MeasureProgress = { active: prev?.active ?? {}, phase: "scan", processed: payload.processed, total: payload.total, current: null };
+        if (!video) return base;
+        return payload.percent >= 100 ? pairDone(base, video, payload.processed, payload.total) : { ...base, active: { ...base.active, [video]: payload.percent } };
       });
     }).then(collect);
 
@@ -369,11 +379,26 @@ export function useMeasureDelays({
       scansRef.current = [];
       scannedByMeasureRef.current = new Set();
       retryKeysRef.current = new Set();
+      finishedRef.current = new Set();
       passRef.current = "measure";
       planRef.current = new Map(plan.measurements.map((m) => [m.pair.key, m]));
 
+      // An audio file that is the video itself, same track, is zero by
+      // definition: answered here rather than measured for minutes.
+      const same = plan.measurements.filter((m) => isSameTrack(m.pair));
+      const toMeasure = plan.measurements.filter((m) => !isSameTrack(m.pair));
+      for (const m of same) applyResult(m.pair.key, sameTrackResult(m.pair, videoFiles.find((video) => video.id === m.videoId)?.fps));
+      if (toMeasure.length === 0) {
+        runIdRef.current = null;
+        toast({
+          title: same.length === 1 ? "That audio file is the video itself" : `${same.length} audio files are their videos themselves`,
+          description: "Same file, same track: the delay is 0. Check the pairing if that is not what you meant.",
+        });
+        return;
+      }
+
       setIsMeasuring(true);
-      setProgress({ phase: "measure", processed: 0, total: plan.measurements.length, current: null });
+      setProgress({ phase: "measure", processed: 0, total: toMeasure.length, current: null, active: {} });
 
       // Built field by field: settings saved by older versions carry keys the engine must not see.
       const settings = {
@@ -389,7 +414,7 @@ export function useMeasureDelays({
       try {
         await measureDelaysStart({
           runId,
-          pairs: plan.measurements.map((m) => m.pair),
+          pairs: toMeasure.map((m) => m.pair),
           ...settings,
           fast: false,
           timeline: fullTimelineRef.current,
@@ -405,7 +430,7 @@ export function useMeasureDelays({
         });
       }
     },
-    [engine, isMeasuring, referenceTrackByVideoId, videoFiles, measurement],
+    [engine, isMeasuring, referenceTrackByVideoId, videoFiles, measurement, applyResult],
   );
 
   const cancel = useCallback(async () => {

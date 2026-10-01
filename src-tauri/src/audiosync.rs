@@ -220,6 +220,18 @@ struct MeasureProgressEvent {
     current: Option<String>,
 }
 
+/// One pair the engine is working on: when it starts (`percent` 0) and as
+/// its windows complete. `file` is the video's file name. The engine runs
+/// several pairs at once, and its progress event names only the pair that
+/// just finished, so this is how the app knows which ones are in flight.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MeasureFileEvent {
+    run_id: String,
+    file: String,
+    percent: u64,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct MeasureResultEvent {
@@ -920,6 +932,19 @@ pub fn measure_delays_start(
                                     .map(str::to_string),
                             },
                         );
+                    }
+                    Some(kind @ ("fileStart" | "fileProgress")) => {
+                        if let Some(file) = value.get("file").and_then(Value::as_str) {
+                            let percent = if kind == "fileStart" {
+                                0
+                            } else {
+                                value.get("percent").and_then(Value::as_u64).unwrap_or(0).min(100)
+                            };
+                            let _ = app_for_run.emit_all(
+                                "measure-delays-file",
+                                MeasureFileEvent { run_id: run_id.clone(), file: file.to_string(), percent },
+                            );
+                        }
                     }
                     Some("result") => {
                         // The engine flattens the result onto the event itself.

@@ -7,6 +7,8 @@ import {
   parseMeasurementKey,
   plannedReferenceTrack,
   referenceForEveryVideo,
+  isSameTrack,
+  sameTrackResult,
 } from "./measurePairs";
 import { buildMuxJobRequests } from "./muxJobBuilder";
 
@@ -657,5 +659,28 @@ describe("referenceForEveryVideo", () => {
     const one = makeVideo("b", "B.mkv", [audio("1")]);
     const none = makeVideo("c", "C.mkv", []);
     expect(referenceForEveryVideo([three, one, none], 2)).toEqual({ a: 2, b: 0 });
+  });
+});
+
+describe("isSameTrack", () => {
+  const pair = (primaryPath: string, secondaryPath: string, primaryTrack = 0, secondaryTrack = 0) => ({ primaryPath, secondaryPath, primaryTrack, secondaryTrack });
+
+  it("is the video's own track: same file, same stream", () => {
+    expect(isSameTrack(pair("H:\\Films\\A.mkv", "H:\\Films\\A.mkv"))).toBe(true);
+    expect(isSameTrack(pair("H:\\Films\\A.mkv", "H:/Films/A.mkv"))).toBe(true);
+  });
+
+  it("is not another stream of the same file, nor another file", () => {
+    expect(isSameTrack(pair("/f/A.mkv", "/f/A.mkv", 0, 1))).toBe(false);
+    expect(isSameTrack(pair("/f/A.mkv", "/f/A.hin.mka"))).toBe(false);
+  });
+
+  it("measures zero, at the video's frame rate, and says why", () => {
+    const result = sameTrackResult(
+      { key: "k", primaryPath: "H:\\Films\\A.mkv", secondaryPath: "H:\\Films\\A.mkv", method: "order", score: 1, primaryTrack: 0, secondaryTrack: 0 },
+      23.976,
+    );
+    expect(result).toMatchObject({ videoFile: "A.mkv", delayMs: 0, delayAtStartMs: 0, confidence: 1, error: null, primaryFps: 23.976 });
+    expect(result.warnings?.[0]).toMatch(/same track/);
   });
 });
