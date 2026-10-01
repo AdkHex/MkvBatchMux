@@ -147,17 +147,25 @@ async function measure(request: MeasureStartRequest) {
   let processed = 0;
   const total = request.pairs.length;
   const queue = [...request.pairs];
+  // As the real engine does: several pairs at once, each announced by its
+  // video when it starts and as its windows complete; the progress event
+  // comes after a result and names the pair that just finished.
   const worker = async () => {
     while (queue.length > 0) {
       const pair = queue.shift()!;
-      emitEvent("measure-delays-progress", { runId: request.runId, processed, total, current: nameOf(pair.secondaryPath) });
-      await nap(700 + (processed % 3) * 250);
-      if (state.measureCancelled) return;
+      const video = nameOf(pair.primaryPath);
+      emitEvent("measure-delays-file", { runId: request.runId, file: video, percent: 0 });
+      const windows = 6;
+      for (let w = 1; w <= windows; w++) {
+        await nap((700 + (episodeOf(nameOf(pair.secondaryPath)) % 3) * 400) / windows);
+        if (state.measureCancelled) return;
+        emitEvent("measure-delays-file", { runId: request.runId, file: video, percent: Math.round(5 + (75 * w) / windows) });
+      }
       const i = episodeOf(nameOf(pair.secondaryPath));
-      emitEvent("audiosync-log", `Measured ${nameOf(pair.secondaryPath)} against ${nameOf(pair.primaryPath)}`);
-      emitEvent("measure-delays-result", { runId: request.runId, key: pair.key, result: measureResult(i, nameOf(pair.primaryPath), nameOf(pair.secondaryPath)) });
+      emitEvent("audiosync-log", `Measured ${nameOf(pair.secondaryPath)} against ${video}`);
+      emitEvent("measure-delays-result", { runId: request.runId, key: pair.key, result: measureResult(i, video, nameOf(pair.secondaryPath)) });
       processed += 1;
-      emitEvent("measure-delays-progress", { runId: request.runId, processed, total, current: null });
+      emitEvent("measure-delays-progress", { runId: request.runId, processed, total, current: video });
     }
   };
   await Promise.all(Array.from({ length: Math.min(4, request.maxWorkers || 4) }, worker));

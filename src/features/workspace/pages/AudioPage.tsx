@@ -29,6 +29,7 @@ import { audioFpsFor, formatAudioFps, needsRateChange } from "@/features/workspa
 import { measureFindings, measureOutcome, measureStatus, measurementsOf } from "@/features/workspace/lib/measureVerdict";
 import { DEFAULT_REFERENCE_TRACK, plannedReferenceTrack, referenceForEveryVideo } from "@/features/workspace/lib/measurePairs";
 import { frameOffset } from "@/features/workspace/lib/delayConversion";
+import { runFraction } from "@/features/workspace/lib/measureProgress";
 import { applyTimelineDelay } from "@/features/workspace/lib/timelineScan";
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
 import { useTabState, type TrackConfig } from "@/features/workspace/store/useTabState";
@@ -899,10 +900,12 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   const lcd: LcdProps = isMeasuring
     ? {
         icon: "run",
-        l1: measureProgress ? `${phaseWord} ${Math.max(1, Math.min(measureProgress.processed + (measureProgress.phase === "scan" ? 1 : 0) + (measureProgress.processed < measureProgress.total ? 1 : 0), measureProgress.total))} of ${measureProgress.total}` : "Measuring",
-        l2: measureProgress?.current ?? undefined,
-        pct: measureProgress && measureProgress.total > 0 ? (measureProgress.processed / measureProgress.total) * 100 : null,
-        time: run.current && measureProgress ? (timeLeftText(Date.now() - run.current.startedAt, measureProgress.processed / Math.max(1, measureProgress.total)) ?? undefined) : undefined,
+        // Several pairs run at once, so the count is of those done, and the
+        // bar and time left include how far along the running ones are.
+        l1: measureProgress ? `${phaseWord} · ${measureProgress.processed} of ${measureProgress.total} done` : phaseWord,
+        l2: measureProgress && Object.keys(measureProgress.active).length ? `${Object.keys(measureProgress.active).length} in progress` : undefined,
+        pct: measureProgress && measureProgress.total > 0 ? runFraction(measureProgress) * 100 : null,
+        time: run.current && measureProgress ? (timeLeftText(Date.now() - run.current.startedAt, runFraction(measureProgress)) ?? undefined) : undefined,
       }
     : audioFiles.length === 0
       ? { l1: `Drop a folder of audio files for Audio ${activeAudioTrack}` }
@@ -1137,15 +1140,21 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
             formats={{ value: currentConfig.extension, options: extensionOptions(AUDIO_EXTENSIONS), onChange: (extension) => updateCurrentConfig({ extension }) }}
             extra={
               <SheetField label="Reference" wide>
-                <Combo<number>
-                  label="Measure every dub against"
-                  value={referenceChoices.length ? (sharedReference ?? -1) : null}
-                  placeholder="The videos' first audio track"
-                  options={[...referenceChoices, ...(sharedReference === null ? [{ value: -1, label: "Differs by video" }] : [])]}
-                  w="100%"
-                  disabled={isMeasuring || referenceChoices.length < 2}
-                  onChange={(index) => index >= 0 && setReferenceForAll(index)}
-                />
+                {referenceChoices.length > 1 ? (
+                  <Combo<number>
+                    label="Measure every dub against"
+                    value={sharedReference ?? -1}
+                    options={[...referenceChoices, ...(sharedReference === null ? [{ value: -1, label: "Differs by video: see Against" }] : [])]}
+                    w="100%"
+                    disabled={isMeasuring}
+                    onChange={(index) => index >= 0 && setReferenceForAll(index)}
+                  />
+                ) : (
+                  // Nothing to choose: say why, rather than offer a list of one.
+                  <span className="t2 truncate" title={referenceChoices[0]?.label}>
+                    {withAudio.length === 0 ? "No video loaded yet" : "Each video has one audio track, so each is measured against it"}
+                  </span>
+                )}
               </SheetField>
             }
           />
@@ -1172,9 +1181,13 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                     : measuredStatus!;
               const pending = file ? hasPendingDelay(file) : false;
               const shownDelay = file ? (file.pendingDelay ?? file.delay) : undefined;
-              const running = inRun && measureProgress?.current === file?.name;
+              // In flight: the engine names a pair by its video.
+              const runningPct = inRun && video ? measureProgress?.active[video.name] : undefined;
               const measured = file?.measuredDelay && !file.measuredDelay.error ? file.measuredDelay : null;
-              const frames = measured ? frameOffset(measured.appliedMs, measured.primaryFps) : null;
+              // Frames are the Delay column's, in frames: only when that delay is
+              // the measured one, never a withheld measurement beside a 0.000.
+              const delayIsMeasured = Boolean(measured && (pending || file?.delayProvenance === "measured"));
+              const frames = delayIsMeasured && shownDelay !== undefined ? frameOffset(shownDelay * 1000, video?.fps ?? measured?.primaryFps) : null;
               return (
                 <Tr
                   key={file?.id ?? `video-${video?.id}`}
@@ -1213,7 +1226,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                   ) : (
                     <span className="t3">{file ? "—" : ""}</span>
                   )}
-                  {!file ? <span /> : running ? <Status s="run" pct={null} text="Measuring" /> : inRun && rowState?.s === "ready" ? <Status s="wait" /> : <Status s={rowState!.s} text={rowState!.text} />}
+                  {!file ? <span /> : runningPct !== undefined ? <Status s="run" pct={runningPct} /> : inRun && rowState?.s === "ready" ? <Status s="wait" /> : <Status s={rowState!.s} text={rowState!.text} />}
                 </Tr>
               );
             })}

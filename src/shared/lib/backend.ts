@@ -5,6 +5,7 @@ import type { OptionsData, VideoFile, ExternalFile, MuxSettings } from "@/shared
 import type {
   EngineStatus,
   MeasureDoneEvent,
+  MeasureFileEvent,
   MeasureProgressEvent,
   MeasureResultEvent,
   MeasureStartRequest,
@@ -245,6 +246,10 @@ export function listenMeasureDelaysProgress(handler: (payload: MeasureProgressEv
   return listen<MeasureProgressEvent>("measure-delays-progress", (event) =>
     handler(event.payload),
   );
+}
+
+export function listenMeasureDelaysFile(handler: (payload: MeasureFileEvent) => void) {
+  return listen<MeasureFileEvent>("measure-delays-file", (event) => handler(event.payload));
 }
 
 export function listenMeasureDelaysResult(handler: (payload: MeasureResultEvent) => void) {

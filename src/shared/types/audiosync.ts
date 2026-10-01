@@ -247,6 +247,14 @@ export interface MeasureProgressEvent {
   current: string | null;
 }
 
+/** A pair the engine has started (`percent` 0) or moved on (each window done).
+ *  `file` is the video's file name. */
+export interface MeasureFileEvent {
+  runId: string;
+  file: string;
+  percent: number;
+}
+
 export interface MeasureResultEvent {
   runId: string;
   /** The `key` from the originating MeasurePair. */
