@@ -396,3 +396,19 @@ describe("a measurement pass over a mixed set", () => {
     expect(hasPendingDelay(applyAllPendingDelays(staged))).toBe(false);
   });
 });
+
+describe("applyMeasurement with a minor slip", () => {
+  it("stages the delay before a slip of about a frame, and still records the step", () => {
+    const updated = apply(makeFile(), makeResult({ delayMs: 87.7, isLikelyCut: true, isMinorSlip: true, cutMagnitudeMs: 41.7 }));
+    expect(updated.pendingDelay).toBeCloseTo(-0.088, 6);
+    expect(updated.measuredDelay?.isLikelyCut).toBe(true);
+    expect(updated.measuredDelay?.isMinorSlip).toBe(true);
+  });
+
+  it("keeps each sample window and how many agree, for the details view", () => {
+    const window = { positionS: 12, matched: true, delayMs: 87.7, confidence: 0.99, peakRatio: 90, confirmed: true, waveformRatio: 1200, mix: "me" as const, agrees: true, reason: null };
+    const updated = apply(makeFile(), makeResult({ windowDetails: [window], agreeingWindows: 1 }));
+    expect(updated.measuredDelay?.windows).toEqual([window]);
+    expect(updated.measuredDelay?.agreeingWindows).toBe(1);
+  });
+});

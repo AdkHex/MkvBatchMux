@@ -16,6 +16,7 @@ import {
   formatPlayerDelayMs,
   formatRateConversion,
   formatRateDrift,
+  isBlockingCut,
   isUnconvincing,
   rateConversionFor,
 } from "./delayConversion";
@@ -76,6 +77,8 @@ export function measureFindings(m: MeasuredDelay, currentReferenceTrack?: number
     // A completed timeline scan lists every cut with its position, which says
     // more than the quick measurement's single split.
     const scannedForCuts = Boolean(m.timeline && !m.timeline.error);
+    // A slip of about a frame is reported but does not hold the delay back.
+    const blockingCut = isBlockingCut(m);
     const conversion = m.isRateMismatch ? rateConversionFor(m) : null;
     // Checked before the others: a result this large is not a delay, and
     // saying "different cut" about it would be a guess at the cause.
@@ -87,7 +90,18 @@ export function measureFindings(m: MeasuredDelay, currentReferenceTrack?: number
         cause: `${formatPlayerDelayMs(m.engineDelayMs)} is far larger than any real audio delay — a container offset is milliseconds, occasionally a second or two, so this was measured but not filled in. It nearly always means the correlator locked onto a repeated passage: the same music cue, an ident, or a stretch of near-silence that occurs twice. A high confidence does not rule that out, because it only says the sample windows agreed with each other, and a repeated passage looks identical in every window.`,
         fix: "Choose a reference track that actually shares dialogue with this dub and measure again — a music-only or commentary track is the usual cause. If the audio comes from a release with an extra logo or intro, trim it first, or type the offset by hand. Use Apply anyway only after playing both files at the same timestamp and confirming the offset is real.",
       });
-    if (!implausible && m.isLikelyCut && !scannedForCuts) {
+    if (!implausible && m.isLikelyCut && m.isMinorSlip && !scannedForCuts) {
+      const cutAt = m.cutPositionS ?? null;
+      const size = m.cutMagnitudeMs != null ? `${Math.abs(m.cutMagnitudeMs).toFixed(0)} ms` : "about a frame";
+      out.push({
+        tone: "warn",
+        word: "Minor slip",
+        line: `The offset moves by ${size}${cutAt !== null ? ` at ${formatClock(cutAt)}` : ""}, about a frame. Delay filled in.`,
+        cause: `The offset steps by ${size}${cutAt !== null ? ` at ${formatClock(cutAt)}` : ""}${m.cutUncertaintyS != null && m.cutUncertaintyS >= 0.5 ? ` (±${m.cutUncertaintyS.toFixed(0)} s)` : ""}: a slip of about one frame, the kind a dub picks up when it is conformed to another master. That is below what a viewer notices — lips look in sync until the sound leads the picture by about 45 ms or trails it by about 125 ms (ITU-R BT.1359) — so the delay measured before it was filled in.`,
+        fix: `Nothing is needed for ordinary watching. To check, play a dialogue scene just after ${cutAt !== null ? formatClock(cutAt) : "the slip"}; the delay there differs by ${size}.`,
+      });
+    }
+    if (!implausible && blockingCut && !scannedForCuts) {
       const cutAt = m.cutPositionS ?? null;
       out.push({
         tone: "warn",
@@ -105,7 +119,7 @@ export function measureFindings(m: MeasuredDelay, currentReferenceTrack?: number
       });
     }
     // Ranked below the two structural problems, which explain themselves more specifically.
-    if (!implausible && !m.isLikelyCut && weak)
+    if (!implausible && !blockingCut && weak)
       out.push({
         tone: "warn",
         word: "Weak match",
@@ -113,7 +127,7 @@ export function measureFindings(m: MeasuredDelay, currentReferenceTrack?: number
         cause: `The analysis never found a clear peak — the sample windows disagreed with each other, so at ${formatConfidence(m.confidence)} the offset beside this is not a measurement of anything and was not filled in. It usually means the two files share little audible material: a heavily re-mixed dub, a reference track that is music and effects only, a different encode, or simply the wrong pairing.`,
         fix: "Check this audio really belongs to this video, then pick a reference track with dialogue in it and measure again. If it stays low, set the delay by hand after listening to both at the same timestamp — Apply anyway accepts this number unchanged rather than improving it.",
       });
-    if (!m.isLikelyCut && m.isRateMismatch)
+    if (!blockingCut && m.isRateMismatch)
       out.push({
         tone: "warn",
         word:
@@ -128,7 +142,7 @@ export function measureFindings(m: MeasuredDelay, currentReferenceTrack?: number
           ? `Turn on Correct the frame rate: it muxes the track with a ${conversion.num}/${conversion.den} stretch, which is the exact conversion between these two rates${conversion.basis === "measured" ? " as far as the measurement can tell — check the end of the file before running a batch" : ""}. A delay on its own only lines up the start.`
           : "Measure this row again so the engine can name both rates; without them a stretch ratio would be a guess, and a wrong one drifts a file that a plain delay merely leaves imperfect.",
       });
-    if (!m.isLikelyCut && !m.isRateMismatch && m.hasSignificantDrift)
+    if (!blockingCut && !m.isRateMismatch && m.hasSignificantDrift)
       out.push({
         tone: "warn",
         word: "Drift",
@@ -248,7 +262,7 @@ function timelineFindings(m: MeasuredDelay): Finding[] {
 /** Whether a measurement's delay was held back from Apply (the old
  *  "Apply anyway" rule). */
 export function isWithheld(m: MeasuredDelay): boolean {
-  return !m.error && (isImplausible(m) || m.isLikelyCut || isWeak(m));
+  return !m.error && (isImplausible(m) || isBlockingCut(m) || isWeak(m));
 }
 
 /** The Status column for one measured file or track. */

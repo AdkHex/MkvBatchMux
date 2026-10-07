@@ -103,8 +103,23 @@ export function measureResult(i: number, videoName: string, audioName: string): 
     elapsedMs: 9000 + i * 311,
     primaryFps: 23.976,
     method: "survey",
+    // Six windows on one offset, as a Hindi dub over the English M&E measures.
+    agreeingWindows: 6,
+    windowDetails: [62, 571, 1080, 1589, 2098, 2607].map((positionS, w) => ({
+      positionS,
+      matched: true,
+      delayMs: -1312 + [0.04, -0.11, 0.08, 0.02, -0.06, 0.13][w],
+      confidence: 0.99,
+      peakRatio: 40 + w * 7,
+      confirmed: true,
+      waveformRatio: 900 + w * 120,
+      mix: w % 2 === 0 ? ("me" as const) : ("full" as const),
+      agrees: true,
+      reason: null,
+    })),
   };
   const special: Record<number, Partial<SyncResult>> = {
+    3: { isLikelyCut: true, isMinorSlip: true, cutPositionS: 1934, cutMagnitudeMs: 41.7, cutUncertaintyS: 0.4 },
     2: { delayMs: -1296 },
     4: {
       isLikelyCut: true,

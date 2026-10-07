@@ -25,10 +25,16 @@ export function isAutoFillable(result: SyncResult): boolean {
   if (result.error) return false;
   const delay = sourceDelayMs(result);
   if (delay === null) return false;
-  if (result.isLikelyCut) return false;
+  if (isBlockingCut(result)) return false;
   if (Math.abs(delay) > MAX_PLAUSIBLE_OFFSET_MS) return false;
   if (isUnconvincing(result)) return false;
   return true;
+}
+
+/** A cut that keeps the delay out of the field: any step the engine did not call a minor slip.
+ *  A slip of about a frame cannot be seen, so the delay before it is still worth applying. */
+export function isBlockingCut(measured: { isLikelyCut?: boolean | null; isMinorSlip?: boolean | null }): boolean {
+  return Boolean(measured.isLikelyCut) && !measured.isMinorSlip;
 }
 
 /** Whether the survey failed to place the pair at all, so a wider search may find it: no delay,
@@ -328,11 +334,11 @@ export function formatRateDrift(conversion: RateConversion): string {
 export function withheldReason(
   measured: Pick<
     MeasuredDelay,
-    "isLikelyCut" | "engineDelayMs" | "confidence" | "error"
+    "isLikelyCut" | "isMinorSlip" | "engineDelayMs" | "confidence" | "error"
   >,
 ): string | null {
   if (measured.error) return measured.error;
-  if (measured.isLikelyCut) {
+  if (isBlockingCut(measured)) {
     return "These look like different cuts, so no single delay aligns them.";
   }
   if (Math.abs(measured.engineDelayMs) > MAX_PLAUSIBLE_OFFSET_MS) {

@@ -106,3 +106,24 @@ describe("measureOutcome", () => {
     expect(outcome.tone).toBe("ok");
   });
 });
+
+describe("a minor slip", () => {
+  const slip = m({ isLikelyCut: true, isMinorSlip: true, cutPositionS: 3723.5, cutMagnitudeMs: 41.7 });
+
+  it("is reported as a slip, not a different cut, and does not hold the delay back", () => {
+    const words = measureFindings(slip).map((finding) => finding.word);
+    expect(words).toContain("Minor slip");
+    expect(words).not.toContain("Different cut");
+    expect(isWithheld(slip)).toBe(false);
+    expect(measureStatus(slip, { pending: true }).text).toBe("Minor slip");
+  });
+
+  it("says where it is and that the delay was filled in", () => {
+    const finding = measureFindings(slip).find((f) => f.word === "Minor slip");
+    expect(finding?.line).toBe("The offset moves by 42 ms at 1:02:03.500, about a frame. Delay filled in.");
+  });
+
+  it("leaves a real cut withheld", () => {
+    expect(isWithheld(m({ isLikelyCut: true, isMinorSlip: false, cutMagnitudeMs: 3000 }))).toBe(true);
+  });
+});

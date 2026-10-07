@@ -9,11 +9,11 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import type { MeasuredDelay } from "@/shared/types";
-import type { TimelineEdit } from "@/shared/types/audiosync";
+import type { MeasureWindow, TimelineEdit } from "@/shared/types/audiosync";
 import { formatAudioFps } from "@/features/workspace/lib/audioFps";
 import { measureFindings, type Finding } from "@/features/workspace/lib/measureVerdict";
 
-import { MeasureSection } from "./MeasurePane";
+import { MeasureSection, windowsSummary } from "./MeasurePane";
 
 afterEach(cleanup);
 
@@ -250,5 +250,44 @@ describe("the full-timeline scan", () => {
     const { onUseTimelineDelay } = renderPane(measured);
     fireEvent.click(screen.getByRole("button", { name: /Use timeline delay \(\+2633\.0 ms\)/ }));
     expect(onUseTimelineDelay).toHaveBeenCalledOnce();
+  });
+});
+const w = (overrides: Partial<MeasureWindow> = {}): MeasureWindow => ({
+  positionS: 10,
+  matched: true,
+  delayMs: -1.0,
+  confidence: 0.99,
+  peakRatio: 80,
+  confirmed: true,
+  waveformRatio: 1100,
+  mix: "full",
+  agrees: true,
+  reason: null,
+  ...overrides,
+});
+
+describe("windowsSummary", () => {
+  it("says how many windows agree, how many the waveforms confirmed and how many used the M&E", () => {
+    const windows = [w(), w({ positionS: 50, mix: "me" }), w({ positionS: 90, confirmed: false, waveformRatio: null })];
+    expect(windowsSummary({ windows, agreeingWindows: 3 })).toBe("3 of 3 agree · 2 confirmed by waveform · 1 on music & effects");
+  });
+
+  it("is absent for a record measured before windows were kept", () => {
+    expect(windowsSummary({})).toBeNull();
+  });
+});
+
+describe("Window details", () => {
+  it("lists every window with its delay, what it matched on and whether it agrees", () => {
+    const windows = [
+      w({ positionS: 12, delayMs: -1.234, mix: "me" }),
+      w({ positionS: 3725, matched: false, delayMs: null, confirmed: false, waveformRatio: null, agrees: null, reason: "the reference track is silent or near-silent here" }),
+    ];
+    renderPane(ntscMeasured({ isRateMismatch: false, hasSignificantDrift: false, windows, agreeingWindows: 1 }));
+    expect(screen.getByText("1 of 2 agree · 1 confirmed by waveform · 1 on music & effects")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Window details" }));
+    const rows = screen.getAllByRole("listitem").map((row) => row.textContent);
+    expect(rows).toContain("0:00:12.000+1.234 msMusic & effectsWaveforms agree99%Yes");
+    expect(rows).toContain("1:02:05.000the reference track is silent or near-silent here");
   });
 });

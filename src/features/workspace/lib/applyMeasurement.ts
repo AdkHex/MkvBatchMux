@@ -33,6 +33,10 @@ export function buildMeasuredDelay(
     error: result.error ?? null,
     ...(result.method ? { method: result.method } : {}),
     ...(result.warnings && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
+    ...(result.isMinorSlip ? { isMinorSlip: true } : {}),
+    ...(result.windowDetails && result.windowDetails.length > 0
+      ? { windows: result.windowDetails, agreeingWindows: result.agreeingWindows ?? null }
+      : {}),
   };
 }
 
@@ -158,6 +162,7 @@ export function acceptWithheldMeasurement(file: ExternalFile, trackId: number | 
       error: null,
       elapsedMs: null,
       isLikelyCut: measured.isLikelyCut,
+      isMinorSlip: measured.isMinorSlip ?? false,
       isRateMismatch: measured.isRateMismatch,
       primaryFps: measured.primaryFps,
     },

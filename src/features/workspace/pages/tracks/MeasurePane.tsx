@@ -8,6 +8,7 @@ import {
   CheckmarkRegular,
   ChevronDownRegular,
   ChevronUpRegular,
+  DataBarVerticalRegular,
   ErrorCircleFilled,
   GaugeRegular,
   TimelineRegular,
@@ -15,10 +16,11 @@ import {
 } from "@fluentui/react-icons";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { engineMsToDelaySeconds, formatFrameOffset, formatPlayerDelayMs, formatRateConversion, rateConversionFor } from "@/features/workspace/lib/delayConversion";
+import { engineMsToDelaySeconds, formatFrameOffset, formatPlayerDelayMs, formatRateConversion, playerDelayMs, rateConversionFor } from "@/features/workspace/lib/delayConversion";
 import { isWithheld, measureFindings, type Finding } from "@/features/workspace/lib/measureVerdict";
-import { canUseTimelineDelay } from "@/features/workspace/lib/timelineScan";
+import { canUseTimelineDelay, formatClock } from "@/features/workspace/lib/timelineScan";
 import type { MeasuredDelay, StretchSetting } from "@/shared/types";
+import type { MeasureWindow } from "@/shared/types/audiosync";
 import { Dialog } from "@/ui/frame";
 import { Btn, DL, Links, Meter, TRow, Toggle } from "@/ui/kit";
 
@@ -124,6 +126,75 @@ function StretchRow({ measured, value, onChange, disabled }: { measured: Measure
   );
 }
 
+const WINDOW_COLS = "92px 104px 124px 132px 92px 64px";
+
+/** A window's delay to the microsecond, in the player's convention: the
+ *  windows agree far more closely than the 0.1 ms the row shows. */
+const windowDelay = (engineMs: number) => {
+  const value = playerDelayMs(engineMs) ?? 0;
+  return `${value > 0 ? "+" : ""}${value.toFixed(3)} ms`;
+};
+
+/** "6 of 6 agree · 6 confirmed by waveform · 2 on music & effects". */
+export function windowsSummary(measured: Pick<MeasuredDelay, "windows" | "agreeingWindows">): string | null {
+  const windows = measured.windows;
+  if (!windows || windows.length === 0) return null;
+  const confirmed = windows.filter((w) => w.confirmed).length;
+  const me = windows.filter((w) => w.matched && w.mix === "me").length;
+  return [
+    `${measured.agreeingWindows ?? 0} of ${windows.length} agree`,
+    confirmed > 0 ? `${confirmed} confirmed by waveform` : null,
+    me > 0 ? `${me} on music & effects` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** Every sample window of a measurement: where it sat, what it measured,
+ *  from what, and whether it agrees with the rest. */
+export function WindowDetails({ windows, onClose }: { windows: MeasureWindow[]; onClose: () => void }) {
+  return (
+    <Dialog
+      size="wide"
+      title="Sample windows"
+      sub="Each window is measured on its own; the delay is read from the ones that agree"
+      onClose={onClose}
+      foot={<Btn accent onClick={onClose}>Close</Btn>}
+    >
+      <div className="col" style={{ gap: 4 }}>
+        <div className="t3 sm" style={{ display: "grid", gridTemplateColumns: WINDOW_COLS, gap: 12, padding: "0 11px" }} aria-hidden>
+          <span>At</span>
+          <span style={{ textAlign: "right" }}>Delay</span>
+          <span>Matched on</span>
+          <span>Check</span>
+          <span>Confidence</span>
+          <span>Agrees</span>
+        </div>
+        <div className="elist" role="list" aria-label="Sample windows">
+          {windows.map((w) => (
+            <div key={w.positionS} className="erow" role="listitem" style={{ display: "grid", gridTemplateColumns: WINDOW_COLS, gap: 12 }}>
+              <span className="num t2">{formatClock(w.positionS)}</span>
+              {w.matched && w.delayMs !== null ? (
+                <>
+                  <span className="num" style={{ textAlign: "right" }}>{windowDelay(w.delayMs)}</span>
+                  <span className="t2">{w.mix === "me" ? "Music & effects" : "Full mix"}</span>
+                  <span className="t2" title={w.confirmed ? "The raw waveforms line up here (GCC-PHAT), so this window is placed to a fraction of a sample" : "Placed from the timing of sounds alone"}>
+                    {w.confirmed ? "Waveforms agree" : "Onsets only"}
+                  </span>
+                  <span className="cell num t2"><Meter pct={w.confidence * 100} />{Math.round(w.confidence * 100)}%</span>
+                  <span className={w.agrees ? "ok" : "warn"}>{w.agrees ? "Yes" : "No"}</span>
+                </>
+              ) : (
+                <span className="t3" style={{ gridColumn: "2 / -1" }}>{w.reason ?? "Found nothing"}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 export function TimelineDetails({ text, onClose }: { text: string; onClose: () => void }) {
   return (
     <Dialog size="wide" title="Timeline scan" sub="AudioSyncMaster's Dub sync plan for this pair" onClose={onClose} foot={<Btn accent onClick={onClose}>Close</Btn>}>
@@ -164,7 +235,11 @@ export function MeasureSection({
   more?: ReactNode;
 }) {
   const [details, setDetails] = useState(false);
+  const [windowDetails, setWindowDetails] = useState(false);
   const findings = measureFindings(measured, currentReferenceTrack);
+  // The windows are the survey's; a timeline result was read from the whole
+  // runtime instead, and "6 of 6 agree" beside its edits would contradict it.
+  const windows = measured.method === "timeline" ? null : windowsSummary(measured);
   const top = findings.find((finding) => finding.tone !== "ok");
   const withheld = isWithheld(measured);
   const scan = measured.timeline;
@@ -209,6 +284,7 @@ export function MeasureSection({
           </L>
         )}
         {scan?.description && <L icon={<TimelineRegular />} onClick={() => setDetails(true)}>Timeline details</L>}
+        {windows && <L icon={<DataBarVerticalRegular />} onClick={() => setWindowDetails(true)}>Window details</L>}
         {onMeasureAgain && <L icon={<GaugeRegular />} onClick={onMeasureAgain} disabled={busy}>Measure again</L>}
         {more}
       </Links>
@@ -224,10 +300,12 @@ export function MeasureSection({
           ],
           ["Frames", frames ?? "—"],
           ["Method", measured.method === "timeline" ? "Whole timeline" : "Sample windows"],
+          ...(windows ? ([["Windows", windows]] as [ReactNode, ReactNode][]) : []),
         ]}
       />
       <Findings findings={findings} />
       {details && scan?.description && <TimelineDetails text={scan.description} onClose={() => setDetails(false)} />}
+      {windowDetails && measured.windows && <WindowDetails windows={measured.windows} onClose={() => setWindowDetails(false)} />}
     </>
   );
 }

@@ -65,6 +65,16 @@ export interface SyncResult {
   primaryFps?: number | null;
   secondaryFps?: number | null;
   isLikelyCut?: boolean | null;
+  /** Every step in the pair is a slip of about a frame or less (engine SLIP_MAX_FRAMES), which a
+   *  viewer cannot see, so the delay before it is still used. Absent from engines before it existed. */
+  isMinorSlip?: boolean | null;
+  /** The largest step the engine calls a slip for this video, in ms. */
+  slipLimitMs?: number | null;
+  /** How many windows sit within a few ms of what the file is doing. Six of six out of a search
+   *  range of seconds cannot be a coincidence, so the engine's confidence counts it. */
+  agreeingWindows?: number | null;
+  /** Each sample window as the engine measured it, for the details view. */
+  windowDetails?: MeasureWindow[] | null;
   /** Where the cut is in the video's timeline, how tightly that was pinned
    *  down, and how far the offset jumps there. Present only when isLikelyCut. */
   cutPositionS?: number | null;
@@ -91,6 +101,28 @@ export interface SyncResult {
   /** The whole-timeline plan the timeline route measured from, so it need not be scanned again. */
   timeline?: TimelinePlan | null;
   timelineDescription?: string | null;
+}
+
+/** One sample window of a measurement, on the result's terms (codec delay already removed). */
+export interface MeasureWindow {
+  /** Where the window starts in the video, in seconds. */
+  positionS: number;
+  matched: boolean;
+  /** Engine convention, like SyncResult.delayMs; null when the window found nothing. */
+  delayMs: number | null;
+  confidence: number;
+  peakRatio: number;
+  /** The raw waveforms agree at this offset (GCC-PHAT): the two tracks share actual audio here,
+   *  and the window is placed to a fraction of a sample rather than from onsets alone. */
+  confirmed: boolean;
+  waveformRatio: number | null;
+  /** "full": the whole mix. "me": music and effects only, the dialogue cancelled out -- what a
+   *  dub in another language shares with the original. */
+  mix: "full" | "me";
+  /** Sits with the other windows; null when the window found nothing. */
+  agrees: boolean | null;
+  /** Why the window found nothing, when it did not. */
+  reason: string | null;
 }
 
 /** One place the dub departs from the video, as the engine lists it however small. */
@@ -281,6 +313,12 @@ export interface MeasuredDelay {
   hasSignificantDrift: boolean;
   isRateMismatch: boolean;
   isLikelyCut: boolean;
+  /** The step is a slip of about a frame or less: reported, but the delay is still filled in.
+   *  Optional so records stored before it existed still load. */
+  isMinorSlip?: boolean;
+  /** Each sample window, and how many sit together; optional for older stored records. */
+  windows?: MeasureWindow[];
+  agreeingWindows?: number | null;
   correctionRatio: number | null;
   rateSourceFps: number | null;
   rateTargetFps: number | null;
