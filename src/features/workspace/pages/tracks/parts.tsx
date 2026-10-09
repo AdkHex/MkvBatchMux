@@ -161,6 +161,7 @@ export function FileTrackRow({
   on,
   onChange,
   isDefault,
+  note,
   onEdit,
 }: {
   index: number;
@@ -168,6 +169,8 @@ export function FileTrackRow({
   on: boolean;
   onChange: (on: boolean) => void;
   isDefault?: boolean;
+  /** Beside the label, such as the track's own delay. */
+  note?: string;
   onEdit: () => void;
 }) {
   return (
@@ -175,6 +178,7 @@ export function FileTrackRow({
       <Chk name={`Include track ${index + 1}`} on={on} onChange={onChange} />
       <span className="num t3">{index + 1}</span>
       <span className="grow truncate" title={label}>{label}</span>
+      {note && <span className="num t2 sm">{note}</span>}
       {isDefault && <span className="t3 sm">Default</span>}
       <span className="rx"><Cmd sm icon={<EditRegular />} title="Language, name and delay" onClick={onEdit} /></span>
     </div>

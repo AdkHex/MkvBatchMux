@@ -16,15 +16,17 @@ import {
 } from "@fluentui/react-icons";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { engineMsToDelaySeconds, formatFrameOffset, formatPlayerDelayMs, formatRateConversion, playerDelayMs, rateConversionFor } from "@/features/workspace/lib/delayConversion";
-import { isWithheld, measureFindings, type Finding } from "@/features/workspace/lib/measureVerdict";
+import { engineMsToDelaySeconds, formatFrameOffset, formatPlayerDelayMs, formatRateConversion, frameOffset, playerDelayMs, rateConversionFor } from "@/features/workspace/lib/delayConversion";
+import { isWithheld, measureFindings, measureStatus, type Finding } from "@/features/workspace/lib/measureVerdict";
 import { canUseTimelineDelay, formatClock } from "@/features/workspace/lib/timelineScan";
+import { shownTrackDelay, type TrackDelay } from "@/features/workspace/lib/trackDelays";
 import type { MeasuredDelay, StretchSetting } from "@/shared/types";
 import type { MeasureWindow } from "@/shared/types/audiosync";
 import { Dialog } from "@/ui/frame";
-import { Btn, DL, Links, Meter, TRow, Toggle } from "@/ui/kit";
+import { Btn, DL, Links, Meter, Status, TRow, Toggle, cx } from "@/ui/kit";
 
 import { formatDelay } from "../common";
+import { languageName } from "./parts";
 
 const findingIcon = (tone: Finding["tone"]) =>
   tone === "ok" ? <CheckmarkCircleFilled className="ok" /> : tone === "warn" ? <WarningFilled className="warn" /> : <ErrorCircleFilled className="bad" />;
@@ -200,6 +202,59 @@ export function TimelineDetails({ text, onClose }: { text: string; onClose: () =
     <Dialog size="wide" title="Timeline scan" sub="AudioSyncMaster's Dub sync plan for this pair" onClose={onClose} foot={<Btn accent onClick={onClose}>Close</Btn>}>
       <pre className="mono" style={{ margin: 0, whiteSpace: "pre-wrap", color: "var(--text-2)", lineHeight: "18px" }}>{text}</pre>
     </Dialog>
+  );
+}
+
+/** A track's name in a list of a file's tracks: "Tamil · E-AC3 · Surround 5.1". */
+export const trackLabel = (entry: Pick<TrackDelay, "track" | "index">) =>
+  [entry.track?.language ? languageName(entry.track.language) : null, entry.track?.codec, entry.track?.name].filter(Boolean).join(" · ") || `Track ${entry.index + 1}`;
+
+const TRACK_COLS = "20px minmax(0,1fr) 72px 44px 92px 132px";
+
+/** Every muxed track of a multi-track file, one line each: the delay it goes
+ *  into the mux with, and how its own measurement went. */
+export function TrackDelayList({ entries, fps, currentReferenceTrack }: { entries: TrackDelay[]; fps?: number | null; currentReferenceTrack?: number }) {
+  return (
+    <div className="col" style={{ gap: 4 }}>
+      <div className="t3 sm" style={{ display: "grid", gridTemplateColumns: TRACK_COLS, gap: 12, padding: "0 11px" }} aria-hidden>
+        <span>#</span>
+        <span>Track</span>
+        <span style={{ textAlign: "right" }}>Delay</span>
+        <span style={{ textAlign: "right" }}>Frames</span>
+        <span>Confidence</span>
+        <span>Status</span>
+      </div>
+      <div className="elist" role="list" aria-label="Delay of each track">
+        {entries.map((entry) => {
+          const measured = entry.measured && !entry.measured.error ? entry.measured : null;
+          const pending = entry.pending !== undefined;
+          const shown = shownTrackDelay(entry);
+          const frames = measured && (pending || entry.provenance === "measured") ? frameOffset(shown * 1000, fps ?? measured.primaryFps) : null;
+          const status = entry.measured ? measureStatus(entry.measured, { pending, currentReferenceTrack }) : { s: "ready" as const, text: "Not measured" };
+          const label = trackLabel(entry);
+          return (
+            <div key={entry.trackId} className="erow" role="listitem" aria-label={label} style={{ display: "grid", gridTemplateColumns: TRACK_COLS, gap: 12 }}>
+              <span className="num t3">{entry.index + 1}</span>
+              <span className="truncate" title={label}>{label}</span>
+              <span
+                className={cx("num", pending ? "acc" : !entry.own && "t3")}
+                style={{ textAlign: "right" }}
+                title={pending ? "Measured, not applied yet" : entry.own ? "This track's own delay" : "The file's delay: this track has none of its own"}
+              >
+                {formatDelay(shown)}
+              </span>
+              <span className="num t2" style={{ textAlign: "right" }}>{frames === null ? "—" : `${frames > 0 ? "+" : ""}${frames}`}</span>
+              {measured?.confidence != null ? (
+                <span className="cell num t2"><Meter pct={measured.confidence * 100} />{Math.round(measured.confidence * 100)}%</span>
+              ) : (
+                <span className="t3">—</span>
+              )}
+              <Status s={status.s} text={status.text} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

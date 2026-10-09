@@ -110,6 +110,19 @@ export function referenceForEveryVideo(videos: VideoFile[], index: number): Reco
   return out;
 }
 
+/** The position that, given to `referenceForEveryVideo`, yields the choices in
+ *  force; null when videos were set apart one by one. */
+export function sharedReferenceIndex(videos: VideoFile[], referenceTrackByVideoId: Record<string, number>): number | null {
+  const counts = videos
+    .map((video) => ({ id: video.id, count: (video.tracks ?? []).filter((track) => track.type === "audio").length }))
+    .filter(({ count }) => count > 0);
+  if (counts.length === 0) return DEFAULT_REFERENCE_TRACK;
+  const chosen = counts.map(({ id, count }) => Math.min(referenceTrackByVideoId[id] ?? DEFAULT_REFERENCE_TRACK, count - 1));
+  const index = Math.max(...chosen);
+  // A video with fewer tracks takes its last, so "track 3 for all" still agrees.
+  return counts.every(({ count }, i) => chosen[i] === Math.min(index, count - 1)) ? index : null;
+}
+
 /** The video audio track the next measurement of this file would use; matches what `buildMeasurementPlan` will reach. */
 export function plannedReferenceTrack(
   video: VideoFile,
@@ -118,16 +131,25 @@ export function plannedReferenceTrack(
   return chooseMeasurementTracks(video, [], referenceTrackByVideoId).primaryTrack;
 }
 
-/** Whether a file's delay should be left alone by a bulk measurement pass. */
-function shouldSkip(file: ExternalFile): boolean {
+/** Whether a delay should be left alone by a bulk measurement pass: the
+ *  file's own, or one track's. */
+function shouldSkip(entry: Pick<ExternalFile, "delayProvenance" | "measuredDelay"> | undefined): boolean {
+  if (!entry) return false;
   // A hand-typed delay always wins; measurement never overwrites one.
-  if (file.delayProvenance === "manual") return true;
+  if (entry.delayProvenance === "manual") return true;
   // Already measured: re-measuring is an explicit, separate action.
-  if (file.delayProvenance === "measured") return true;
+  if (entry.delayProvenance === "measured") return true;
   // Already attempted and withheld (failure, cut, or too-large result). A correlator with no true
   // peak returns a different arbitrary answer each retry, so leave it be; per-row re-measure still forces one.
-  if (file.measuredDelay) return true;
+  if (entry.measuredDelay) return true;
   return false;
+}
+
+/** A file with more than one audio track going into the mux is measured
+ *  track by track: one container often carries dubs from different sources
+ *  (Hindi, Tamil, Telugu), each with its own offset to the video. */
+export function measuresEachTrack(file: ExternalFile): boolean {
+  return includedAudioTrackIndices(file).length > 1;
 }
 
 export function buildMeasurementPlan({
@@ -161,33 +183,43 @@ export function buildMeasurementPlan({
     }
 
     const includedTracks = includedAudioTrackIndices(file);
-
-    // One measurement per file, not per track: every track in a container shares the video's
-    // timeline offset, and main.rs falls back to the file-level delay for any track without its own.
     const chosen = chooseMeasurementTracks(video, includedTracks, referenceTrackByVideoId);
-
-    measurements.push({
+    const planned = (trackId: number | null, secondaryTrack: number): PlannedMeasurement => ({
       pair: {
         primaryPath: video.path,
         secondaryPath: file.path,
-        key: measurementKey(file.id, null),
+        key: measurementKey(file.id, trackId),
         method: "mkvbatchmux",
         score: 1,
         primaryTrack: chosen.primaryTrack,
-        secondaryTrack: chosen.secondaryTrack,
+        secondaryTrack,
       },
       audioFileId: file.id,
-      trackId: null,
+      trackId,
       videoId: video.id,
       videoName: video.name,
       audioName: file.name,
     });
+
+    if (includedTracks.length <= 1) {
+      measurements.push(planned(null, chosen.secondaryTrack));
+      return;
+    }
+
+    // Each muxed track against the same reference, its result written to that
+    // track's own override, which main.rs prefers to the file's delay.
+    const tracks = includedTracks.filter((entry) => force || !shouldSkip(file.trackOverrides?.[entry.trackId]));
+    if (tracks.length === 0) {
+      skipped.push(file);
+      return;
+    }
+    for (const entry of tracks) measurements.push(planned(entry.trackId, entry.streamIndex));
   });
 
   return { measurements, unmatched, skipped };
 }
 
-/** Pick the one track pair a file's measurement should be taken from.
+/** Pick the reference track, and the dub track a file-level measurement is taken from.
  *  Defaults to audio stream 0, matching AudioSyncMaster, since a smarter per-track default would silently diverge from it. */
 function chooseMeasurementTracks(
   video: VideoFile,
@@ -213,7 +245,7 @@ function chooseMeasurementTracks(
  *  `trackId` is this app's own identifier, used for trackOverrides; the engine
  *  instead counts audio streams from zero, so both are carried.
  */
-function includedAudioTrackIndices(
+export function includedAudioTrackIndices(
   file: ExternalFile,
 ): Array<{ trackId: number; streamIndex: number }> {
   const audioTracks = (file.tracks ?? []).filter((track) => track.type === "audio");

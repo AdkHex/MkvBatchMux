@@ -194,6 +194,53 @@ pub struct MeasurePair {
     pub secondary_track: i64,
 }
 
+/// Which of a run's pairs a result answers. The paths name the pair, except
+/// for a file measured track by track: several pairs on the same two paths,
+/// told apart by the tracks the engine echoes. A failure the engine raised
+/// before it knew the tracks echoes track 0 whatever was asked, so such a
+/// failure goes to every pair of those paths still unanswered; the right one
+/// keeps it, and each other's own result replaces it when that arrives.
+struct ResultKeys {
+    pairs: Vec<MeasurePair>,
+    answered: std::collections::HashSet<String>,
+}
+
+impl ResultKeys {
+    fn new(pairs: &[MeasurePair]) -> Self {
+        Self { pairs: pairs.to_vec(), answered: Default::default() }
+    }
+
+    fn take(&mut self, result: &Value) -> Vec<String> {
+        let text = |field: &str| result.get(field).and_then(Value::as_str).unwrap_or_default();
+        let (primary, secondary) = (text("primaryPath"), text("secondaryPath"));
+        let candidates: Vec<&MeasurePair> = self
+            .pairs
+            .iter()
+            .filter(|pair| pair.primary_path == primary && pair.secondary_path == secondary)
+            .collect();
+        if candidates.len() <= 1 {
+            return candidates.into_iter().map(|pair| pair.key.clone()).collect();
+        }
+        let track = |field: &str| result.get(field).and_then(Value::as_i64);
+        let tracks = track("primaryTrack").zip(track("secondaryTrack"));
+        let failed = !text("error").is_empty();
+        if let Some((primary_track, secondary_track)) = tracks.filter(|&echoed| !(failed && echoed == (0, 0))) {
+            if let Some(pair) = candidates
+                .iter()
+                .find(|pair| pair.primary_track == primary_track && pair.secondary_track == secondary_track)
+            {
+                self.answered.insert(pair.key.clone());
+                return vec![pair.key.clone()];
+            }
+        }
+        candidates
+            .into_iter()
+            .filter(|pair| !self.answered.contains(&pair.key))
+            .map(|pair| pair.key.clone())
+            .collect()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MeasureStartRequest {
@@ -849,16 +896,9 @@ pub fn measure_delays_start(
         );
     }
 
-    // Map the engine's per-result paths back to the key the frontend sent, so
-    // write-back never has to re-derive the pairing.
-    let mut keys_by_pair: std::collections::HashMap<(String, String), String> =
-        std::collections::HashMap::new();
-    for pair in &request.pairs {
-        keys_by_pair.insert(
-            (pair.primary_path.clone(), pair.secondary_path.clone()),
-            pair.key.clone(),
-        );
-    }
+    // Map each result back to the key the frontend sent, so write-back never
+    // has to re-derive the pairing.
+    let mut result_keys = ResultKeys::new(&request.pairs);
 
     let payload = serde_json::json!({
         "command": "analyze",
@@ -948,25 +988,23 @@ pub fn measure_delays_start(
                     }
                     Some("result") => {
                         // The engine flattens the result onto the event itself.
-                        let primary = value
-                            .get("primaryPath")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                        let secondary = value
-                            .get("secondaryPath")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                        let key = keys_by_pair.get(&(primary, secondary)).cloned();
-                        let _ = app_for_run.emit_all(
-                            "measure-delays-result",
-                            MeasureResultEvent {
-                                run_id: run_id.clone(),
-                                key,
-                                result: value.clone(),
-                            },
-                        );
+                        let keys = result_keys.take(&value);
+                        if keys.is_empty() {
+                            let _ = app_for_run.emit_all(
+                                "measure-delays-result",
+                                MeasureResultEvent { run_id: run_id.clone(), key: None, result: value.clone() },
+                            );
+                        }
+                        for key in keys {
+                            let _ = app_for_run.emit_all(
+                                "measure-delays-result",
+                                MeasureResultEvent {
+                                    run_id: run_id.clone(),
+                                    key: Some(key),
+                                    result: value.clone(),
+                                },
+                            );
+                        }
                     }
                     Some("log") => {
                         if let Some(message) = value.get("message").and_then(Value::as_str) {
@@ -1385,5 +1423,61 @@ mod tests {
         // An older frontend sends neither flag: that must not turn the slow route on.
         assert!(!parsed.fast);
         assert!(!parsed.timeline);
+    }
+
+    fn dub_track(key: &str, secondary_track: i64) -> MeasurePair {
+        MeasurePair {
+            primary_path: "/v/Iron Giant.mkv".to_string(),
+            secondary_path: "/a/Iron Giant.3Audio.mkv".to_string(),
+            key: key.to_string(),
+            method: "mkvbatchmux".to_string(),
+            score: 1.0,
+            primary_track: 0,
+            secondary_track,
+        }
+    }
+
+    fn result(secondary_track: i64, error: Option<&str>) -> Value {
+        serde_json::json!({
+            "type": "result",
+            "primaryPath": "/v/Iron Giant.mkv",
+            "secondaryPath": "/a/Iron Giant.3Audio.mkv",
+            "primaryTrack": 0,
+            "secondaryTrack": secondary_track,
+            "delayMs": 120.0,
+            "error": error,
+        })
+    }
+
+    /// Hindi, Tamil and Telugu in one file: three pairs on the same two paths,
+    /// each result going back to its own track and no other.
+    #[test]
+    fn each_track_of_one_file_gets_its_own_result() {
+        let pairs = [dub_track("a1::1", 0), dub_track("a1::2", 1), dub_track("a1::3", 2)];
+        let mut keys = ResultKeys::new(&pairs);
+        assert_eq!(keys.take(&result(1, None)), vec!["a1::2"]);
+        assert_eq!(keys.take(&result(2, None)), vec!["a1::3"]);
+        assert_eq!(keys.take(&result(0, None)), vec!["a1::1"]);
+    }
+
+    /// A one-pair file answers by its paths alone, as before tracks were read.
+    #[test]
+    fn a_lone_pair_answers_by_its_paths() {
+        let mut keys = ResultKeys::new(&[dub_track("a1", 1)]);
+        assert_eq!(keys.take(&result(0, Some("stopped on an unexpected error"))), vec!["a1"]);
+        let mut none = ResultKeys::new(&[]);
+        assert!(none.take(&result(0, None)).is_empty());
+    }
+
+    /// A failure echoing the engine's default tracks cannot be pinned to one:
+    /// it reaches every track still waiting, never one already answered.
+    #[test]
+    fn an_unplaceable_failure_reaches_only_the_unanswered_tracks() {
+        let pairs = [dub_track("a1::1", 0), dub_track("a1::2", 1), dub_track("a1::3", 2)];
+        let mut keys = ResultKeys::new(&pairs);
+        assert_eq!(keys.take(&result(2, None)), vec!["a1::3"]);
+        assert_eq!(keys.take(&result(0, Some("unexpected error"))), vec!["a1::1", "a1::2"]);
+        // A failure that names its track is that track's alone.
+        assert_eq!(keys.take(&result(1, Some("no audio stream"))), vec!["a1::2"]);
     }
 }

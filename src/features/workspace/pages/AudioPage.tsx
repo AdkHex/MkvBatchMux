@@ -1,7 +1,7 @@
 /** Audio: external audio (dubs) for each video, in track slots (Audio 1,
  *  Audio 2…), with delay measurement. Row n of the list is video n and file
- *  n, which is how the mux pairs them. The logic is the old Audio tab's; the
- *  measurement readout moved from the rows into the inspector. */
+ *  n, which is how the mux pairs them. The logic is the old Audio tab's; a
+ *  double-click opens a file's popup, its measurement above its settings. */
 
 import {
   ArrowImportRegular,
@@ -10,7 +10,6 @@ import {
   CopyRegular,
   DeleteRegular,
   DismissRegular,
-  EditRegular,
   FolderOpenRegular,
   GaugeRegular,
   MusicNote2Regular,
@@ -24,13 +23,16 @@ import { runName, timeLeftText, tookText } from "@/app/history";
 import { useShell, usePageCommands, useStatus } from "@/app/shell";
 import { ImportTrackEditDialog, type ImportTrackOverride } from "@/features/workspace/components/ImportTrackEditDialog";
 import { useMeasureDelays } from "@/features/workspace/hooks/useMeasureDelays";
-import { acceptWithheldMeasurement, applyAllPendingDelays, hasPendingDelay, markDelayAsManual } from "@/features/workspace/lib/applyMeasurement";
+import { acceptWithheldMeasurement, applyAllPendingDelays, applyMeasuredDelay, hasPendingDelay, markDelayAsManual, pendingDelayCount } from "@/features/workspace/lib/applyMeasurement";
 import { audioFpsFor, formatAudioFps, needsRateChange } from "@/features/workspace/lib/audioFps";
 import { measureFindings, measureOutcome, measureStatus, measurementsOf } from "@/features/workspace/lib/measureVerdict";
-import { DEFAULT_REFERENCE_TRACK, plannedReferenceTrack, referenceForEveryVideo } from "@/features/workspace/lib/measurePairs";
+import { DEFAULT_REFERENCE_TRACK, measuresEachTrack, plannedReferenceTrack, referenceForEveryVideo, sharedReferenceIndex } from "@/features/workspace/lib/measurePairs";
 import { frameOffset } from "@/features/workspace/lib/delayConversion";
 import { runFraction } from "@/features/workspace/lib/measureProgress";
 import { applyTimelineDelay } from "@/features/workspace/lib/timelineScan";
+import { rowsWithFile, shareSettings, type EditScope } from "@/features/workspace/lib/editScope";
+import { referencePositions, trackDetails } from "@/features/workspace/lib/trackDetails";
+import { shownTrackDelay, trackDelays } from "@/features/workspace/lib/trackDelays";
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
 import { useTabState, type TrackConfig } from "@/features/workspace/store/useTabState";
 import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
@@ -45,7 +47,7 @@ import { Btn, Chk, Cmd, Combo, DL, Empty, Fld, Grip, LangCombo, Links, Meter, Sh
 import { toast } from "@/ui/toast";
 
 import { FILTER_OPTIONS, SearchBox, extensionOptions, formatDelay, formatFileSize, looksLikeFolder, matchesSearch, type FilterValue } from "./common";
-import { L, MeasureSection } from "./tracks/MeasurePane";
+import { L, MeasureSection, TrackDelayList, trackLabel } from "./tracks/MeasurePane";
 import { DeleteSlotDialog, FileTrackRow, FileTracks, ImportStreamsDialog, TrackDelaysDialog, TrackSheet, TrackTabs, languageName } from "./tracks/parts";
 
 export interface AudioPageProps {
@@ -107,22 +109,6 @@ const createExternalId = () =>
 
 const audioTracksOf = (video: VideoFile | undefined) => (video?.tracks ?? []).filter((track) => track.type === "audio");
 
-/** "2 · Korean": a reference track, short, for the Against column. */
-function shortReference(track: { language?: string }, index: number): string {
-  const language = track.language ? (CODE_TO_LABEL[track.language] ?? track.language) : null;
-  return language ? `${index + 1} · ${language}` : `${index + 1}`;
-}
-
-/** A reference track's name: enough to tell a dub from a commentary. */
-function referenceLabel(track: { language?: string; name?: string; codec?: string }, index: number): string {
-  const parts: string[] = [`${index + 1}`];
-  const language = track.language ? (CODE_TO_LABEL[track.language] ?? track.language) : null;
-  if (language) parts.push(language);
-  if (track.codec) parts.push(track.codec.toUpperCase());
-  if (track.name) parts.push(track.name);
-  return parts.join(" · ");
-}
-
 /** The worst status among a file's measurements, for its row. */
 function rowStatus(file: ExternalFile, currentReferenceTrack: number | undefined): { s: St; text: string } {
   const entries = [
@@ -160,8 +146,6 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   }));
   /** The selected row: video n and audio file n. */
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
-  /** The selected file's details popup (a double-click on its row). */
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
   /** Which audio track of each video to measure against, by video id. Empty
@@ -275,8 +259,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   /** Re-measure one row, ignoring the skip rules for it alone. */
   const remeasureFile = useCallback((fileId: string) => void beginMeasuring({ onlyAudioFileIds: [fileId], force: true }), [beginMeasuring]);
 
-  // Drives the Apply button; measuredCount separately gates the re-measure offer.
-  const pendingCount = useMemo(() => audioFiles.filter(hasPendingDelay).length, [audioFiles]);
+  // Drives the Apply button, counting each track of a multi-track file; measuredCount separately gates the re-measure offer.
+  const pendingCount = useMemo(() => audioFiles.reduce((count, file) => count + pendingDelayCount(file), 0), [audioFiles]);
   const measuredCount = useMemo(() => audioFiles.filter((file) => file.measuredDelay || Object.values(file.trackOverrides ?? {}).some((o) => o.measuredDelay)).length, [audioFiles]);
 
   const applyAllMeasuredDelays = useCallback(() => {
@@ -288,6 +272,11 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   /** Accept one file's measurement, leaving every other file alone. */
   const applyOneMeasuredDelay = useCallback(
     (fileId: string) => onAudioFilesChange(audioFiles.map((file) => (file.id === fileId ? applyAllPendingDelays(file) : file))),
+    [audioFiles, onAudioFilesChange],
+  );
+  /** Accept one track's measurement, leaving the file's other tracks alone. */
+  const applyOneTrackDelay = useCallback(
+    (fileId: string, trackId: number) => onAudioFilesChange(audioFiles.map((file) => (file.id === fileId ? applyMeasuredDelay(file, trackId) : file))),
     [audioFiles, onAudioFilesChange],
   );
 
@@ -319,6 +308,9 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [trackToDelete, setTrackToDelete] = useState<string | null>(null);
+  /** A file's popup (a double-click on its row): its measurement and its
+   *  settings, together. Follows the file, not the row, so Duplicate inside it
+   *  does not swap the file under the form. */
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingFileId, setEditingFileId] = useState<string | null>(null);
   const audioFilesCache = useRef<Record<string, ExternalFile[]>>({});
@@ -340,11 +332,15 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     trackName: "",
     language: "und",
     delay: "0.000",
+    /** Typed into the Delay field. Until then the field follows the file, so
+     *  applying a measurement in the same popup is not undone by Save. */
+    delayTouched: false,
     isDefault: false,
     isForced: false,
     muxAfter: "video",
     applyDelayToAll: false,
-    applyToAllFiles: false,
+    /** Which rows Save reaches; this one alone unless asked. */
+    scope: "row" as EditScope,
     includedTrackIds: [] as number[],
     includeSubtitles: false,
     includedSubtitleTrackIds: [] as number[],
@@ -355,6 +351,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
   const currentConfig = audioTrackConfigs[activeAudioTrack] || defaultTrackConfig;
   const editingFile = audioFiles.find((file) => file.id === editingFileId) || null;
+  const editDelay = editForm.delayTouched || !editingFile ? editForm.delay : (editingFile.delay ?? 0).toFixed(3);
   const multiDelayFile = audioFiles.find((file) => file.id === multiDelayFileId) || null;
 
   const muxAfterOptions = useMemo(() => {
@@ -477,36 +474,42 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     toast({ title: "Audio duplicated", description: `${original.name}, paired by row.` });
   };
 
+  /** The form as the popup opened, so a Save that changed nothing only closes:
+   *  saving marks the file edited by hand, which stops the slot's settings
+   *  reaching it. */
+  const editFormAtOpen = useRef("");
   const openEditDialog = (fileId: string) => {
     const file = audioFiles.find((entry) => entry.id === fileId);
     if (!file) return;
     const defaultIncluded = file.tracks && file.tracks.length > 0 ? getAudioTrackIds(file) : [];
     setEditingFileId(fileId);
-    setEditForm({
+    const form = {
       trackName: file.trackName || "",
       language: file.language || "und",
       delay: (file.delay ?? 0).toFixed(3),
+      delayTouched: false,
       isDefault: file.isDefault || false,
       isForced: file.isForced || false,
       muxAfter: file.muxAfter || "video",
       applyDelayToAll: false,
-      applyToAllFiles: false,
+      scope: "row" as EditScope,
       includedTrackIds: file.includedTrackIds !== undefined ? [...file.includedTrackIds] : defaultIncluded,
       includeSubtitles: getDefaultIncludeSubtitles(file),
       includedSubtitleTrackIds: file.includedSubtitleTrackIds !== undefined ? [...file.includedSubtitleTrackIds] : getSubtitleTrackIds(file),
       includedSubtitlesDefault: file.includedSubtitlesDefault || false,
       includedSubtitlesForced: file.includedSubtitlesForced || false,
       includedSubtitlesFirst: file.includedSubtitlesFirst || false,
-    });
+    };
+    setEditForm(form);
+    editFormAtOpen.current = JSON.stringify(form);
     setEditDialogOpen(true);
   };
 
-  const applyTrackChangesToDuplicateFiles = useCallback(
-    (fileId: string, updater: (file: ExternalFile, isTarget: boolean) => ExternalFile) => {
-      const target = audioFiles.find((entry) => entry.id === fileId);
-      if (!target) return;
-      onAudioFilesChange(audioFiles.map((file) => (file.path !== target.path ? file : updater(file, file.id === fileId))));
-    },
+  /** A track's language, name or delay, on this row only. Other rows with the
+   *  same file are paired with other videos and keep their own; the popup's
+   *  "Rows with this file" passes languages and names on, never delays. */
+  const updateOneFile = useCallback(
+    (fileId: string, updater: (file: ExternalFile) => ExternalFile) => onAudioFilesChange(audioFiles.map((file) => (file.id === fileId ? updater(file) : file))),
     [audioFiles, onAudioFilesChange],
   );
 
@@ -517,8 +520,12 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
   const applyEditChanges = () => {
     if (!editingFileId) return;
-    const delayValue = delaySecondsOrZero(editForm.delay);
-    if (editForm.applyToAllFiles) {
+    if (JSON.stringify(editForm) === editFormAtOpen.current) {
+      closeEdit();
+      return;
+    }
+    const delayValue = editForm.delayTouched ? delaySecondsOrZero(editForm.delay) : (audioFiles.find((file) => file.id === editingFileId)?.delay ?? 0);
+    if (editForm.scope === "all") {
       // Compute which track INDICES are selected in the editing file, then mirror to all files
       const editingFileData = audioFiles.find((f) => f.id === editingFileId);
       const srcAudioTracks = (editingFileData?.tracks || []).filter((t) => t.type === "audio");
@@ -579,25 +586,13 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       if (editForm.applyDelayToAll) return file.delay !== delayValue ? { ...markDelayAsManual(file, null), delay: delayValue } : file;
       return file;
     });
+    // Paired: the other rows of this file take its settings, each keeping its own delays.
     const editedTarget = updated.find((file) => file.id === editingFileId);
-    if (editedTarget) {
-      updated = updated.map((file) => {
-        if (file.id === editingFileId || file.path !== editedTarget.path) return file;
-        return {
-          ...file,
-          includedTrackIds: [...editForm.includedTrackIds],
-          includeSubtitles: editForm.includeSubtitles,
-          includedSubtitleTrackIds: [...editForm.includedSubtitleTrackIds],
-          includedSubtitlesDefault: editForm.includeSubtitles && editForm.includedSubtitlesDefault,
-          includedSubtitlesForced: editForm.includeSubtitles && editForm.includedSubtitlesForced,
-          includedSubtitlesFirst: editForm.includeSubtitles && editForm.includedSubtitlesFirst,
-          trackOverrides: { ...(file.trackOverrides || {}) },
-          isManuallyEdited: true,
-        };
-      });
-    }
+    const paired = editForm.scope === "file" && editedTarget ? updated.filter((file) => file.id !== editingFileId && file.path === editedTarget.path).length : 0;
+    if (paired > 0 && editedTarget) updated = updated.map((file) => (file.id !== editingFileId && file.path === editedTarget.path ? shareSettings(editedTarget, file) : file));
     onAudioFilesChange(updated);
     closeEdit();
+    if (paired > 0) toast({ title: `Saved to ${paired + 1} rows`, description: "Every row with this file, each keeping its own delays." });
   };
 
   const openTrackEdit = (fileId: string, trackId: number, trackType: "audio" | "subtitle") => {
@@ -633,7 +628,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     if (!trackEditTarget) return;
     const { fileId, trackId } = trackEditTarget;
     const nextDelay = delaySecondsOrZero(next.delay ?? 0);
-    applyTrackChangesToDuplicateFiles(fileId, (file) => {
+    updateOneFile(fileId, (file) => {
       const previous = file.trackOverrides?.[trackId];
       // A changed delay is hand-typed, and clears the measurement it replaces;
       // an unchanged one leaves the existing provenance and metadata intact.
@@ -648,7 +643,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
   const applyMultiDelayChanges = () => {
     if (!multiDelayFileId) return;
-    applyTrackChangesToDuplicateFiles(multiDelayFileId, (file) => {
+    updateOneFile(multiDelayFileId, (file) => {
       const targetTracks = (file.tracks || []).filter((track) => track.type === multiDelayTrackType);
       const nextOverrides = { ...(file.trackOverrides || {}) };
       targetTracks.forEach((track) => {
@@ -861,7 +856,6 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   });
 
   const selectedFile = selectedRow !== null ? audioFiles[selectedRow] : undefined;
-  const selectedVideo = selectedRow !== null ? videoFiles[selectedRow] : undefined;
   const canMoveUp = ordered && !isMeasuring && selectedRow !== null && selectedRow > 0 && selectedRow < audioFiles.length;
   const canMoveDown = ordered && !isMeasuring && selectedRow !== null && selectedRow < audioFiles.length - 1;
   const muxHoldsEngine = shell.enginePage === "mux";
@@ -929,7 +923,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     const tracks = (video.tracks ?? []).filter((track) => track.type === "audio");
     if (tracks.length === 0) return undefined;
     const value = referenceTrackByVideoId[video.id] ?? DEFAULT_REFERENCE_TRACK;
-    if (tracks.length === 1) return <span className="truncate">{referenceLabel(tracks[0], 0)}</span>;
+    if (tracks.length === 1) return <span className="truncate" title={trackDetails(tracks[0], 0)}>{trackDetails(tracks[0], 0)}</span>;
     const withChoice = videoFiles.filter((v) => (v.tracks ?? []).filter((t) => t.type === "audio").length > 1);
     return (
       <span className="col" style={{ gap: 2, minWidth: 0 }}>
@@ -939,7 +933,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           label="Measure against"
           disabled={isMeasuring}
           value={value}
-          options={tracks.map((track, index) => ({ value: index, label: referenceLabel(track, index) }))}
+          options={tracks.map((track, index) => ({ value: index, label: trackDetails(track, index) }))}
           onChange={(index) => setReferenceTrackByVideoId((prev) => ({ ...prev, [video.id]: index }))}
         />
         {withChoice.length > 1 && (
@@ -962,112 +956,126 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     );
   };
 
-  const fileLinks = (index: number, fileId: string) => (
+  const fileLinks = (index: number) => (
     <>
-      <L icon={<EditRegular />} onClick={() => openEditDialog(fileId)} disabled={isMeasuring}>Edit…</L>
       <L icon={<CopyRegular />} onClick={() => duplicateAudioFile(index)} disabled={isMeasuring}>Duplicate</L>
       <L icon={<DeleteRegular />} onClick={() => removeAudioFile(index)} disabled={isMeasuring}>Remove</L>
     </>
   );
 
-  /** Everything about one file, in the popup a double-click opens: the
-   *  measurement in full (what the right panel used to show), or its format
-   *  and delay before it is measured. */
-  const details = () => {
-    if (selectedRow === null || !selectedFile) return null;
-    const index = selectedRow;
-    const fps = audioFpsFor(selectedFile, videoFiles.find((v) => v.id === selectedFile.matchedVideoId));
-    const trackEntries = measuredTrackEntries(selectedFile);
-    const currentRef = currentReferenceFor(selectedFile);
+  /** The top of a file's popup: the measurement in full (what the right panel
+   *  used to show), every track's delay for a file measured track by track, or
+   *  its format before it is measured. Its settings follow, in editFields. */
+  const details = (file: ExternalFile) => {
+    const index = audioFiles.findIndex((entry) => entry.id === file.id);
+    const video = videoFiles[index];
+    const fps = audioFpsFor(file, videoFiles.find((v) => v.id === file.matchedVideoId));
+    const currentRef = currentReferenceFor(file);
+    const canMeasure = measurementAvailable && !muxHoldsEngine;
     const format = (() => {
-      const track = selectedFile.tracks?.find((t) => t.type === "audio");
-      return [track?.codec, track?.name, track?.bitrate ? `${Math.round(track.bitrate / 1000)} kb/s` : null].filter(Boolean).join(" · ") || selectedFile.name.split(".").pop()?.toUpperCase() || "—";
+      const track = file.tracks?.find((t) => t.type === "audio");
+      return [track?.codec, track?.name, track?.bitrate ? `${Math.round(track.bitrate / 1000)} kb/s` : null].filter(Boolean).join(" · ") || file.name.split(".").pop()?.toUpperCase() || "—";
     })();
-    if (!selectedVideo)
+    const fpsRow = fps ? ([["Frame rate", <span key="fps" className={needsRateChange(fps) || fps.ambiguous ? "warn" : undefined}>{formatAudioFps(fps)}</span>]] as [string, JSX.Element][]) : [];
+    if (!video)
       return (
         <>
           <div><div className="t3">Video</div><div className="big warn">None</div><div className="t2">Row {index + 1} is past the last video, so this file is not muxed.</div></div>
-          <DL rows={[["Format", format], ["Size", selectedFile.size ? formatFileSize(selectedFile.size) : "—"]]} />
+          <DL rows={[["Format", format], ["Size", file.size ? formatFileSize(file.size) : "—"]]} />
           <Links><L icon={<DeleteRegular />} onClick={() => removeAudioFile(index)}>Remove</L></Links>
         </>
       );
-    return (
-      <>
-        {selectedFile.measuredDelay ? (
-          <MeasureSection
-            measured={selectedFile.measuredDelay}
-            pending={selectedFile.pendingDelay !== undefined}
-            currentReferenceTrack={currentRef}
-            against={againstFor(selectedVideo)}
-            stretch={selectedFile.stretch}
-            onStretch={(next) => setStretchForFile(selectedFile.id, next)}
-            busy={isMeasuring}
-            onApply={() => applyOneMeasuredDelay(selectedFile.id)}
-            onApplyAnyway={() => applyCutDelayAnyway(selectedFile.id, null)}
-            onUseTimelineDelay={() => applyTimelineDelayFor(selectedFile.id, null)}
-            onMeasureAgain={measurementAvailable && !muxHoldsEngine ? () => remeasureFile(selectedFile.id) : undefined}
-            more={fileLinks(index, selectedFile.id)}
+    const against = againstFor(video);
+    if (measuresEachTrack(file) || (!file.measuredDelay && measuredTrackEntries(file).length > 0)) {
+      const tracks = trackDelays(file);
+      const pending = pendingDelayCount(file);
+      return (
+        <>
+          <Links>
+            {pending > 0 && <L icon={<CheckmarkRegular />} onClick={() => applyOneMeasuredDelay(file.id)} disabled={isMeasuring}>Apply {pending} {pending === 1 ? "delay" : "delays"}</L>}
+            {canMeasure && (
+              <L icon={<GaugeRegular />} onClick={() => remeasureFile(file.id)} disabled={isMeasuring}>
+                {tracks.some((entry) => entry.measured) ? "Measure every track again" : "Measure every track"}
+              </L>
+            )}
+            {fileLinks(index)}
+          </Links>
+          <DL
+            rows={[
+              ["Video", <span key="v" className="truncate" title={video.name}>{video.name}</span>],
+              ...fpsRow,
+              ...(against ? ([["Against", against]] as [string, JSX.Element][]) : []),
+            ]}
           />
-        ) : trackEntries.length > 0 ? (
-          <>
-            <Links>
-              {hasPendingDelay(selectedFile) && <L icon={<CheckmarkRegular />} onClick={() => applyOneMeasuredDelay(selectedFile.id)} disabled={isMeasuring}>Apply</L>}
-              {measurementAvailable && !muxHoldsEngine && <L icon={<GaugeRegular />} onClick={() => remeasureFile(selectedFile.id)} disabled={isMeasuring}>Measure again</L>}
-              {fileLinks(index, selectedFile.id)}
-            </Links>
-            {trackEntries.map(({ trackId, override, track, label }) => (
-              <div key={trackId} className="col" style={{ gap: 12 }}>
+          <TrackDelayList entries={tracks} fps={video.fps} currentReferenceTrack={currentRef} />
+          {tracks
+            .filter((entry) => entry.measured)
+            .map((entry) => (
+              <div key={entry.trackId} className="col" style={{ gap: 12 }}>
                 <div className="hr" />
-                <span className="sec">Track {label} · {[languageName(track.language), track.codec].filter(Boolean).join(" · ")}</span>
+                <span className="sec">Track {entry.index + 1} · {trackLabel(entry)}</span>
                 <MeasureSection
-                  measured={override.measuredDelay!}
-                  pending={override.pendingDelay !== undefined}
+                  measured={entry.measured!}
+                  pending={entry.pending !== undefined}
                   currentReferenceTrack={currentRef}
-                  stretch={override.stretch}
-                  onStretch={(next) => setStretchForTrack(selectedFile.id, trackId, next)}
+                  stretch={file.trackOverrides?.[entry.trackId]?.stretch}
+                  onStretch={(next) => setStretchForTrack(file.id, entry.trackId, next)}
                   busy={isMeasuring}
-                  onApply={() => applyOneMeasuredDelay(selectedFile.id)}
-                  onApplyAnyway={() => applyCutDelayAnyway(selectedFile.id, trackId)}
-                  onUseTimelineDelay={() => applyTimelineDelayFor(selectedFile.id, trackId)}
+                  onApply={() => applyOneTrackDelay(file.id, entry.trackId)}
+                  onApplyAnyway={() => applyCutDelayAnyway(file.id, entry.trackId)}
+                  onUseTimelineDelay={() => applyTimelineDelayFor(file.id, entry.trackId)}
                 />
               </div>
             ))}
-          </>
-        ) : (
-          <>
-            <DL
-              rows={[
-                ["Video", <span key="v" className="truncate" title={selectedVideo.name}>{selectedVideo.name}</span>],
-                ["Format", format],
-                ["Size", selectedFile.size ? formatFileSize(selectedFile.size) : "—"],
-                ["Duration", selectedFile.duration || "—"],
-                ["Delay", `${formatDelay(selectedFile.delay)} s${selectedFile.delayProvenance === "manual" ? " · typed" : ""}`],
-                ...(fps ? ([["Frame rate", <span key="fps" className={needsRateChange(fps) || fps.ambiguous ? "warn" : undefined}>{formatAudioFps(fps)}</span>]] as [string, JSX.Element][]) : []),
-                ...(againstFor(selectedVideo) ? ([["Against", againstFor(selectedVideo)!]] as [string, JSX.Element][]) : []),
-              ]}
-            />
-            <Links>
-              {measurementAvailable && !muxHoldsEngine && <L icon={<GaugeRegular />} onClick={() => remeasureFile(selectedFile.id)} disabled={isMeasuring}>Measure</L>}
-              {fileLinks(index, selectedFile.id)}
-            </Links>
-          </>
-        )}
+        </>
+      );
+    }
+    if (file.measuredDelay)
+      return (
+        <MeasureSection
+          measured={file.measuredDelay}
+          pending={file.pendingDelay !== undefined}
+          currentReferenceTrack={currentRef}
+          against={against}
+          stretch={file.stretch}
+          onStretch={(next) => setStretchForFile(file.id, next)}
+          busy={isMeasuring}
+          onApply={() => applyOneMeasuredDelay(file.id)}
+          onApplyAnyway={() => applyCutDelayAnyway(file.id, null)}
+          onUseTimelineDelay={() => applyTimelineDelayFor(file.id, null)}
+          onMeasureAgain={canMeasure ? () => remeasureFile(file.id) : undefined}
+          more={fileLinks(index)}
+        />
+      );
+    return (
+      <>
+        {/* No Delay row: the Delay field is right below, in the settings. */}
+        <DL
+          rows={[
+            ["Video", <span key="v" className="truncate" title={video.name}>{video.name}</span>],
+            ["Format", format],
+            ["Size", file.size ? formatFileSize(file.size) : "—"],
+            ["Duration", file.duration || "—"],
+            ...fpsRow,
+            ...(against ? ([["Against", against]] as [string, JSX.Element][]) : []),
+          ]}
+        />
+        <Links>
+          {canMeasure && <L icon={<GaugeRegular />} onClick={() => remeasureFile(file.id)} disabled={isMeasuring}>Measure</L>}
+          {fileLinks(index)}
+        </Links>
       </>
     );
   };
 
   const status = useStatus("audio", lcdStatus(lcd));
 
-  // Reference: which of the source's audio tracks every dub is measured
-  // against. The choices come from the video with the most audio tracks; a
-  // video with fewer takes its last one.
-  const referenceChoices = (() => {
-    const richest = videoFiles.reduce<VideoFile | undefined>((best, video) => (audioTracksOf(video).length > audioTracksOf(best).length ? video : best), undefined);
-    return audioTracksOf(richest).map((track, index) => ({ value: index, label: referenceLabel(track, index) }));
-  })();
+  // Reference: which audio track of each video its dub is measured against,
+  // set for every video at once by position; a video with fewer takes its
+  // last one. Each video's own track is written out in full under Against.
+  const referenceChoices = referencePositions(videoFiles);
   const withAudio = videoFiles.filter((video) => audioTracksOf(video).length > 0);
-  const references = new Set(withAudio.map((video) => referenceTrackByVideoId[video.id] ?? DEFAULT_REFERENCE_TRACK));
-  const sharedReference = references.size <= 1 ? ([...references][0] ?? DEFAULT_REFERENCE_TRACK) : null;
+  const sharedReference = sharedReferenceIndex(videoFiles, referenceTrackByVideoId);
   const setReferenceForAll = (index: number) => setReferenceTrackByVideoId(referenceForEveryVideo(videoFiles, index));
 
   return (
@@ -1144,15 +1152,15 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                   <Combo<number>
                     label="Measure every dub against"
                     value={sharedReference ?? -1}
-                    options={[...referenceChoices, ...(sharedReference === null ? [{ value: -1, label: "Differs by video: see Against" }] : [])]}
+                    options={[...referenceChoices, ...(sharedReference === null ? [{ value: -1, label: "Chosen video by video: see Against" }] : [])]}
                     w="100%"
                     disabled={isMeasuring}
                     onChange={(index) => index >= 0 && setReferenceForAll(index)}
                   />
                 ) : (
                   // Nothing to choose: say why, rather than offer a list of one.
-                  <span className="t2 truncate" title={referenceChoices[0]?.label}>
-                    {withAudio.length === 0 ? "No video loaded yet" : "Each video has one audio track, so each is measured against it"}
+                  <span className="t2 truncate">
+                    {withAudio.length === 0 ? "No video loaded yet" : "Each video has one audio track, so each is measured against it: see Against"}
                   </span>
                 )}
               </SheetField>
@@ -1162,7 +1170,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       >
         {audioFiles.length > 0 ? (
           <Table
-            cols="24px minmax(0,1fr) minmax(0,1fr) 112px 72px 56px 104px 148px"
+            cols="24px minmax(0,1fr) minmax(0,1fr) minmax(0,1.25fr) 72px 56px 104px 148px"
             head={["#", "Video", "Audio file", "Against", " Delay", " Frames", "Confidence", "Status"]}
             label={`Audio ${activeAudioTrack}`}
             bodyRef={bodyRef}
@@ -1180,13 +1188,25 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                     ? { s: "warn" as St, text: formatAudioFps(fps) }
                     : measuredStatus!;
               const pending = file ? hasPendingDelay(file) : false;
-              const shownDelay = file ? (file.pendingDelay ?? file.delay) : undefined;
               // In flight: the engine names a pair by its video.
               const runningPct = inRun && video ? measureProgress?.active[video.name] : undefined;
-              const measured = file?.measuredDelay && !file.measuredDelay.error ? file.measuredDelay : null;
+              // A file of several dubs: one delay when its tracks agree, else how
+              // many, each listed on hover and in full in the popup.
+              const perTrack = file && measuresEachTrack(file) ? trackDelays(file) : null;
+              const trackValues = perTrack?.map(shownTrackDelay) ?? [];
+              const tracksAgree = trackValues.every((value) => value === trackValues[0]);
+              const shownDelay = perTrack ? trackValues[0] : file ? (file.pendingDelay ?? file.delay) : undefined;
+              const delayText = !file ? "" : perTrack && !tracksAgree ? `${perTrack.length} delays` : formatDelay(shownDelay);
+              const delayTitle = perTrack ? perTrack.map((entry) => `${entry.index + 1} · ${trackLabel(entry)}: ${formatDelay(shownTrackDelay(entry))} s`).join("\n") : undefined;
+              const trackMeasurements = (perTrack ?? []).map((entry) => entry.measured).filter((m): m is NonNullable<typeof m> => Boolean(m && !m.error));
+              const measured = perTrack
+                ? ([...trackMeasurements].sort((a, b) => (a.confidence ?? 1) - (b.confidence ?? 1))[0] ?? null)
+                : file?.measuredDelay && !file.measuredDelay.error ? file.measuredDelay : null;
               // Frames are the Delay column's, in frames: only when that delay is
               // the measured one, never a withheld measurement beside a 0.000.
-              const delayIsMeasured = Boolean(measured && (pending || file?.delayProvenance === "measured"));
+              const delayIsMeasured = perTrack
+                ? tracksAgree && perTrack.every((entry) => entry.measured && !entry.measured.error && (entry.pending !== undefined || entry.provenance === "measured"))
+                : Boolean(measured && (pending || file?.delayProvenance === "measured"));
               const frames = delayIsMeasured && shownDelay !== undefined ? frameOffset(shownDelay * 1000, video?.fps ?? measured?.primaryFps) : null;
               return (
                 <Tr
@@ -1198,28 +1218,41 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                   onDoubleClick={() => {
                     if (!file) return;
                     setSelectedRow(index);
-                    setDetailsOpen(true);
+                    openEditDialog(file.id);
                   }}
                   label={file?.name ?? video?.name}
                 >
                   <span className="num t3">{index + 1}</span>
                   {video ? <span className="t2 truncate" title={video.name}>{video.name}</span> : <span className="warn">No video</span>}
-                  {file ? <span className="cell"><Grip /><span className="truncate" title={file.name}>{file.name}</span></span> : <span className="nil">—</span>}
-                  {video && audioTracksOf(video).length > 1 ? (
-                    <Combo<number>
-                      ghost
-                      sm
-                      w="100%"
-                      label={`Measure ${file?.name ?? video.name} against`}
-                      value={referenceTrackByVideoId[video.id] ?? DEFAULT_REFERENCE_TRACK}
-                      options={audioTracksOf(video).map((track, i) => ({ value: i, label: shortReference(track, i) }))}
-                      disabled={isMeasuring}
-                      onChange={(i) => setReferenceTrackByVideoId((prev) => ({ ...prev, [video.id]: i }))}
-                    />
+                  {file ? (
+                    <span className="cell">
+                      <Grip />
+                      <span className="truncate" title={file.name}>{file.name}</span>
+                      {perTrack && <span className="t3" style={{ flexShrink: 0 }} title={delayTitle}>{perTrack.length} tracks</span>}
+                    </span>
                   ) : (
-                    <span className="t3 truncate">{video && audioTracksOf(video)[0] ? shortReference(audioTracksOf(video)[0], 0) : "—"}</span>
+                    <span className="nil">—</span>
                   )}
-                  <span className={cx("r num", pending ? "acc" : "t2")} style={{ display: "flex" }}>{file ? formatDelay(shownDelay) : ""}</span>
+                  {video && audioTracksOf(video).length > 1 ? (
+                    // This video's own tracks, in full: three "Chinese" differ in codec, channels or name.
+                    <span style={{ minWidth: 0 }} title={trackDetails(audioTracksOf(video)[plannedReferenceTrack(video, referenceTrackByVideoId)], plannedReferenceTrack(video, referenceTrackByVideoId))}>
+                      <Combo<number>
+                        ghost
+                        sm
+                        w="100%"
+                        label={`Measure ${file?.name ?? video.name} against`}
+                        value={plannedReferenceTrack(video, referenceTrackByVideoId)}
+                        options={audioTracksOf(video).map((track, i) => ({ value: i, label: trackDetails(track, i) }))}
+                        disabled={isMeasuring}
+                        onChange={(i) => setReferenceTrackByVideoId((prev) => ({ ...prev, [video.id]: i }))}
+                      />
+                    </span>
+                  ) : (
+                    <span className="t3 truncate" title={video && audioTracksOf(video)[0] ? trackDetails(audioTracksOf(video)[0], 0) : undefined}>
+                      {video && audioTracksOf(video)[0] ? trackDetails(audioTracksOf(video)[0], 0) : "—"}
+                    </span>
+                  )}
+                  <span className={cx("r num", pending ? "acc" : "t2")} style={{ display: "flex" }} title={delayTitle}>{delayText}</span>
                   <span className="r num t2" style={{ display: "flex" }}>{frames === null ? (file ? "—" : "") : `${frames > 0 ? "+" : ""}${frames}`}</span>
                   {measured?.confidence != null ? (
                     <span className="cell num t2"><Meter pct={measured.confidence * 100} />{Math.round(measured.confidence * 100)}%</span>
@@ -1238,19 +1271,6 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           </Empty>
         )}
       </Panel>
-
-      {detailsOpen && selectedFile && (
-        <Dialog
-          size="xl"
-          bodyClass="flush"
-          title={selectedFile.name}
-          sub={selectedVideo ? `Row ${(selectedRow ?? 0) + 1} · with ${selectedVideo.name}` : `Row ${(selectedRow ?? 0) + 1} · no video`}
-          onClose={() => setDetailsOpen(false)}
-          foot={<Btn accent onClick={() => setDetailsOpen(false)}>Close</Btn>}
-        >
-          <div className="box-b" style={{ overflow: "visible" }}>{details()}</div>
-        </Dialog>
-      )}
 
       {importStreamsOpen && (
         <ImportStreamsDialog
@@ -1279,30 +1299,58 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
       {editDialogOpen && editingFile && (
         <Dialog
-          size="form"
-          title="Edit audio file"
-          sub={[editingFile.name, videoFiles.find((video) => video.id === editingFile.matchedVideoId)?.name].filter(Boolean).join(" · with ")}
+          size="xl"
+          bodyClass="flush"
+          title={editingFile.name}
+          sub={(() => {
+            const index = audioFiles.findIndex((file) => file.id === editingFile.id);
+            const others = rowsWithFile(audioFiles, editingFile.id).filter((row) => row !== index);
+            return [
+              videoFiles[index] ? `Row ${index + 1} · with ${videoFiles[index].name}` : `Row ${index + 1} · no video`,
+              others.length ? `same file in row${others.length === 1 ? "" : "s"} ${others.map((row) => row + 1).join(", ")}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ");
+          })()}
           onClose={closeEdit}
-          left={
-            <>
-              <span className="t3">For every file</span>
-              <Chk on={editForm.applyDelayToAll} onChange={(applyDelayToAll) => setEditForm((prev) => ({ ...prev, applyDelayToAll }))}>This delay</Chk>
-              <span title="Track choices apply by position">
-                <Chk on={editForm.applyToAllFiles} onChange={(applyToAllFiles) => setEditForm((prev) => ({ ...prev, applyToAllFiles }))}>Every setting</Chk>
-              </span>
-            </>
-          }
+          left={(() => {
+            const rows = rowsWithFile(audioFiles, editingFile.id).map((row) => row + 1);
+            const scopes: { value: EditScope; label: string }[] = [
+              { value: "row", label: "This row only" },
+              ...(rows.length > 1 ? [{ value: "file" as const, label: `Rows ${rows.join(", ")}: this file, each its own delays` }] : []),
+              { value: "all", label: "Every row: every setting, delay too" },
+            ];
+            return (
+              <>
+                <span className="t3">Save to</span>
+                <span title={editForm.scope === "all" ? "Track choices apply by position" : editForm.scope === "file" ? "Track and subtitle choices, language, names and flags; never a delay" : undefined}>
+                  <Combo<EditScope> sm label="Save to" value={editForm.scope} options={scopes} w={290} onChange={(scope) => setEditForm((prev) => ({ ...prev, scope }))} />
+                </span>
+                {editForm.scope !== "all" && (
+                  <Chk on={editForm.applyDelayToAll} onChange={(applyDelayToAll) => setEditForm((prev) => ({ ...prev, applyDelayToAll }))}>This delay to every row</Chk>
+                )}
+              </>
+            );
+          })()}
           foot={
             <>
               <Btn onClick={closeEdit}>Cancel</Btn>
-              <Btn accent disabled={!delayInputsAreValid(editForm.delay)} onClick={applyEditChanges}>Save</Btn>
+              <Btn accent disabled={!delayInputsAreValid(editDelay)} onClick={applyEditChanges}>Save</Btn>
             </>
           }
         >
+          <div className="box-b">
+          {details(editingFile)}
+          <div className="hr" />
+          <span className="sec">Settings</span>
           <div className="egrid">
             <Fld label="Language"><LangCombo value={editForm.language} onChange={(language) => setEditForm((prev) => ({ ...prev, language }))} w="100%" /></Fld>
             <Fld label="Track name"><TBox label="Track name" value={editForm.trackName} placeholder="Keep the file's name" onChange={(trackName) => setEditForm((prev) => ({ ...prev, trackName }))} /></Fld>
-            <DelayField value={editForm.delay} onChange={(delay) => setEditForm((prev) => ({ ...prev, delay }))} />
+            <DelayField
+              value={editDelay}
+              hint={measuresEachTrack(editingFile) ? "For a track without a delay of its own" : undefined}
+              onChange={(delay) => setEditForm((prev) => ({ ...prev, delay, delayTouched: true }))}
+            />
             <Fld label="Place after"><Combo<string> label="Place after" value={editForm.muxAfter} options={muxAfterOptions} w="100%" onChange={(muxAfter) => setEditForm((prev) => ({ ...prev, muxAfter }))} /></Fld>
           </div>
           {/* No "Forced": audio is never forced in practice. */}
@@ -1342,6 +1390,10 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                         setEditForm((prev) => ({ ...prev, includedTrackIds: Array.from(next) }));
                       }}
                       isDefault={track.isDefault}
+                      note={(() => {
+                        const own = editingFile.trackOverrides?.[trackId]?.delay;
+                        return own === undefined ? undefined : `${formatDelay(own)} s`;
+                      })()}
                       onEdit={() => openTrackEdit(editingFile.id, trackId, "audio")}
                     />
                   );
@@ -1444,6 +1496,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
               </FileTracks>
             </>
           )}
+          </div>
         </Dialog>
       )}
 

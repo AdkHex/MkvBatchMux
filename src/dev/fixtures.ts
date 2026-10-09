@@ -23,8 +23,8 @@ export const EPISODES = 16;
 function videoTracks(i: number): Track[] {
   const tracks: Track[] = [
     { id: "0", type: "video", codec: "AVC", language: "und", name: "1920×1080", isDefault: true },
-    { id: "1", type: "audio", codec: "FLAC", language: "kor", name: "Stereo", isDefault: true, bitrate: 1_024_000 },
-    { id: "2", type: "audio", codec: "AC-3", language: "kor", name: "Surround 5.1", bitrate: 640_000 },
+    { id: "1", type: "audio", codec: "FLAC", language: "kor", name: "Stereo", isDefault: true, bitrate: 1_024_000, channels: 2 },
+    { id: "2", type: "audio", codec: "AC-3", language: "kor", name: "Surround 5.1", bitrate: 640_000, channels: 6 },
     { id: "3", type: "subtitle", codec: "SRT", language: "eng", name: "Full", isDefault: true },
     { id: "4", type: "subtitle", codec: "SRT", language: "eng", name: "SDH" },
     { id: "5", type: "subtitle", codec: "ASS", language: "kor" },

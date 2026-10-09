@@ -149,6 +149,9 @@ struct TrackInfo {
     #[serde(rename = "isForced")]
     is_forced: Option<bool>,
     bitrate: Option<u64>, // Bitrate in bits per second
+    /// Audio channel count: 6 is 5.1. Tells apart tracks that share a language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channels: Option<u64>,
     action: Option<String>,
 }
 
@@ -1073,6 +1076,7 @@ fn parse_mkvmerge_tracks(mkvmerge: &serde_json::Value) -> Vec<TrackInfo> {
             }
             None
         });
+        let channels = properties.and_then(|p| p.get("audio_channels")).and_then(|v| v.as_u64());
 
         tracks.push(TrackInfo {
             id: track_id,
@@ -1083,6 +1087,7 @@ fn parse_mkvmerge_tracks(mkvmerge: &serde_json::Value) -> Vec<TrackInfo> {
             is_default,
             is_forced,
             bitrate,
+            channels,
             action: Some("keep".to_string()),
         });
     }
@@ -1238,6 +1243,12 @@ fn parse_tracks(mediainfo: &serde_json::Value) -> Vec<TrackInfo> {
             .get("BitRate")
             .and_then(parse_bitrate_value)
             .or_else(|| track.get("BitRate_Maximum").and_then(parse_bitrate_value));
+        // MediaInfo gives "6", or "8 / 6" for a core and its extension: the first is the full count.
+        let channels = track
+            .get("Channels")
+            .and_then(|v| v.as_str())
+            .and_then(|v| v.split('/').next())
+            .and_then(|v| v.trim().parse::<u64>().ok());
 
         tracks.push(TrackInfo {
             id: (index + 1).to_string(),
@@ -1248,6 +1259,7 @@ fn parse_tracks(mediainfo: &serde_json::Value) -> Vec<TrackInfo> {
             is_default,
             is_forced,
             bitrate,
+            channels,
             action: Some("keep".to_string()),
         });
     }
@@ -3685,6 +3697,7 @@ mod tests {
             is_default,
             is_forced: None,
             bitrate: None,
+            channels: None,
             action: None,
         }
     }
@@ -3992,6 +4005,59 @@ mod regression_tests {
             "useMkvpropedit": false,
         }))
         .expect("valid settings fixture")
+    }
+
+    /// Three Chinese tracks differ in channels if in nothing else, so the
+    /// count comes through from mkvmerge and from MediaInfo alike.
+    #[test]
+    fn audio_tracks_carry_their_channel_count() {
+        let mkvmerge = serde_json::json!({ "tracks": [
+            { "id": 0, "type": "video", "codec": "HEVC", "properties": {} },
+            { "id": 1, "type": "audio", "codec": "E-AC-3", "properties": { "language": "chi", "track_name": "Zh-cn [Dolby Digital Plus 5.1]", "audio_channels": 6 } },
+            { "id": 2, "type": "audio", "codec": "AAC", "properties": { "language": "chi", "audio_channels": 2 } },
+        ] });
+        let channels: Vec<Option<u64>> = parse_mkvmerge_tracks(&mkvmerge).iter().map(|track| track.channels).collect();
+        assert_eq!(channels, [None, Some(6), Some(2)]);
+
+        let mediainfo = serde_json::json!({ "media": { "track": [
+            { "@type": "General" },
+            { "@type": "Audio", "Format": "DTS", "Channels": "8 / 6" },
+            { "@type": "Audio", "Format": "AC-3", "Channels": "2" },
+        ] } });
+        let channels: Vec<Option<u64>> = parse_tracks(&mediainfo).iter().map(|track| track.channels).collect();
+        assert_eq!(channels, [Some(8), Some(2)]);
+    }
+
+    /// Hindi, Tamil and Telugu in one file, each measured on its own: every
+    /// track goes in with its own --sync, and one without its own delay takes
+    /// the file's.
+    #[test]
+    fn each_dub_of_a_multi_dub_file_is_muxed_with_its_own_delay() {
+        let mut job = job("/v/Iron Giant.mkv");
+        job.audios.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "a1",
+                "name": "Iron Giant.3Audio.mkv",
+                "path": "/a/Iron Giant.3Audio.mkv",
+                "type": "audio",
+                "delay": 0.05,
+                "includedTrackIds": [1, 2, 3, 4],
+                "trackOverrides": {
+                    "1": { "delay": 1.312 },
+                    "2": { "delay": 1.152 },
+                    "3": { "delay": -0.992 },
+                },
+            }))
+            .expect("valid audio fixture"),
+        );
+        let state = AppState {
+            paths: AppPaths { app_data_dir: PathBuf::new(), options_path: PathBuf::new(), log_path: PathBuf::new() },
+            mux_state: Arc::new(Mutex::new(MuxState { running: false, pause: false, stop: false, queue: vec![], settings: None, children: HashMap::new() })),
+            cancelled_scans: Arc::new(Mutex::new(HashSet::new())),
+        };
+        let args = build_mkvmerge_command(&job, &overwrite_settings(), Path::new("/out/Iron Giant.mkv"), &state);
+        let syncs: Vec<&str> = args.windows(2).filter(|pair| pair[0] == "--sync").map(|pair| pair[1].as_str()).collect();
+        assert_eq!(syncs, ["1:1312", "2:1152", "3:-992", "4:50"]);
     }
 
     /// Two jobs sharing an output stem must never pick the same temp path.

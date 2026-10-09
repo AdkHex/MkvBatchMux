@@ -16,7 +16,8 @@
  *    /?demo=unlinked   ready, with a 17th dub that has no video
  *    /?demo=engine     ready, the audio analysis engine missing
  *
- *  Options: `&page=audio` opens that page at the end, `&speed=0.25` runs the
+ *  Options: `&page=audio` opens that page at the end, `&multi=1` makes E01's
+ *  dub one file of three (Hindi, Tamil, Telugu), `&speed=0.25` runs the
  *  mocked commands four times faster, `&update=1` offers version 1.71.0,
  *  `&tools=missing` reports MediaInfo missing, `&os=mac|windows` picks the
  *  window chrome (src/ui/frame.tsx). `window.__demo.drop([...paths])` fakes a
@@ -80,6 +81,8 @@ interface DemoState {
   mux: { paused: boolean; stopped: boolean; running: boolean };
   measureCancelled: boolean;
   extraDub: boolean;
+  /** E01's dub is one file with three dubs in it, each its own offset. */
+  multiDub: boolean;
   engine: boolean;
   update: boolean;
   mediainfo: boolean;
@@ -110,7 +113,7 @@ function pickFolder(): string {
 function scan(request: ScanRequest): (VideoFile | ExternalFile)[] {
   const all = Array.from({ length: EPISODES }, (_, i) => i);
   if (request.type === "video") return all.map((i) => videoFile(i, false));
-  if (request.type === "audio") return [...all.map((i) => dubFile(i)), ...(state.extraDub ? [dubFile(EPISODES, true)] : [])];
+  if (request.type === "audio") return [...all.map((i) => (i === 0 && state.multiDub ? multiDubFile() : dubFile(i))), ...(state.extraDub ? [dubFile(EPISODES, true)] : [])];
   if (request.type === "subtitle") return all.map(subFile);
   if (request.type === "chapter") return all.map(chapterFile);
   return FONTS;
@@ -143,6 +146,12 @@ async function streamInspect(request: { scan_id: string; paths: string[]; type: 
   emitEvent("inspect-paths-stream-done", { scanId: request.scan_id, total: request.paths.length });
 }
 
+function multiDubFile(): ExternalFile {
+  const name = "Goblin.S01E01.3Audio.DDP5.1.mkv";
+  const dub = (id: string, language: string) => ({ id, type: "audio" as const, codec: "E-AC3", language, name: "Surround 5.1", bitrate: 640_000, isDefault: id === "1" });
+  return { ...dubFile(0), id: "dub-01-multi", name, path: `${DUB_DIR}\\${name}`, tracks: [{ id: "0", type: "video" }, dub("1", "hin"), dub("2", "tam"), dub("3", "tel"), { id: "4", type: "subtitle", codec: "SubRip/SRT", language: "eng", name: "SDH" }] };
+}
+
 async function measure(request: MeasureStartRequest) {
   let processed = 0;
   const total = request.pairs.length;
@@ -163,7 +172,14 @@ async function measure(request: MeasureStartRequest) {
       }
       const i = episodeOf(nameOf(pair.secondaryPath));
       emitEvent("audiosync-log", `Measured ${nameOf(pair.secondaryPath)} against ${video}`);
-      emitEvent("measure-delays-result", { runId: request.runId, key: pair.key, result: measureResult(i, video, nameOf(pair.secondaryPath)) });
+      const result = measureResult(i, video, nameOf(pair.secondaryPath));
+      // Each dub of a multi-dub file sits at its own offset.
+      const shift = pair.secondaryTrack * 160;
+      emitEvent("measure-delays-result", {
+        runId: request.runId,
+        key: pair.key,
+        result: { ...result, delayMs: (result.delayMs ?? 0) + shift, primaryTrack: pair.primaryTrack, secondaryTrack: pair.secondaryTrack },
+      });
       processed += 1;
       emitEvent("measure-delays-progress", { runId: request.runId, processed, total, current: video });
     }
@@ -410,6 +426,7 @@ export function installDemo(scenario: string) {
     mux: { paused: false, stopped: false, running: false },
     measureCancelled: false,
     extraDub: scenario === "unlinked",
+    multiDub: options.get("multi") === "1",
     engine: scenario !== "engine",
     update: options.get("update") === "1",
     mediainfo: options.get("tools") !== "missing",

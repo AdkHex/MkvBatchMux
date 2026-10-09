@@ -156,9 +156,9 @@ describe("buildMeasurementPlan", () => {
     expect(plan.measurements).toHaveLength(1);
   });
 
-  it("measures a multi-track file once, not once per track", () => {
-    // Every track in one file shares that container's timeline, so they share an offset,
-    // and the mux falls back to the file-level delay for any track without its own.
+  it("measures every muxed track of a multi-track file, each against the same reference", () => {
+    // Hindi, Tamil and Telugu in one container often come from different sources, each with
+    // its own offset to the video; one measurement would hand all three the first one's.
     const videos = [makeVideo("v1", "Show - 01.mkv")];
     const audios = [
       makeAudio("a1", "Show - 01.mka", {
@@ -169,13 +169,70 @@ describe("buildMeasurementPlan", () => {
 
     const plan = buildMeasurementPlan({ videoFiles: videos, audioFiles: audios });
 
-    // Every result writes back to the file itself, never to a per-track
-    // override -- one delay covers the whole container.
-    expect(plan.measurements.every((m) => m.trackId === null)).toBe(true);
+    // Track 1 is excluded from the mux, so measuring it would be wasted work.
+    expect(plan.measurements.map((m) => m.trackId)).toEqual([0, 2]);
+    // The engine counts audio streams; the result goes back to the track's override.
+    expect(plan.measurements.map((m) => m.pair.secondaryTrack)).toEqual([0, 2]);
+    expect(plan.measurements.map((m) => m.pair.key)).toEqual(["a1::0", "a1::2"]);
+    expect(plan.measurements.every((m) => m.pair.primaryTrack === 0)).toBe(true);
+  });
+
+  it("counts a track among the file's audio streams, not among all its tracks", () => {
+    // A dub muxed into an MKV with a video track: mkvmerge ids 1-3, audio streams 0-2.
+    const videos = [makeVideo("v1", "Iron Giant.mkv")];
+    const audios = [
+      makeAudio("a1", "Iron Giant.3Audio.mkv", {
+        tracks: [{ id: "0", type: "video" }, audioTrack("1"), audioTrack("2"), audioTrack("3")],
+      }),
+    ];
+
+    const plan = buildMeasurementPlan({ videoFiles: videos, audioFiles: audios });
+
+    expect(plan.measurements.map((m) => [m.trackId, m.pair.secondaryTrack])).toEqual([
+      [1, 0],
+      [2, 1],
+      [3, 2],
+    ]);
+  });
+
+  it("leaves a track's typed or measured delay alone, and measures the rest", () => {
+    const videos = [makeVideo("v1", "Show - 01.mkv")];
+    const audios = [
+      makeAudio("a1", "Show - 01.mka", {
+        tracks: [audioTrack("0"), audioTrack("1"), audioTrack("2")],
+        trackOverrides: { 0: { delay: 0.25, delayProvenance: "manual" }, 1: { delay: -0.1, delayProvenance: "measured" } },
+      }),
+    ];
+
+    expect(buildMeasurementPlan({ videoFiles: videos, audioFiles: audios }).measurements.map((m) => m.trackId)).toEqual([2]);
+    // Measuring the row again is an explicit request for every track.
+    expect(buildMeasurementPlan({ videoFiles: videos, audioFiles: audios, force: true }).measurements.map((m) => m.trackId)).toEqual([0, 1, 2]);
+  });
+
+  it("reports a multi-track file as skipped once every track has its delay", () => {
+    const videos = [makeVideo("v1", "Show - 01.mkv")];
+    const audios = [
+      makeAudio("a1", "Show - 01.mka", {
+        tracks: [audioTrack("0"), audioTrack("1")],
+        trackOverrides: { 0: { delayProvenance: "measured" }, 1: { delayProvenance: "manual" } },
+      }),
+    ];
+
+    const plan = buildMeasurementPlan({ videoFiles: videos, audioFiles: audios });
+
+    expect(plan.measurements).toHaveLength(0);
+    expect(plan.skipped.map((file) => file.id)).toEqual(["a1"]);
+  });
+
+  it("measures a single-track file once, for the whole file", () => {
+    const videos = [makeVideo("v1", "Show - 01.mkv")];
+    const audios = [makeAudio("a1", "Show - 01.mka", { tracks: [audioTrack("0"), audioTrack("1")], includedTrackIds: [1] })];
+
+    const plan = buildMeasurementPlan({ videoFiles: videos, audioFiles: audios });
+
     expect(plan.measurements).toHaveLength(1);
-    // The first muxed track. Track 1 is excluded from the mux, so it is not a
-    // candidate: it is not the track the delay will be applied to.
-    expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
+    expect(plan.measurements[0].trackId).toBeNull();
+    expect(plan.measurements[0].pair.secondaryTrack).toBe(1);
   });
 
   it("measures against the video's first audio track, not its default-flagged one", () => {
@@ -300,7 +357,7 @@ describe("choosing the reference track per external track", () => {
     expect(plan.measurements[0].pair.primaryTrack).toBe(0);
   });
 
-  it("measures the first muxed track of the file against the video's first", () => {
+  it("measures each muxed track of the file against the video's first", () => {
     const video = makeVideo("v1", "Ep01.mkv", [
       langTrack("0", "und"),
       langTrack("1", "kor"),
@@ -313,9 +370,9 @@ describe("choosing the reference track per external track", () => {
 
     const plan = buildMeasurementPlan({ videoFiles: [video], audioFiles: [audio] });
 
-    expect(plan.measurements).toHaveLength(1);
-    expect(plan.measurements[0].pair.primaryTrack).toBe(0);
-    expect(plan.measurements[0].pair.secondaryTrack).toBe(0);
+    expect(plan.measurements).toHaveLength(2);
+    expect(plan.measurements.every((m) => m.pair.primaryTrack === 0)).toBe(true);
+    expect(plan.measurements.map((m) => m.pair.secondaryTrack)).toEqual([0, 1]);
   });
 });
 

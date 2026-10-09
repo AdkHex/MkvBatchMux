@@ -94,8 +94,11 @@ export function applyMeasurement({
   }
 
   const existingOverride = file.trackOverrides?.[trackId] ?? {};
+  // Measured track by track now, so a whole-file measurement from before is
+  // out of date; left in, it would stand in for every track's own.
+  const { measuredDelay: _superseded, pendingDelay: _unapplied, ...rest } = file;
   return {
-    ...file,
+    ...rest,
     trackOverrides: {
       ...(file.trackOverrides ?? {}),
       [trackId]: {
@@ -192,6 +195,12 @@ export function hasPendingDelay(file: ExternalFile): boolean {
   return Object.values(file.trackOverrides ?? {}).some(
     (override) => override.pendingDelay !== undefined,
   );
+}
+
+/** How many measured delays this file has waiting: its own, and each track's. */
+export function pendingDelayCount(file: ExternalFile): number {
+  const tracks = Object.values(file.trackOverrides ?? {}).filter((override) => override.pendingDelay !== undefined).length;
+  return (file.pendingDelay !== undefined ? 1 : 0) + tracks;
 }
 
 /** Accept every pending delay on a file, including per-track ones. */

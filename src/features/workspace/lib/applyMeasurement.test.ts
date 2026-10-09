@@ -8,6 +8,7 @@ import {
   applyAllPendingDelays,
   hasPendingDelay,
   markDelayAsManual,
+  pendingDelayCount,
 } from "./applyMeasurement";
 
 const MEASURED_AT = "2026-08-28T12:00:00.000Z";
@@ -288,6 +289,38 @@ describe("applyMeasurement, per track", () => {
     });
     expect(updated.trackOverrides?.[2].delay).toBe(-0.5);
     expect(updated.trackOverrides?.[2].delayProvenance).toBe("manual");
+  });
+
+  it("retires a whole-file measurement once the tracks are measured one by one", () => {
+    // Left in, the old record would stand in for each track's own in the popup and the row.
+    const file = applyMeasurement({ file: makeFile({ delay: 0.1, delayProvenance: "measured" }), result: makeResult(), trackId: null, referenceTrack: 0, measuredAt: MEASURED_AT });
+    expect(file.measuredDelay).toBeDefined();
+
+    const updated = applyMeasurement({ file, result: makeResult({ delayMs: 40 }), trackId: 2, referenceTrack: 0, measuredAt: MEASURED_AT });
+
+    expect(updated.measuredDelay).toBeUndefined();
+    expect(updated.pendingDelay).toBeUndefined();
+    // The file's delay stays: it is what a track without its own still gets.
+    expect(updated.delay).toBe(0.1);
+    expect(updated.trackOverrides?.[2].pendingDelay).toBe(-0.04);
+  });
+
+  it("counts each track's waiting delay, so Apply says how many it fills in", () => {
+    let file = makeFile({ tracks: [] });
+    for (const [trackId, delayMs] of [[1, 120], [2, -40], [3, 0]] as const) {
+      file = applyMeasurement({ file, result: makeResult({ delayMs }), trackId, referenceTrack: 0, measuredAt: MEASURED_AT });
+    }
+    expect(pendingDelayCount(file)).toBe(3);
+
+    // One track accepted on its own leaves the other two waiting.
+    const one = applyMeasuredDelay(file, 2);
+    expect(pendingDelayCount(one)).toBe(2);
+    expect(one.trackOverrides?.[2].delay).toBe(0.04);
+    expect(one.trackOverrides?.[1].delay).toBeUndefined();
+
+    const all = applyAllPendingDelays(file);
+    expect(pendingDelayCount(all)).toBe(0);
+    expect([1, 2, 3].map((id) => all.trackOverrides?.[id].delay)).toEqual([-0.12, 0.04, 0]);
   });
 });
 

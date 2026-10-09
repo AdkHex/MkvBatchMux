@@ -52,6 +52,16 @@ interface UseMeasureDelaysInput {
   measurement?: MeasurementSettings;
 }
 
+/** How many pairs each video is in, by the file name the engine reports a pair under. */
+function pairsByVideo(pairs: PlannedMeasurement["pair"][]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const pair of pairs) {
+    const name = pair.primaryPath.replace(/^.*[\\/]/, "");
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export function useMeasureDelays({
   videoFiles,
   audioFiles,
@@ -83,8 +93,10 @@ export function useMeasureDelays({
   });
   const maxWorkersRef = useRef<number>(ENGINE_DEFAULTS.maxWorkers);
   const scansRef = useRef<TimelineScan[]>([]);
-  // Videos whose pair finished this pass, so a late event cannot put one back in flight.
+  // Videos whose pairs all finished this pass, so a late event cannot put one back in flight.
   const finishedRef = useRef<Set<string>>(new Set());
+  // Pairs still to finish, by video: a file measured track by track is several pairs on one video.
+  const remainingByVideoRef = useRef<Map<string, number>>(new Map());
   // Pairs the engine already laid along the whole timeline while measuring: their plan came
   // back with the result, so scanning them again would only repeat the slowest work.
   const scannedByMeasureRef = useRef<Set<string>>(new Set());
@@ -141,8 +153,11 @@ export function useMeasureDelays({
       scansRef.current.push(scan);
       scannedByMeasureRef.current.add(key);
     }
-    if (passRef.current === "measure" && !fullTimelineRef.current && needsWiderSearch(result)) {
-      retryKeysRef.current.add(key);
+    if (passRef.current === "measure" && !fullTimelineRef.current) {
+      // A failure the engine could not pin to one track reaches every track of that file still
+      // waiting (audiosync.rs); the track's own result, arriving after, takes it back off.
+      if (needsWiderSearch(result)) retryKeysRef.current.add(key);
+      else retryKeysRef.current.delete(key);
     }
     // Results can arrive faster than the parent re-renders; the next one must start from this.
     audioFilesRef.current = next;
@@ -215,6 +230,7 @@ export function useMeasureDelays({
     passRef.current = "wide";
     runIdRef.current = runId;
     finishedRef.current = new Set();
+    remainingByVideoRef.current = pairsByVideo(pairs);
     setProgress({ phase: "wide", processed: 0, total: pairs.length, current: null, active: {} });
     try {
       await measureDelaysStart({
@@ -245,7 +261,11 @@ export function useMeasureDelays({
     listenMeasureDelaysProgress((payload) => {
       if (payload.runId !== runIdRef.current) return;
       // The engine names the pair that just finished, not one being measured.
-      if (payload.current) finishedRef.current.add(payload.current);
+      if (payload.current) {
+        const left = (remainingByVideoRef.current.get(payload.current) ?? 1) - 1;
+        remainingByVideoRef.current.set(payload.current, left);
+        if (left <= 0) finishedRef.current.add(payload.current);
+      }
       setProgress((prev) => ({
         ...pairDone(prev ?? { active: {}, processed: 0, total: payload.total }, payload.current, payload.processed, payload.total),
         phase: passRef.current,
@@ -397,6 +417,7 @@ export function useMeasureDelays({
         return;
       }
 
+      remainingByVideoRef.current = pairsByVideo(toMeasure.map((m) => m.pair));
       setIsMeasuring(true);
       setProgress({ phase: "measure", processed: 0, total: toMeasure.length, current: null, active: {} });
 

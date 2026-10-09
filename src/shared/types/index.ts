@@ -25,6 +25,8 @@ export interface Track {
   isDefault?: boolean;
   isForced?: boolean;
   bitrate?: number; // Bitrate in bits per second
+  /** Audio channel count: 6 is 5.1. Absent in sessions saved before it was read. */
+  channels?: number;
   action?: 'keep' | 'remove' | 'modify';
   originalName?: string;
   originalLanguage?: string;
