@@ -1894,6 +1894,7 @@ dependencies = [
  "thiserror",
  "uuid",
  "walkdir",
+ "windows-sys 0.52.0",
  "zip",
 ]
 

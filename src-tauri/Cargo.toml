@@ -27,5 +27,10 @@ zip = "0.6"
 # through reqwest's TLS stack.
 sha2 = "0.10"
 
+# Job objects, so helper processes end with the app (src/process_job.rs).
+# Already in the lockfile through tauri's dependency tree.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

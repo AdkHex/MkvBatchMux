@@ -323,6 +323,7 @@ impl Engine {
         let mut child = command
             .spawn()
             .map_err(|err| format!("Could not start the analysis engine: {err}"))?;
+        crate::process_job::adopt(&child);
 
         let stdin: SharedStdin = Arc::new(Mutex::new(
             child

@@ -2,6 +2,7 @@
 
 mod audiosync;
 mod menu;
+mod process_job;
 mod window_size;
 
 use crc32fast::Hasher;
@@ -3046,6 +3047,7 @@ fn run_command_with_logs(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to start process: {e}"))?;
+    process_job::adopt(&child);
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -3224,7 +3226,10 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
             }
 
             let child = match cmd.spawn() {
-                Ok(c) => c,
+                Ok(c) => {
+                    process_job::adopt(&c);
+                    c
+                }
                 Err(e) => {
                     emit_progress(
                         app,

@@ -31,7 +31,7 @@ jobs:
   windows:
     needs: check
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v4
@@ -176,6 +176,55 @@ jobs:
           $setup | Copy-Item -Destination artifacts -Force
           $upd | Copy-Item -Destination artifacts -Force
           Get-ChildItem -Path artifacts | Select-Object Name, Length | Format-Table
+
+      - name: Install over a running app
+        # The installer has to end MKVBatchMux however it finds it: running, already
+        # ended but still held open (what an update leaves for a moment), or with a
+        # helper holding a file in the install folder. Tauri's own check gave up with
+        # "Failed to kill MKVBatchMux" (src-tauri/nsis/installer.nsi). Nothing is
+        # published unless every case installs.
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = (Get-ChildItem artifacts -Filter "*-setup.exe" | Select-Object -First 1).FullName
+          $dir = Join-Path $env:ProgramFiles "MKVBatchMux"
+          $app = Join-Path $dir "MKVBatchMux.exe"
+          function Install([string]$case) {
+            $started = Get-Date
+            $run = Start-Process -FilePath $setup -ArgumentList "/S" -Wait -PassThru
+            $seconds = [int]((Get-Date) - $started).TotalSeconds
+            if ($run.ExitCode -ne 0) { throw "$($case): the installer exited with $($run.ExitCode) after $seconds s" }
+            if (-not (Test-Path $app)) { throw "$($case): $app is not there" }
+            Write-Host "$($case): installed in $seconds s"
+          }
+
+          Install "Fresh install"
+
+          $running = Start-Process -FilePath $app -PassThru
+          Start-Sleep -Seconds 5
+          Write-Host "The app is running: $(-not $running.HasExited)"
+          Install "Over the running app"
+          Start-Sleep -Seconds 1
+          if (-not $running.HasExited) { throw "The running app was left running." }
+
+          $held = Join-Path $env:RUNNER_TEMP "held\MKVBatchMux.exe"
+          New-Item -ItemType Directory -Force -Path (Split-Path $held) | Out-Null
+          Copy-Item (Join-Path $env:WINDIR "System32\PING.EXE") $held
+          $ended = Start-Process -FilePath $held -ArgumentList "-n", "1", "127.0.0.1" -PassThru -WindowStyle Hidden
+          $null = $ended.Handle
+          $ended.WaitForExit()
+          $listed = @(tasklist /FI "IMAGENAME eq MKVBatchMux.exe" | Select-String "MKVBatchMux").Count
+          Write-Host "An ended MKVBatchMux.exe still held open is listed by Windows: $($listed -gt 0)"
+          Install "Over an app that has ended but is still held open"
+          $ended.Dispose()
+
+          $ffmpeg = Join-Path $dir "resources\ffmpeg\ffmpeg.exe"
+          $helper = Start-Process -FilePath $ffmpeg -ArgumentList "-nostdin", "-re", "-f", "lavfi", "-i", "anullsrc=r=8000", "-t", "600", "-f", "null", "-" -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 2
+          if ($helper.HasExited) { throw "The stand-in helper did not start." }
+          Install "Over a helper running from the install folder"
+          Start-Sleep -Seconds 1
+          if (-not $helper.HasExited) { throw "The helper in the install folder was left running." }
 
       - name: Write updater manifest
         shell: powershell
