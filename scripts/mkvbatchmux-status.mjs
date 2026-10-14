@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // Remote switch and access password for installed copies of MKVBatchMux (docs/REMOTE-STATUS.md).
 //
 //   node scripts/mkvbatchmux-status.mjs status                 what the published document says

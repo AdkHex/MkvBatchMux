@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { accessFor } from "./mkvbatchmux-status.mjs";
@@ -17,6 +18,20 @@ function run(out, args, input) {
 const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 
 describe("mkvbatchmux-status", () => {
+  // CI checks out on Windows, where `* text=auto` turns every line ending into
+  // CRLF; a `#!` line then stops vitest from loading the module at all.
+  it("loads from a Windows checkout (CRLF line endings)", async () => {
+    // Beside the script: vitest only loads modules from inside the project.
+    const copy = path.join(path.dirname(script), `.crlf-check-${process.pid}.mjs`);
+    fs.writeFileSync(copy, fs.readFileSync(script, "utf8").replace(/\r?\n/g, "\r\n"));
+    try {
+      const loaded = await import(pathToFileURL(copy).href);
+      expect(typeof loaded.accessFor).toBe("function");
+    } finally {
+      fs.rmSync(copy, { force: true });
+    }
+  });
+
   it("hashes the password exactly as the app checks it", () => {
     // The same vector src-tauri/src/remote_status.rs tests against.
     const access = accessFor("correct horse battery staple", Buffer.alloc(16, 7), 100_000);
