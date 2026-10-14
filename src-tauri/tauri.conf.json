@@ -55,7 +55,7 @@
       "windows": {
         "nsis": {
           "template": "nsis/installer.nsi",
-          "installMode": "perMachine",
+          "installMode": "currentUser",
           "languages": [
             "English"
           ],

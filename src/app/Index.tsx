@@ -62,6 +62,7 @@ import { HistoryBody, HistoryTools, OutputBody, OutputTools, severityOf, useHist
 import { loadHistory, muxOutcome, runName, saveHistory, type HistoryEntry } from "./history";
 import { KeyboardShortcuts } from "./KeyboardShortcuts";
 import { PreferencesWindow, type PrefsTab } from "./Preferences";
+import { isServiceLocked } from "./ServiceLock";
 import { ShellContext, type CommandKey, type EnginePage, type PageCommands, type PageId, type Shell } from "./shell";
 import { UpdateProgress } from "./UpdateProgress";
 
@@ -971,10 +972,12 @@ export default function Index() {
     const disposers: (() => void)[] = [];
     void import("@tauri-apps/api/event").then(async ({ listen }) => {
       const offs = await Promise.all([
-        listen<string[]>("tauri://file-drop-hover", (event) => setDragging(event.payload ?? [])),
+        // Nothing is taken while the remote lock's screen is up.
+        listen<string[]>("tauri://file-drop-hover", (event) => !isServiceLocked() && setDragging(event.payload ?? [])),
         listen("tauri://file-drop-cancelled", () => setDragging(null)),
         listen<string[]>("tauri://file-drop", (event) => {
           setDragging(null);
+          if (isServiceLocked()) return;
           const drop = commandsRef.current[activeRef.current]?.drop;
           if (drop) drop(event.payload ?? []);
           else toast({ title: `${PAGE_LABEL[activeRef.current]} does not take files` });
@@ -1171,7 +1174,7 @@ export default function Index() {
     let dispose: (() => void) | undefined;
     let cancelled = false;
     void import("@tauri-apps/api/event")
-      .then(({ listen }) => listen<string>("app-menu", (event) => menuActions.current[event.payload]?.()))
+      .then(({ listen }) => listen<string>("app-menu", (event) => !isServiceLocked() && menuActions.current[event.payload]?.()))
       .then((unlisten) => {
         if (cancelled) unlisten();
         else dispose = unlisten;

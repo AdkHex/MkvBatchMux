@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod all_users_copy;
 mod audiosync;
 mod menu;
 mod process_job;
+mod remote_status;
+mod service;
 mod window_size;
 
 use crc32fast::Hasher;
@@ -435,6 +438,8 @@ struct MuxState {
     queue: Vec<MuxJobRequest>,
     settings: Option<MuxSettings>,
     children: HashMap<String, Arc<Mutex<Child>>>,
+    /// Jobs the remote lock stopped mid-mux; workers take these first once it lifts.
+    requeue: Vec<MuxJobRequest>,
 }
 
 #[derive(Clone)]
@@ -442,6 +447,9 @@ struct AppState {
     paths: AppPaths,
     mux_state: Arc<Mutex<MuxState>>,
     cancelled_scans: Arc<Mutex<HashSet<String>>>,
+    /// The remote lock (src/service.rs). Commands that start work refuse while
+    /// it is on, and the mux workers hold.
+    service: Arc<remote_status::Service>,
 }
 
 /// Lock a mutex, recovering the guard if a previous holder panicked. The
@@ -477,6 +485,7 @@ impl Default for MuxState {
             queue: Vec::new(),
             settings: None,
             children: HashMap::new(),
+            requeue: Vec::new(),
         }
     }
 }
@@ -687,7 +696,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// Download a dependency and make it runnable. Windows-only in practice, since
 /// other platforms have these tools a package manager away.
 #[tauri::command]
-fn install_dependency(app: AppHandle, id: String) -> Result<String, String> {
+fn install_dependency(app: AppHandle, state: State<AppState>, id: String) -> Result<String, String> {
+    state.service.ensure_unlocked()?;
     #[derive(Clone, Copy)]
     enum Kind {
         Zip,
@@ -1653,7 +1663,8 @@ fn save_options(state: State<AppState>, options: OptionsData) -> Result<(), Stri
 }
 
 #[tauri::command]
-fn scan_media(request: ScanRequest) -> Result<Vec<serde_json::Value>, String> {
+fn scan_media(state: State<AppState>, request: ScanRequest) -> Result<Vec<serde_json::Value>, String> {
+    state.service.ensure_unlocked()?;
     let files = scan_files(&request)?;
     let results = files
         .par_iter()
@@ -1671,7 +1682,8 @@ fn scan_media(request: ScanRequest) -> Result<Vec<serde_json::Value>, String> {
 }
 
 #[tauri::command]
-fn inspect_paths(request: InspectRequest) -> Result<Vec<serde_json::Value>, String> {
+fn inspect_paths(state: State<AppState>, request: InspectRequest) -> Result<Vec<serde_json::Value>, String> {
+    state.service.ensure_unlocked()?;
     let paths: Vec<PathBuf> = request.paths.into_iter().map(PathBuf::from).collect();
     let results = paths
         .par_iter()
@@ -1695,6 +1707,7 @@ fn inspect_paths_stream(
     window: tauri::Window,
     request: InspectStreamRequest,
 ) -> Result<(), String> {
+    state.service.ensure_unlocked()?;
     let scan_id = request.scan_id.clone();
     clear_scan_cancel(&state, &scan_id);
     let file_type = request.file_type.clone();
@@ -1989,6 +2002,7 @@ fn abort_mux_queue(state: &AppState) {
         mux_state.stop = true;
         mux_state.pause = false;
         mux_state.queue.clear();
+        mux_state.requeue.clear();
         mux_state.children.drain().map(|(_, handle)| handle).collect()
     };
 
@@ -3011,6 +3025,12 @@ fn spawn_log_reader<R: Read + Send + 'static>(
             // `--gui-mode` emits a progress line per percent; skip logging the
             // raw line so a batch doesn't spam the shared log file. The progress event itself still fires.
             if let Some(progress) = parse_progress(&trimmed) {
+                // A line read after the remote lock ended this mkvmerge must not
+                // overwrite the job's "Paused" with a stale percentage.
+                if state.service.is_locked() {
+                    line.clear();
+                    continue;
+                }
                 emit_progress(
                     &app,
                     MuxProgressEvent {
@@ -3072,34 +3092,110 @@ fn emit_progress(app: &AppHandle, event: MuxProgressEvent) {
     let _ = app.emit_all("mux-progress", event);
 }
 
-/// Wait for a child process, killing it if a stop was requested. Never holds
-/// the mux_state lock and the child lock at once -- `abort_mux_queue` follows the same rule.
-fn wait_for_child_or_stop(handle: Arc<Mutex<Child>>, state: &AppState) -> Option<i32> {
+/// How a muxing process ended.
+enum ChildEnd {
+    /// On its own, with this exit code (None: no code, e.g. a signal).
+    Exited(Option<i32>),
+    /// Ended by us: the user stopped the queue, or the remote lock paused it.
+    /// Its output is partial whatever the exit code says -- on Windows a killed
+    /// process exits with 1, which mkvmerge otherwise uses for "warnings".
+    Ended,
+}
+
+/// Wait for a child process, ending it if a stop was requested or, with
+/// `end_on_lock`, the remote lock came on. Never holds the mux_state lock and
+/// the child lock at once -- `abort_mux_queue` follows the same rule.
+fn wait_for_child_or_stop(handle: Arc<Mutex<Child>>, state: &AppState, end_on_lock: bool) -> ChildEnd {
     loop {
         // Read the flag and drop the guard immediately -- never hold it across
         // a child-handle lock.
-        let should_stop = state.stop_requested();
+        let should_stop = state.stop_requested() || (end_on_lock && state.service.is_locked());
         if should_stop {
             let mut child = lock_or_recover(&handle);
             let _ = child.kill();
             // Reap the killed process so it does not linger as a zombie.
-            return match child.wait() {
-                Ok(status) => status.code(),
-                Err(_) => None,
-            };
+            let _ = child.wait();
+            return ChildEnd::Ended;
         }
 
         {
             let mut child = lock_or_recover(&handle);
-            match child.try_wait() {
-                Ok(Some(status)) => return status.code(),
-                Ok(None) => {}
-                Err(_) => return None,
+            let exited = match child.try_wait() {
+                Ok(Some(status)) => Some(status.code()),
+                Ok(None) => None,
+                Err(_) => Some(None),
+            };
+            if let Some(code) = exited {
+                // `abort_mux_queue` sets the flag before it kills, so a process
+                // it killed between the check above and here is caught too.
+                return if state.stop_requested() { ChildEnd::Ended } else { ChildEnd::Exited(code) };
             }
         }
 
         thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// A job whose mkvmerge we ended. Its output is partial: a temp file over the
+/// sources is deleted, and so is a destination file this run created (one it
+/// overwrote was gone the moment mkvmerge started, and is replaced when the job
+/// runs again). A job the user stopped is reported stopped; one the remote lock
+/// paused goes back in the queue and starts again from the beginning.
+fn end_interrupted_job(
+    app: &AppHandle,
+    state: &AppState,
+    job: MuxJobRequest,
+    overwrite_mode: bool,
+    output_path: &Path,
+    created_output: bool,
+) {
+    if overwrite_mode {
+        discard_failed_temp_output(true, output_path, state);
+    } else if created_output && fs::remove_file(output_path).is_ok() {
+        let _ = write_log_line(
+            &state.paths,
+            &format!("Removed partial output {}", output_path.display()),
+        );
+    }
+    hold_job(app, state, job);
+}
+
+/// Put a job back for when the remote lock lifts, unless the user stopped the
+/// queue. Decided under the same lock `abort_mux_queue` clears the requeue
+/// list with: a job put back after that would otherwise run in the next batch.
+fn hold_job(app: &AppHandle, state: &AppState, job: MuxJobRequest) {
+    let job_id = job.id.clone();
+    let stopped = {
+        let mut mux_state = state.mux();
+        if !mux_state.stop {
+            mux_state.requeue.push(job);
+        }
+        mux_state.stop
+    };
+    let (line, status, message) = if stopped {
+        (format!("Job {job_id} stopped"), "stopped", "Stopped")
+    } else {
+        (
+            format!(
+                "Job {job_id} paused: {}. It starts again when MKVBatchMux is back.",
+                remote_status::PAUSED_ERROR
+            ),
+            "queued",
+            "Paused: work is in progress",
+        )
+    };
+    let _ = write_log_line(&state.paths, &line);
+    emit_progress(
+        app,
+        MuxProgressEvent {
+            job_id,
+            status: status.to_string(),
+            progress: 0,
+            message: Some(message.to_string()),
+            size_after: None,
+            error_message: None,
+        },
+    );
 }
 
 fn parse_progress(line: &str) -> Option<u8> {
@@ -3138,6 +3234,11 @@ fn discard_failed_temp_output(overwrite_mode: bool, output_path: &Path, state: &
 
 fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: MuxJobRequest) {
     if state.mux().stop {
+        return;
+    }
+    // Taken from the queue just as the remote lock came on.
+    if state.service.is_locked() {
+        hold_job(app, state, job);
         return;
     }
 
@@ -3252,11 +3353,31 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
                 mux_state.children.insert(job.id.clone(), handle.clone());
             }
 
-            let status = wait_for_child_or_stop(handle.clone(), state);
+            // Not ended by the remote lock: mkvpropedit edits the source in
+            // place, and it takes a moment, so it is left to finish.
+            let status = wait_for_child_or_stop(handle.clone(), state, false);
             {
                 let mut mux_state = state.mux();
                 mux_state.children.remove(&job.id);
             }
+            let status = match status {
+                ChildEnd::Exited(code) => code,
+                ChildEnd::Ended => {
+                    let _ = write_log_line(&state.paths, &format!("Job {} stopped", job.id));
+                    emit_progress(
+                        app,
+                        MuxProgressEvent {
+                            job_id: job.id.clone(),
+                            status: "stopped".to_string(),
+                            progress: 0,
+                            message: Some("Stopped".to_string()),
+                            size_after: None,
+                            error_message: None,
+                        },
+                    );
+                    return;
+                }
+            };
 
             match status {
                 Some(code) if code == 0 => {
@@ -3335,6 +3456,9 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
         command.arg(arg);
     }
 
+    // Whether a file of that name was already there: only one this run creates
+    // is deleted if the run is cut off.
+    let created_output = !output_path.exists();
     let handle = match run_command_with_logs(app, state, &job, &mut command) {
         Ok(child) => child,
         Err(err) => {
@@ -3344,11 +3468,18 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
         }
     };
 
-    let exit_code = wait_for_child_or_stop(handle.clone(), state).unwrap_or(-1);
+    let end = wait_for_child_or_stop(handle.clone(), state, true);
     {
         let mut mux_state = state.mux();
         mux_state.children.remove(&job.id);
     }
+    let exit_code = match end {
+        ChildEnd::Exited(code) => code.unwrap_or(-1),
+        ChildEnd::Ended => {
+            end_interrupted_job(app, state, job, overwrite_mode, &output_path, created_output);
+            return;
+        }
+    };
 
     if exit_code != 0 {
         // mkvmerge exits 1 for warnings but still writes a valid file. Only
@@ -3490,16 +3621,27 @@ fn run_mux_queue(app: AppHandle, state: AppState) {
                 if mux_state.stop {
                     break;
                 }
-                if mux_state.pause {
+                // Paused by the user, or held by the remote lock until it lifts.
+                if mux_state.pause || state_clone.service.is_locked() {
                     drop(mux_state);
                     thread::sleep(Duration::from_millis(200));
                     continue;
                 }
             }
 
-            let job = {
-                let rx_lock = lock_or_recover(&rx_clone);
-                rx_lock.recv_timeout(Duration::from_millis(200))
+            // A job the remote lock stopped mid-mux goes first. The worker that
+            // put it back is still running, so nothing is left behind when the
+            // channel is already empty.
+            let held = {
+                let mut mux_state = state_clone.mux();
+                (!mux_state.requeue.is_empty()).then(|| mux_state.requeue.remove(0))
+            };
+            let job = match held {
+                Some(job) => Ok(job),
+                None => {
+                    let rx_lock = lock_or_recover(&rx_clone);
+                    rx_lock.recv_timeout(Duration::from_millis(200))
+                }
             };
 
             match job {
@@ -3525,6 +3667,7 @@ fn start_muxing(
     state: State<AppState>,
     request: MuxStartRequest,
 ) -> Result<(), String> {
+    state.service.ensure_unlocked()?;
     let mut mux_state = state.mux();
     if mux_state.running {
         return Err("Muxing is already running.".to_string());
@@ -3534,6 +3677,7 @@ fn start_muxing(
     write_log_line(&state.paths, "Starting muxing run")?;
 
     mux_state.queue = request.jobs;
+    mux_state.requeue.clear();
     mux_state.settings = Some(request.settings);
     mux_state.stop = false;
     mux_state.pause = false;
@@ -3551,6 +3695,7 @@ fn preview_mux(
     state: State<AppState>,
     request: MuxStartRequest,
 ) -> Result<Vec<MuxPreviewResult>, String> {
+    state.service.ensure_unlocked()?;
     let settings = request.settings;
     let jobs = request.jobs;
     let mut results = Vec::new();
@@ -3618,6 +3763,7 @@ fn pause_muxing(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 fn resume_muxing(state: State<AppState>) -> Result<(), String> {
+    state.service.ensure_unlocked()?;
     let mut mux_state = state.mux();
     mux_state.pause = false;
     Ok(())
@@ -3631,6 +3777,7 @@ fn stop_muxing(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 fn open_log_file(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    state.service.ensure_unlocked()?;
     if !state.paths.log_path.exists() {
         File::create(&state.paths.log_path)
             .map_err(|e| format!("Failed to create log file: {e}"))?;
@@ -3865,13 +4012,19 @@ fn main() {
                 options_path: app_data_dir.join("setting.json"),
                 log_path: app_data_dir.join("muxing_log_file.txt"),
             };
+            // The remote lock is decided from the saved status before anything
+            // can start; the first fetch happens in the background.
+            let service = service::create(&app.handle(), &app_data_dir);
             let state = AppState {
                 paths,
                 mux_state: Arc::new(Mutex::new(MuxState::default())),
                 cancelled_scans: Arc::new(Mutex::new(HashSet::new())),
+                service: service.clone(),
             };
             app.manage(state);
             app.manage(audiosync::EngineHandle::default());
+            app.manage(service.clone());
+            service::start(&app.handle(), service);
             // A tool installed from Settings lives in the app's data directory,
             // not on the system PATH. Register it before the first availability probe caches "missing".
             register_tools_on_path(&app.handle());
@@ -3939,6 +4092,11 @@ fn main() {
             audiosync::measure_delays_start,
             audiosync::measure_delays_cancel,
             audiosync::scan_timeline_start,
+            service::service_lock,
+            service::check_service_status,
+            service::unlock_access,
+            all_users_copy::all_users_copy_notice,
+            all_users_copy::dismiss_all_users_copy_notice,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
@@ -4057,8 +4215,9 @@ mod regression_tests {
         );
         let state = AppState {
             paths: AppPaths { app_data_dir: PathBuf::new(), options_path: PathBuf::new(), log_path: PathBuf::new() },
-            mux_state: Arc::new(Mutex::new(MuxState { running: false, pause: false, stop: false, queue: vec![], settings: None, children: HashMap::new() })),
+            mux_state: Arc::new(Mutex::new(MuxState::default())),
             cancelled_scans: Arc::new(Mutex::new(HashSet::new())),
+            service: Arc::new(remote_status::Service::disabled()),
         };
         let args = build_mkvmerge_command(&job, &overwrite_settings(), Path::new("/out/Iron Giant.mkv"), &state);
         let syncs: Vec<&str> = args.windows(2).filter(|pair| pair[0] == "--sync").map(|pair| pair[1].as_str()).collect();

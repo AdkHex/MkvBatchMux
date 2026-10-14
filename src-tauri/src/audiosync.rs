@@ -4,6 +4,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -13,6 +15,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::hidden_command;
+use crate::remote_status::{Service, PAUSED_ERROR};
 
 /// How long shutdown waits before killing the engine -- long enough to stop its
 /// ffmpeg children, short enough that quitting still feels immediate.
@@ -301,7 +304,8 @@ type SharedStdin = Arc<Mutex<ChildStdin>>;
 
 /// A running engine process plus the channel its stdout reader publishes to.
 pub struct Engine {
-    child: Child,
+    /// Shared so the remote lock can end the process while a batch holds the engine lock.
+    child: Arc<Mutex<Child>>,
     stdin: SharedStdin,
     events: Receiver<Value>,
     path: String,
@@ -379,7 +383,7 @@ impl Engine {
         });
 
         Ok(Self {
-            child,
+            child: Arc::new(Mutex::new(child)),
             stdin,
             events: receiver,
             path: described,
@@ -397,6 +401,11 @@ impl Engine {
         Arc::clone(&self.stdin)
     }
 
+    /// A clone of the process handle, for ending it outside the engine lock.
+    fn child_handle(&self) -> Arc<Mutex<Child>> {
+        Arc::clone(&self.child)
+    }
+
     pub fn events(&self) -> &Receiver<Value> {
         &self.events
     }
@@ -406,9 +415,10 @@ impl Engine {
 
         // Give the engine a moment to read the shutdown line and stop its
         // ffmpeg children before killing it.
+        let mut child = self.child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let deadline = std::time::Instant::now() + SHUTDOWN_GRACE;
         loop {
-            match self.child.try_wait() {
+            match child.try_wait() {
                 Ok(Some(_)) => return,
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
@@ -420,8 +430,8 @@ impl Engine {
             }
         }
 
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -455,6 +465,17 @@ impl Drop for Engine {
 pub struct EngineHandle {
     engine: Arc<Mutex<Option<Engine>>>,
     stdin: Arc<Mutex<Option<SharedStdin>>>,
+    /// The live engine's process, for `interrupt`.
+    child: Arc<Mutex<Option<Arc<Mutex<Child>>>>>,
+    /// Measure and timeline runs started and not yet finished.
+    runs: Arc<AtomicUsize>,
+    /// Set when `interrupt` ended the engine under a run.
+    interrupted: Arc<AtomicBool>,
+    /// The user cancelled the run in flight: if the lock ends it before the
+    /// engine reads the cancel, it is finished as cancelled, not paused.
+    cancel_requested: Arc<AtomicBool>,
+    /// What the remote lock stopped, to run again when it lifts.
+    paused: Arc<Mutex<Vec<PausedRun>>>,
 }
 
 impl EngineHandle {
@@ -470,7 +491,7 @@ impl EngineHandle {
             .map_err(|_| "Engine lock poisoned".to_string())?;
         if guard.is_none() {
             let engine = Engine::spawn(app)?;
-            self.publish_stdin(Some(engine.stdin_handle()));
+            self.publish(Some(&engine));
             *guard = Some(engine);
         }
         let engine = guard.as_mut().expect("engine present");
@@ -480,17 +501,41 @@ impl EngineHandle {
                 // Drop a dead engine so the next call starts fresh instead of
                 // reusing a broken pipe.
                 *guard = None;
-                self.publish_stdin(None);
+                self.publish(None);
                 Err(err)
             }
         }
     }
 
-    /// Record (or clear) the stdin of the live engine.
-    fn publish_stdin(&self, value: Option<SharedStdin>) {
+    /// Record (or clear) the stdin and process of the live engine.
+    fn publish(&self, engine: Option<&Engine>) {
         if let Ok(mut slot) = self.stdin.lock() {
-            *slot = value;
+            *slot = engine.map(Engine::stdin_handle);
         }
+        if let Ok(mut slot) = self.child.lock() {
+            *slot = engine.map(Engine::child_handle);
+        }
+    }
+
+    /// End the engine now, mid-batch, for the remote lock: `cancel` is only
+    /// read between batches. The run in flight sees its engine go, keeps the
+    /// pairs it had not finished, and runs them again once the lock lifts
+    /// (`resume_paused`). An engine with no run in flight is left alone.
+    pub fn interrupt(&self) {
+        if self.runs.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        let child = self.child.lock().ok().and_then(|slot| slot.clone());
+        let Some(child) = child else { return };
+        self.interrupted.store(true, Ordering::SeqCst);
+        let mut child = child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The whole tree on Windows, so its FFmpeg children stop too; elsewhere
+        // they stop as soon as they write to the pipe the engine no longer reads.
+        #[cfg(target_os = "windows")]
+        let _ = hidden_command("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .output();
+        let _ = child.kill();
     }
 
     /// Send without waiting for a reply. Used for cancellation, which must not
@@ -524,7 +569,77 @@ impl EngineHandle {
                 engine.shutdown();
             }
         }
-        self.publish_stdin(None);
+        self.publish(None);
+    }
+}
+
+/// A run the remote lock stopped: what is left of it, and how far it had got.
+enum PausedRun {
+    Measure(MeasureStartRequest, Resume),
+    Timeline(TimelineScanRequest, Resume),
+}
+
+/// Pairs a run finished before the remote lock stopped it. The run carries on
+/// under the same id, so its progress continues from `done` of `total`
+/// instead of starting over. `total` 0 = a fresh run (its own pair count).
+#[derive(Debug, Clone, Copy, Default)]
+struct Resume {
+    done: usize,
+    total: usize,
+}
+
+impl PausedRun {
+    fn start(self, app: &AppHandle, handle: &EngineHandle) {
+        match self {
+            PausedRun::Measure(request, resume) => run_measure(app.clone(), handle.clone(), request, resume),
+            PausedRun::Timeline(request, resume) => run_timeline(app.clone(), handle.clone(), request, resume),
+        }
+    }
+
+    fn left(&self) -> usize {
+        match self {
+            PausedRun::Measure(request, _) => request.pairs.len(),
+            PausedRun::Timeline(request, _) => request.pairs.len(),
+        }
+    }
+}
+
+fn locked(app: &AppHandle) -> bool {
+    app.try_state::<Arc<Service>>().is_some_and(|service| service.is_locked())
+}
+
+fn ensure_unlocked(app: &AppHandle) -> Result<(), String> {
+    match app.try_state::<Arc<Service>>() {
+        Some(service) => service.ensure_unlocked(),
+        None => Ok(()),
+    }
+}
+
+/// Keep a run the remote lock stopped until the lock lifts, or start it again
+/// right away if it already has. Decided under the list's lock, which
+/// `resume_paused` takes only after the flag is off, so a run is never parked
+/// after the resume that should have started it.
+fn park(app: &AppHandle, handle: &EngineHandle, run: PausedRun) {
+    let mut paused = handle.paused.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if locked(app) {
+        let _ = app.emit_all(
+            "audiosync-log",
+            format!("{PAUSED_ERROR}. The {} pair(s) left carry on when MKVBatchMux is back.", run.left()),
+        );
+        paused.push(run);
+        return;
+    }
+    drop(paused);
+    run.start(app, handle);
+}
+
+/// Start again whatever the remote lock stopped (called when it lifts).
+pub fn resume_paused(app: &AppHandle) {
+    let handle = app.state::<EngineHandle>().inner().clone();
+    let runs = std::mem::take(&mut *handle.paused.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+    for run in runs {
+        let _ = app.emit_all("audiosync-log", format!("MKVBatchMux is back: carrying on with the {} pair(s) left", run.left()));
+        run.start(app, &handle);
     }
 }
 
@@ -797,6 +912,7 @@ pub fn list_reference_tracks(
     engine: tauri::State<'_, EngineHandle>,
     paths: Vec<String>,
 ) -> Result<Value, String> {
+    ensure_unlocked(&app)?;
     if paths.is_empty() {
         return Ok(serde_json::json!({ "files": [] }));
     }
@@ -868,6 +984,7 @@ pub fn measure_delays_start(
     engine: tauri::State<'_, EngineHandle>,
     request: MeasureStartRequest,
 ) -> Result<(), String> {
+    ensure_unlocked(&app)?;
     if !ffmpeg_available_for(&app) {
         return Err(
             "FFmpeg was not found. Install FFmpeg and make sure ffmpeg and ffprobe are on your PATH."
@@ -877,9 +994,6 @@ pub fn measure_delays_start(
     if request.pairs.is_empty() {
         return Err("There is nothing to measure.".to_string());
     }
-
-    let run_id = request.run_id.clone();
-    let total = request.pairs.len();
 
     if let Some(pair) = ffmpeg_pair(&app) {
         let _ = app.emit_all(
@@ -896,6 +1010,17 @@ pub fn measure_delays_start(
             ),
         );
     }
+
+    run_measure(app, (*engine).clone(), request, Resume::default());
+    Ok(())
+}
+
+/// Run a measurement on its own thread, so the command returns immediately and
+/// the rest of the app stays usable while a batch is in flight. If the remote
+/// lock ends the engine, the pairs not yet answered wait for it to lift.
+fn run_measure(app: AppHandle, handle: EngineHandle, request: MeasureStartRequest, resume: Resume) {
+    let run_id = request.run_id.clone();
+    let total = if resume.total > 0 { resume.total } else { request.pairs.len() };
 
     // Map each result back to the key the frontend sent, so write-back never
     // has to re-derive the pairing.
@@ -921,12 +1046,14 @@ pub fn measure_delays_start(
         "timeline": request.timeline,
     });
 
-    let handle = (*engine).clone();
-    let app_for_run = app.clone();
-
-    // The run is driven on its own thread so the command returns immediately
-    // and the rest of the app stays usable while a batch is in flight.
+    let app_for_run = app;
+    if resume.total == 0 {
+        // A new run: a cancel aimed at an earlier one does not apply.
+        handle.cancel_requested.store(false, Ordering::SeqCst);
+    }
+    handle.runs.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
+        let mut answered: HashSet<String> = HashSet::new();
         let outcome = handle.with(&app_for_run, |engine| {
             drain_ready(engine)?;
             // The engine's own ffmpeg check is authoritative once running;
@@ -937,6 +1064,10 @@ pub fn measure_delays_start(
                      sure ffmpeg and ffprobe are on your PATH."
                         .to_string(),
                 );
+            }
+            // Locked while this run waited for the engine: start nothing.
+            if locked(&app_for_run) {
+                return Err(PAUSED_ERROR.to_string());
             }
             engine.send(&payload)?;
 
@@ -965,7 +1096,7 @@ pub fn measure_delays_start(
                             "measure-delays-progress",
                             MeasureProgressEvent {
                                 run_id: run_id.clone(),
-                                processed,
+                                processed: resume.done + processed,
                                 total,
                                 current: value
                                     .get("current")
@@ -990,6 +1121,11 @@ pub fn measure_delays_start(
                     Some("result") => {
                         // The engine flattens the result onto the event itself.
                         let keys = result_keys.take(&value);
+                        // A failure fanned out to several pairs is provisional:
+                        // each may still get its own answer.
+                        if let [key] = keys.as_slice() {
+                            answered.insert(key.clone());
+                        }
                         if keys.is_empty() {
                             let _ = app_for_run.emit_all(
                                 "measure-delays-result",
@@ -1043,21 +1179,31 @@ pub fn measure_delays_start(
             }
         });
 
-        // A failed run still has to close out the frontend's progress state,
-        // otherwise the UI waits on a batch that will never report done.
-        if let Err(err) = outcome {
-            let _ = app_for_run.emit_all(
-                "measure-delays-done",
-                MeasureDoneEvent {
-                    run_id: request.run_id.clone(),
-                    cancelled: false,
-                    error: Some(err),
-                },
-            );
+        handle.runs.fetch_sub(1, Ordering::SeqCst);
+        let Err(err) = outcome else { return };
+        // Ended by the remote lock: no "done" yet. The frontend keeps showing
+        // this run, and it carries on with the pairs not yet answered.
+        let paused = handle.interrupted.swap(false, Ordering::SeqCst) || locked(&app_for_run);
+        // One the user had already cancelled ends here, as cancelled.
+        let cancelled = paused && handle.cancel_requested.swap(false, Ordering::SeqCst);
+        let left: Vec<MeasurePair> = request.pairs.iter().filter(|pair| !answered.contains(&pair.key)).cloned().collect();
+        if paused && !cancelled && !left.is_empty() {
+            let resume = Resume { done: total - left.len(), total };
+            park(&app_for_run, &handle, PausedRun::Measure(MeasureStartRequest { pairs: left, ..request }, resume));
+            return;
         }
+        // A failed run still has to close out the frontend's progress state,
+        // otherwise the UI waits on a batch that will never report done. One
+        // the lock ended after its last answer simply finished.
+        let _ = app_for_run.emit_all(
+            "measure-delays-done",
+            MeasureDoneEvent {
+                run_id: request.run_id.clone(),
+                cancelled,
+                error: (!paused).then_some(err),
+            },
+        );
     });
-
-    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1117,6 +1263,7 @@ pub fn scan_timeline_start(
     engine: tauri::State<'_, EngineHandle>,
     request: TimelineScanRequest,
 ) -> Result<(), String> {
+    ensure_unlocked(&app)?;
     if !ffmpeg_available_for(&app) {
         return Err(
             "FFmpeg was not found. Install FFmpeg and make sure ffmpeg and ffprobe are on your PATH."
@@ -1127,18 +1274,28 @@ pub fn scan_timeline_start(
         return Err("There is nothing to scan.".to_string());
     }
 
+    let _ = app.emit_all(
+        "audiosync-log",
+        format!("Scanning the full timeline of {} pair(s) for cuts and frame-rate changes", request.pairs.len()),
+    );
+    run_timeline(app, (*engine).clone(), request, Resume::default());
+    Ok(())
+}
+
+/// Run a timeline scan on its own thread. If the remote lock ends the engine,
+/// the pairs not yet planned wait for it to lift.
+fn run_timeline(app: AppHandle, handle: EngineHandle, request: TimelineScanRequest, resume: Resume) {
     let run_id = request.run_id.clone();
-    let total = request.pairs.len();
+    let total = if resume.total > 0 { resume.total } else { request.pairs.len() };
     // The engine numbers jobs in the order they were sent.
     let keys: Vec<String> = request.pairs.iter().map(|pair| pair.key.clone()).collect();
     let payload = timeline_scan_payload(&request);
-    let _ = app.emit_all(
-        "audiosync-log",
-        format!("Scanning the full timeline of {total} pair(s) for cuts and frame-rate changes"),
-    );
 
-    let handle = (*engine).clone();
-    let app_for_run = app.clone();
+    let app_for_run = app;
+    if resume.total == 0 {
+        handle.cancel_requested.store(false, Ordering::SeqCst);
+    }
+    handle.runs.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         let key_of = |value: &Value| {
             value
@@ -1146,6 +1303,7 @@ pub fn scan_timeline_start(
                 .and_then(Value::as_u64)
                 .and_then(|job| keys.get(job as usize).cloned())
         };
+        let mut planned: HashSet<String> = HashSet::new();
         let outcome = handle.with(&app_for_run, |engine| {
             drain_ready(engine)?;
             if !engine.ffmpeg_ready {
@@ -1154,6 +1312,10 @@ pub fn scan_timeline_start(
                      sure ffmpeg and ffprobe are on your PATH."
                         .to_string(),
                 );
+            }
+            // Locked while this run waited for the engine: start nothing.
+            if locked(&app_for_run) {
+                return Err(PAUSED_ERROR.to_string());
             }
             engine.send(&payload)?;
 
@@ -1184,7 +1346,7 @@ pub fn scan_timeline_start(
                                     .get("stage")
                                     .and_then(Value::as_str)
                                     .map(str::to_string),
-                                processed,
+                                processed: resume.done + processed,
                                 total,
                             },
                         );
@@ -1206,6 +1368,9 @@ pub fn scan_timeline_start(
                     }
                     Some("dubsyncJobDone") => {
                         processed += 1;
+                        if let Some(key) = key_of(&value) {
+                            planned.insert(key);
+                        }
                         // A plan was already reported by dubsyncJobPlan; only a
                         // job that failed before planning needs reporting here.
                         let failed_before_plan = value.get("plan").map_or(true, Value::is_null);
@@ -1229,7 +1394,7 @@ pub fn scan_timeline_start(
                                 key: key_of(&value),
                                 percent: 100,
                                 stage: None,
-                                processed,
+                                processed: resume.done + processed,
                                 total,
                             },
                         );
@@ -1273,19 +1438,26 @@ pub fn scan_timeline_start(
             }
         });
 
-        if let Err(err) = outcome {
-            let _ = app_for_run.emit_all(
-                "timeline-scan-done",
-                MeasureDoneEvent {
-                    run_id: request.run_id.clone(),
-                    cancelled: false,
-                    error: Some(err),
-                },
-            );
+        handle.runs.fetch_sub(1, Ordering::SeqCst);
+        let Err(err) = outcome else { return };
+        // Ended by the remote lock: the pairs not yet planned carry on later.
+        let paused = handle.interrupted.swap(false, Ordering::SeqCst) || locked(&app_for_run);
+        let cancelled = paused && handle.cancel_requested.swap(false, Ordering::SeqCst);
+        let left: Vec<MeasurePair> = request.pairs.iter().filter(|pair| !planned.contains(&pair.key)).cloned().collect();
+        if paused && !cancelled && !left.is_empty() {
+            let resume = Resume { done: total - left.len(), total };
+            park(&app_for_run, &handle, PausedRun::Timeline(TimelineScanRequest { pairs: left, ..request }, resume));
+            return;
         }
+        let _ = app_for_run.emit_all(
+            "timeline-scan-done",
+            MeasureDoneEvent {
+                run_id: request.run_id.clone(),
+                cancelled,
+                error: (!paused).then_some(err),
+            },
+        );
     });
-
-    Ok(())
 }
 
 /// Ask the engine to stop the batch in flight. Sent as a message rather than a
@@ -1293,6 +1465,7 @@ pub fn scan_timeline_start(
 /// once the current batch finishes, so the UI reports cancellation as requested rather than done.
 #[tauri::command]
 pub fn measure_delays_cancel(engine: tauri::State<'_, EngineHandle>) -> Result<(), String> {
+    engine.cancel_requested.store(true, Ordering::SeqCst);
     engine.send_now(&serde_json::json!({ "command": "cancel" }))
 }
 

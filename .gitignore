@@ -39,3 +39,6 @@ src-tauri/resources/ffmpeg/*
 
 # Terminal/editor workspace config
 .cmux/
+
+# Local copies of the remote status document (scripts/mkvbatchmux-status.mjs --out).
+remote-status/

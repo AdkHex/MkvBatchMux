@@ -279,3 +279,51 @@ export function listenTimelineScanDone(handler: (payload: MeasureDoneEvent) => v
 export function listenAudiosyncLog(handler: (line: string) => void) {
   return listen<string>("audiosync-log", (event) => handler(event.payload));
 }
+
+/** The remote lock: maintenance, "update required", the access password, or
+ *  a first run that has to reach the status server once
+ *  (src-tauri/src/remote_status.rs, docs/REMOTE-STATUS.md). */
+export interface ServiceLock {
+  locked: boolean;
+  reason: "maintenance" | "update" | "access" | "connect" | null;
+  title: string | null;
+  message: string | null;
+  updateUrl: string | null;
+  minVersion: string | null;
+  appVersion: string;
+  enabled: boolean;
+  /** Unix ms of the last good fetch. */
+  checkedAt: number | null;
+  lastError: string | null;
+}
+
+export async function serviceLock() {
+  return invoke<ServiceLock>("service_lock");
+}
+
+/** Fetch the status now ("Check again") and resolve with the result. */
+export async function checkServiceStatus() {
+  return invoke<ServiceLock>("check_service_status");
+}
+
+/** Checked in Rust against the published hash; the password is never stored. */
+export async function unlockAccess(password: string) {
+  return invoke<ServiceLock>("unlock_access", { password });
+}
+
+export function listenServiceLock(handler: (lock: ServiceLock) => void) {
+  return listen<ServiceLock>("service-lock-changed", (event) => handler(event.payload));
+}
+
+/** An old copy installed for all users (Windows), not yet told about. */
+export interface AllUsersCopy {
+  path: string;
+}
+
+export async function allUsersCopyNotice() {
+  return invoke<AllUsersCopy | null>("all_users_copy_notice");
+}
+
+export async function dismissAllUsersCopyNotice() {
+  return invoke<void>("dismiss_all_users_copy_notice");
+}

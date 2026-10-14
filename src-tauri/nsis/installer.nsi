@@ -505,6 +505,10 @@ SectionEnd
 ; -- Windows refuses to end a process that is already ending -- and helpers it
 ; started (the analysis engine, FFmpeg) carried on running from the install folder,
 ; holding files the installer has to replace.
+;
+; The app installs per user (installMode currentUser, %LOCALAPPDATA%\MKVBatchMux),
+; so on a shared Windows server each account gets its own copy and the force-quit
+; below only ever touches the installing user's processes.
 !macro CheckIfAppIsRunning
   Push $R1
   Push $R2
@@ -527,7 +531,16 @@ SectionEnd
             nsis_tauri_utils::KillProcess "${MAINBINARYNAME}.exe"
           !endif
           Pop $R0
-          nsExec::Exec '"$SYSDIR\taskkill.exe" /F /T /IM "${MAINBINARYNAME}.exe"'
+          !if "${INSTALLMODE}" == "currentUser"
+            ; Only this user's copy. On a shared PC (an RDP server) every user
+            ; has their own, and an installer run with administrator rights
+            ; would otherwise end everyone else's.
+            ReadEnvStr $R2 USERDOMAIN
+            ReadEnvStr $R0 USERNAME
+            nsExec::Exec '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $R2\$R0" /IM "${MAINBINARYNAME}.exe"'
+          !else
+            nsExec::Exec '"$SYSDIR\taskkill.exe" /F /T /IM "${MAINBINARYNAME}.exe"'
+          !endif
           Pop $R0
           Sleep 1000
           !if "${INSTALLMODE}" == "currentUser"

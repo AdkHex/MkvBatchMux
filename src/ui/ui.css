@@ -10,7 +10,9 @@
  *   and the storyboard's own styles are gone;
  * - "Real controls" at the end restyles native selects, inputs and range
  *   sliders to look exactly like the mockup's pictures of them (from
- *   AudioSyncMaster's app stylesheet). */
+ *   AudioSyncMaster's app stylesheet);
+ * - "remote lock" at the very end styles the maintenance and access password
+ *   screen, which the mockup does not have. */
 
 :root {
   --font: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -693,3 +695,20 @@ svg { flex-shrink: 0; }
 @container (max-width: 1040px) { .destck .chkrow { font-size: 0; gap: 0; } }
 /* A checkbox wrapped only to carry its tooltip sits on the same line. */
 .dialog.xl .row > span[title], .dialog.xl .df .l > span[title] { display: flex; }
+
+/* ------------------------------------------------------------ remote lock
+ * Not in the mockup: the remote status and access password screen
+ * (src/app/ServiceLock.tsx), over the whole window and its title bar. Toasts
+ * stay above it. */
+.lock { position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; background: var(--base); color: var(--text); font-size: 13px; line-height: 18px; user-select: none; animation: fade 150ms linear; }
+.lock-bar { height: 32px; flex-shrink: 0; display: flex; }
+.lock-card { margin: auto; transform: translateY(-16px); width: min(440px, calc(100% - 48px)); padding: 32px; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; background: var(--layer); border: 1px solid var(--layer-stroke); border-radius: 8px; box-shadow: var(--shadow); }
+.lock-card > svg { margin-bottom: 4px; }
+.lock-title { margin: 0; font: 600 20px/28px var(--font-display); }
+.lock-text { margin: 0; color: var(--text-2); white-space: pre-line; user-select: text; }
+.lock-note { margin: 0; color: var(--text-3); }
+.lock-meta { margin: 4px 0 0; color: var(--text-3); font-size: 12px; overflow-wrap: anywhere; user-select: text; }
+.lock-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
+.lock-form { align-self: stretch; display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.lock-field:focus-within { border-bottom: 2px solid var(--accent); background: var(--base); }
+.lock-error { min-height: 18px; color: var(--bad); text-align: left; }

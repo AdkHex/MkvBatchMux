@@ -181,13 +181,18 @@ jobs:
         # The installer has to end MKVBatchMux however it finds it: running, already
         # ended but still held open (what an update leaves for a moment), or with a
         # helper holding a file in the install folder. Tauri's own check gave up with
-        # "Failed to kill MKVBatchMux" (src-tauri/nsis/installer.nsi). Nothing is
-        # published unless every case installs.
+        # "Failed to kill MKVBatchMux" (src-tauri/nsis/installer.nsi). It also has to
+        # install for the running user only (installMode currentUser): on a shared
+        # Windows server every account gets its own copy. Nothing is published
+        # unless every case installs.
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          if (Get-ChildItem -Path "src-tauri/target/release" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue) {
+            throw "An MSI was built: Tauri's MSI always installs for every user."
+          }
           $setup = (Get-ChildItem artifacts -Filter "*-setup.exe" | Select-Object -First 1).FullName
-          $dir = Join-Path $env:ProgramFiles "MKVBatchMux"
+          $dir = Join-Path $env:LOCALAPPDATA "MKVBatchMux"
           $app = Join-Path $dir "MKVBatchMux.exe"
           function Install([string]$case) {
             $started = Get-Date
@@ -199,6 +204,12 @@ jobs:
           }
 
           Install "Fresh install"
+
+          $uninstall = "Software\Microsoft\Windows\CurrentVersion\Uninstall\MKVBatchMux"
+          if (-not (Test-Path "HKCU:\$uninstall")) { throw "Per user: no uninstall entry under HKCU." }
+          if (Test-Path "HKLM:\$uninstall") { throw "Per user: an uninstall entry was written under HKLM (all users)." }
+          if (Test-Path (Join-Path $env:ProgramFiles "MKVBatchMux")) { throw "Per user: something was installed in Program Files." }
+          Write-Host "Installed for this user only: $dir, HKCU\$uninstall"
 
           $running = Start-Process -FilePath $app -PassThru
           Start-Sleep -Seconds 5
@@ -281,6 +292,8 @@ jobs:
             done
             echo
             echo "Windows x64. The installer is not code-signed; SmartScreen will warn on first run."
+            echo
+            echo "MKVBatchMux installs for the Windows user who runs the installer, in that user's own folder, without administrator rights; other accounts on the PC do not get it. A copy that an older release installed for all users stays in Program Files until an administrator uninstalls it from Settings > Apps > MKVBatchMux."
           } > release-notes.md
           cat release-notes.md
 

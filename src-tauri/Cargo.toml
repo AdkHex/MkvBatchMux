@@ -26,6 +26,17 @@ zip = "0.6"
 # Verifies those downloads against a pinned digest. Already in the lockfile
 # through reqwest's TLS stack.
 sha2 = "0.10"
+# Remote status and access password (src/remote_status.rs). The password is
+# checked as PBKDF2-HMAC-SHA256 against the hash in the status document and
+# compared in constant time; pbkdf2, hmac, subtle, base64 and url are already
+# in the lockfile (zip's AES support, reqwest).
+pbkdf2 = { version = "0.11", default-features = false }
+hmac = "0.12"
+subtle = "2.6"
+base64 = "0.22"
+url = "2"
+# Remembers an unlock per OS user: Windows Credential Manager, macOS Keychain.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
 # Job objects, so helper processes end with the app (src/process_job.rs).
 # Already in the lockfile through tauri's dependency tree.
@@ -34,3 +45,18 @@ windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Securit
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+# The access password check runs PBKDF2 at 600 000 rounds: about 5 s per try
+# unoptimised. Optimising the hashing crates keeps debug runs and `cargo test`
+# close to release speed.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.hmac]
+opt-level = 3
+
+[profile.dev.package.digest]
+opt-level = 3
+
+[profile.dev.package.block-buffer]
+opt-level = 3
