@@ -10,6 +10,14 @@
 //! The engine also writes a re-timed copy of every subtitle it moves; it is
 //! what the app muxes when the fix is more than a delay (a frame-rate change,
 //! or different offsets for different scenes).
+//!
+//! The engine reads text only, but it lines up when lines are shown, not what
+//! they say. So a Blu-ray picture subtitle (PGS) goes in as a stand-in: an SRT
+//! with the times its pictures are on screen (`pgs::timing_srt`). A plain
+//! offset is then the PGS track's delay like any other; anything more moves
+//! the PGS stream's own display sets to where the engine put each stand-in
+//! line (`pgs::retime`), into a `.sup` copy. A PGS track inside the video can
+//! be the reference the same way.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -22,6 +30,7 @@ use tauri::AppHandle;
 
 use crate::audiosync::{ensure_unlocked, ffmpeg_available_for, EngineHandle};
 use crate::engine_link::{spawn_engine_run, to_value, EngineLink, RunEnd, Sink};
+use crate::pgs;
 
 /// Folder the re-timed copies go to, beside each subtitle, unless the request names one.
 pub const DEFAULT_FOLDER: &str = "MKVBatchMux synced";
@@ -29,9 +38,9 @@ pub const DEFAULT_FOLDER: &str = "MKVBatchMux synced";
 /// The engine reports progress while it finds speech; this long a silence means it is wedged.
 const IDLE_LIMIT: Duration = Duration::from_secs(600);
 
-/// What the app shows for a subtitle made of pictures.
+/// What the app shows for a DVD picture subtitle: only Blu-ray pictures (PGS) are synced.
 pub const IMAGE_SUBTITLE: &str =
-    "Can't be synced automatically: this subtitle is pictures (PGS/VobSub), not text.";
+    "Can't be synced automatically: DVD subtitles (VobSub) are pictures, and only Blu-ray (PGS) pictures can be synced.";
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -58,6 +67,13 @@ pub struct SubsyncJob {
     /// the N of `0:s:N`. Null takes the first.
     #[serde(default)]
     pub reference_track: Option<i64>,
+    /// The subtitle is Blu-ray pictures (PGS), synced by when they are shown.
+    /// A `.sup` file is taken for one without being told.
+    #[serde(default)]
+    pub subtitle_pictures: bool,
+    /// The reference track inside the video is PGS.
+    #[serde(default)]
+    pub reference_pictures: bool,
 }
 
 fn default_max_offset() -> f64 {
@@ -174,13 +190,116 @@ pub fn subsync_start(app: AppHandle, engine: tauri::State<'_, EngineHandle>, req
     Ok(())
 }
 
-/// Whether a subtitle file is pictures, which the engine cannot read as text.
+fn extension_is(path: &str, wanted: &[&str]) -> bool {
+    Path::new(path).extension().map(|ext| wanted.contains(&ext.to_string_lossy().to_ascii_lowercase().as_str())).unwrap_or(false)
+}
+
+/// Whether a subtitle file is DVD pictures (VobSub), which nothing here syncs.
 pub(crate) fn is_image_subtitle(path: &str, track: Option<i64>) -> bool {
-    track.is_none()
-        && Path::new(path)
-            .extension()
-            .map(|ext| matches!(ext.to_string_lossy().to_ascii_lowercase().as_str(), "sup" | "sub" | "idx"))
-            .unwrap_or(false)
+    track.is_none() && extension_is(path, &["sub", "idx"])
+}
+
+/// Whether a job's subtitle is Blu-ray pictures (PGS).
+pub(crate) fn is_pgs(job: &SubsyncJob) -> bool {
+    job.subtitle_pictures || (job.subtitle_track.is_none() && extension_is(&job.subtitle_path, &["sup"]))
+}
+
+/// What a job sends the engine in place of PGS: the stand-in SRTs, in a
+/// folder of their own that goes when the run ends.
+pub(crate) struct Prepared {
+    work: tempfile::TempDir,
+    /// The subtitle's own stream and lines, when it is PGS, and its stand-in.
+    pictures: Option<(pgs::Sup, Vec<pgs::Line>, PathBuf)>,
+    /// The stand-in of a PGS reference track.
+    reference: Option<PathBuf>,
+}
+
+impl Prepared {
+    /// The folder the engine writes its copy of a stand-in to.
+    fn work_dir(&self) -> &Path {
+        self.work.path()
+    }
+}
+
+fn stem_of(path: &str, track: Option<i64>) -> String {
+    let stem = Path::new(path).file_stem().map(|stem| stem.to_string_lossy().to_string()).unwrap_or_else(|| "subtitle".to_string());
+    match track {
+        Some(track) => format!("{stem}.track{}", track + 1),
+        None => stem,
+    }
+}
+
+/// Read a PGS stream (a `.sup`, or a track copied out of a container) and
+/// write its stand-in SRT beside it in `work`.
+fn read_pictures(path: &str, track: Option<i64>, name: &str, work: &Path, cancel: &AtomicBool, percent: &mut dyn FnMut(u64)) -> Result<(pgs::Sup, Vec<pgs::Line>, PathBuf), String> {
+    let source = match track {
+        None => PathBuf::from(path),
+        Some(track) => {
+            let into = work.join(format!("{name}.sup"));
+            pgs::extract(Path::new(path), track.max(0) as usize, &into, cancel, |value| percent(value))?;
+            into
+        }
+    };
+    let bytes = std::fs::read(&source).map_err(|error| format!("Could not read {}: {error}", source.display()))?;
+    let sup = pgs::parse(bytes)?;
+    let lines = pgs::lines(&sup.sets);
+    let timing = pgs::timing_srt(&lines);
+    if timing.is_empty() {
+        return Err("The PGS subtitle never shows a line.".to_string());
+    }
+    let stand_in = work.join(format!("{name}.srt"));
+    std::fs::write(&stand_in, timing).map_err(|error| format!("Could not write {}: {error}", stand_in.display()))?;
+    Ok((sup, lines, stand_in))
+}
+
+/// Ready a job whose subtitle or reference is PGS; None for one that is all text.
+fn prepare(job: &SubsyncJob, request: &SubsyncRequest, cancel: &AtomicBool, percent: &mut dyn FnMut(u64)) -> Result<Option<Prepared>, String> {
+    let pictures = is_pgs(job);
+    let reference = request.engine == SubsyncEngine::Subtitle && job.reference_pictures;
+    if !pictures && !reference {
+        return Ok(None);
+    }
+    let work = tempfile::Builder::new().prefix("mkvbatchmux-pgs-").tempdir().map_err(|error| format!("Could not make a work folder: {error}"))?;
+    let mut prepared = Prepared { work, pictures: None, reference: None };
+    if pictures {
+        let name = stem_of(&job.subtitle_path, job.subtitle_track);
+        prepared.pictures = Some(read_pictures(&job.subtitle_path, job.subtitle_track, &name, prepared.work.path(), cancel, percent)?);
+    }
+    if reference {
+        let track = Some(job.reference_track.unwrap_or(0).max(0));
+        let (_, _, stand_in) = read_pictures(&job.video_path, track, "reference", prepared.work.path(), cancel, percent)
+            .map_err(|error| format!("The video's subtitle track: {error}"))?;
+        prepared.reference = Some(stand_in);
+    }
+    Ok(Some(prepared))
+}
+
+/// Where a PGS subtitle's re-timed copy goes: beside the text copies, named
+/// like them, never over a file of its own folder.
+fn pictures_copy_path(job: &SubsyncJob, request: &SubsyncRequest) -> PathBuf {
+    let (folder, overwrite) = output_folder(request.output_dir.as_deref(), Path::new(&job.subtitle_path));
+    let stem = format!("{}.synced", stem_of(&job.subtitle_path, job.subtitle_track));
+    let candidate = folder.join(format!("{stem}.sup"));
+    if overwrite || !candidate.exists() {
+        return candidate;
+    }
+    (2..).map(|n| folder.join(format!("{stem} ({n}).sup"))).find(|path| !path.exists()).expect("a free name")
+}
+
+/// Move the PGS stream's display sets to where the engine put each stand-in
+/// line (its copy at `engine_copy`), into a `.sup` copy; its path.
+fn write_pictures_copy(job: &SubsyncJob, request: &SubsyncRequest, pictures: &(pgs::Sup, Vec<pgs::Line>, PathBuf), engine_copy: Option<&str>) -> Result<String, String> {
+    let (sup, lines, _) = pictures;
+    let engine_copy = engine_copy.ok_or("The engine wrote no re-timed copy.")?;
+    let text = std::fs::read_to_string(engine_copy).map_err(|error| format!("Could not read the engine's re-timed copy: {error}"))?;
+    let placed = pgs::read_timing_srt(&text);
+    let bytes = pgs::retime(sup, lines, &placed)?;
+    let path = pictures_copy_path(job, request);
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder).map_err(|error| format!("Could not make {}: {error}", folder.display()))?;
+    }
+    std::fs::write(&path, bytes).map_err(|error| format!("Could not write {}: {error}", path.display()))?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 /// Where a job's re-timed copy goes, and whether an earlier one there may be
@@ -199,11 +318,24 @@ pub(crate) fn output_folder(output_dir: Option<&str>, subtitle: &Path) -> (PathB
 
 /// The engine's job for one subtitle (`SubJob` in AudioSyncMaster's
 /// `src/lib/subsync/types.ts`).
+#[cfg(test)]
 pub(crate) fn engine_job(job: &SubsyncJob, request: &SubsyncRequest) -> Value {
-    let (folder, overwrite) = output_folder(request.output_dir.as_deref(), Path::new(&job.subtitle_path));
+    engine_job_with(job, request, None)
+}
+
+/// The engine's job, with the stand-ins of anything PGS in it.
+fn engine_job_with(job: &SubsyncJob, request: &SubsyncRequest, prepared: Option<&Prepared>) -> Value {
+    let (mut folder, mut overwrite) = output_folder(request.output_dir.as_deref(), Path::new(&job.subtitle_path));
     let mut subtitle = serde_json::json!({ "path": job.subtitle_path });
     if let Some(track) = job.subtitle_track {
         subtitle["track"] = Value::from(track);
+    }
+    let stand_in = prepared.and_then(|prepared| prepared.pictures.as_ref().map(|(_, _, srt)| (prepared.work_dir(), srt)));
+    if let Some((work, srt)) = stand_in {
+        // The engine's copy of a stand-in is read back here, never muxed.
+        subtitle = serde_json::json!({ "path": srt.to_string_lossy() });
+        folder = work.to_path_buf();
+        overwrite = true;
     }
     let mut options = serde_json::json!({
         "engine": match request.engine { SubsyncEngine::Audio => "audio", SubsyncEngine::Subtitle => "subtitle" },
@@ -212,7 +344,10 @@ pub(crate) fn engine_job(job: &SubsyncJob, request: &SubsyncRequest) -> Value {
         "allowSplits": request.allow_splits,
     });
     if request.engine == SubsyncEngine::Subtitle {
-        options["reference"] = serde_json::json!({ "path": job.video_path, "track": job.reference_track.unwrap_or(0).max(0) });
+        options["reference"] = match prepared.and_then(|prepared| prepared.reference.as_ref()) {
+            Some(srt) => serde_json::json!({ "path": srt.to_string_lossy() }),
+            None => serde_json::json!({ "path": job.video_path, "track": job.reference_track.unwrap_or(0).max(0) }),
+        };
     }
     serde_json::json!({
         "id": job.key,
@@ -226,11 +361,11 @@ pub(crate) fn engine_job(job: &SubsyncJob, request: &SubsyncRequest) -> Value {
     })
 }
 
-pub(crate) fn batch_payload(jobs: &[&SubsyncJob], request: &SubsyncRequest) -> Value {
+pub(crate) fn batch_payload(jobs: &[(&SubsyncJob, Option<&Prepared>)], request: &SubsyncRequest) -> Value {
     serde_json::json!({
         "command": "subsBatch",
         "maxWorkers": request.max_workers.max(1),
-        "jobs": jobs.iter().map(|job| engine_job(job, request)).collect::<Vec<_>>(),
+        "jobs": jobs.iter().map(|(job, prepared)| engine_job_with(job, request, *prepared)).collect::<Vec<_>>(),
     })
 }
 
@@ -314,13 +449,29 @@ pub(crate) fn run<L: EngineLink, S: Sink>(link: &mut L, sink: &S, cancel: &Atomi
         progress(key, 100, None, *processed);
     };
 
-    // Pictures are refused here, without a round trip to the engine.
+    // DVD pictures are refused here, without a round trip to the engine; PGS
+    // is read for its timing first.
     let mut sent: Vec<&SubsyncJob> = Vec::new();
+    let mut prepared: Vec<Option<Prepared>> = Vec::new();
     for job in &request.jobs {
+        if cancel.load(Ordering::SeqCst) {
+            return Ok(RunEnd { cancelled: true, error: None });
+        }
         if is_image_subtitle(&job.subtitle_path, job.subtitle_track) {
             result(&job.key, ResultEvent { error: Some(IMAGE_SUBTITLE.to_string()), ..Default::default() }, &mut processed);
-        } else {
-            sent.push(job);
+            continue;
+        }
+        if is_pgs(job) || (request.engine == SubsyncEngine::Subtitle && job.reference_pictures) {
+            progress(&job.key, 0, Some("Reading the pictures' timing"), processed);
+        }
+        let mut percent = |value: u64| progress(&job.key, value.min(99), Some("Reading the pictures' timing"), processed);
+        match prepare(job, request, cancel, &mut percent) {
+            Ok(ready) => {
+                sent.push(job);
+                prepared.push(ready);
+            }
+            Err(_) if cancel.load(Ordering::SeqCst) => return Ok(RunEnd { cancelled: true, error: None }),
+            Err(error) => result(&job.key, ResultEvent { error: Some(error), ..Default::default() }, &mut processed),
         }
     }
     if sent.is_empty() {
@@ -331,11 +482,14 @@ pub(crate) fn run<L: EngineLink, S: Sink>(link: &mut L, sink: &S, cancel: &Atomi
     }
 
     let before = existing_copies(&sent, request);
-    link.send(&batch_payload(&sent, request))?;
+    let jobs: Vec<(&SubsyncJob, Option<&Prepared>)> = sent.iter().copied().zip(prepared.iter().map(Option::as_ref)).collect();
+    link.send(&batch_payload(&jobs, request))?;
     let mut fatal: Option<String> = None;
     loop {
         let value = link.recv(IDLE_LIMIT)?;
-        let job = value.get("job").and_then(Value::as_u64).and_then(|job| sent.get(job as usize).copied());
+        let index = value.get("job").and_then(Value::as_u64).map(|job| job as usize);
+        let job = index.and_then(|index| sent.get(index).copied());
+        let pictures = index.and_then(|index| prepared.get(index)).and_then(Option::as_ref).and_then(|ready| ready.pictures.as_ref());
         match value.get("type").and_then(Value::as_str) {
             Some("subsJobStart") => {
                 if let Some(job) = job {
@@ -357,11 +511,26 @@ pub(crate) fn run<L: EngineLink, S: Sink>(link: &mut L, sink: &S, cancel: &Atomi
                     // A plain offset is applied as the original file's delay,
                     // so its re-timed copy would only be clutter beside it.
                     let plain_offset = is_pure_offset(&parsed);
-                    if !parsed.applied || plain_offset {
-                        discard_unchanged_copy(&value, job, request, &before);
-                    }
-                    if plain_offset {
-                        parsed.retimed_path = None;
+                    if let Some(pictures) = pictures {
+                        // The engine's copy is of the stand-in: the pictures
+                        // themselves move only when a delay is not enough.
+                        let engine_copy = parsed.retimed_path.take();
+                        if parsed.applied && !plain_offset {
+                            match write_pictures_copy(job, request, pictures, engine_copy.as_deref()) {
+                                Ok(path) => parsed.retimed_path = Some(path),
+                                Err(error) => {
+                                    parsed.error = Some(format!("Could not re-time the pictures: {error}"));
+                                    parsed.applied = false;
+                                }
+                            }
+                        }
+                    } else {
+                        if !parsed.applied || plain_offset {
+                            discard_unchanged_copy(&value, job, request, &before);
+                        }
+                        if plain_offset {
+                            parsed.retimed_path = None;
+                        }
                     }
                     result(&job.key, parsed, &mut processed);
                 }
@@ -470,6 +639,8 @@ mod tests {
             video_path: "/v/Show.S01E02.mkv".to_string(),
             audio_track: 1,
             reference_track: None,
+            subtitle_pictures: false,
+            reference_pictures: false,
         }
     }
 
@@ -533,11 +704,15 @@ mod tests {
     }
 
     #[test]
-    fn picture_subtitles_are_refused() {
-        assert!(is_image_subtitle("/s/movie.sup", None));
+    fn dvd_pictures_are_refused_and_blu_ray_pictures_are_synced() {
         assert!(is_image_subtitle("/s/movie.IDX", None));
+        assert!(is_image_subtitle("/s/movie.sub", None));
+        assert!(!is_image_subtitle("/s/movie.sup", None));
         assert!(!is_image_subtitle("/s/movie.srt", None));
-        assert!(!is_image_subtitle("/s/movie.sup", Some(0)));
+        assert!(is_pgs(&job("k", "/s/movie.SUP")));
+        assert!(!is_pgs(&job("k", "/s/movie.srt")));
+        let inside = SubsyncJob { subtitle_track: Some(2), subtitle_pictures: true, ..job("k", "/s/remux.mkv") };
+        assert!(is_pgs(&inside));
     }
 
     fn done(report: Value, summary: &str, warnings: &[&str]) -> Value {
@@ -624,6 +799,158 @@ mod tests {
         assert_eq!(failed.error.as_deref(), Some("Subtitle not found: /x"));
     }
 
+    // ------------------------------------------------------------- pictures
+
+    use crate::engine_link::testing::Recorder;
+    use std::collections::VecDeque;
+
+    /// An engine that moves every stand-in line by `video = ratio * t + offset`
+    /// (dropping the lines `drop` names) and reports that, as the real one does.
+    struct FakeEngine {
+        ratio: f64,
+        offset_ms: f64,
+        drop: Vec<usize>,
+        sent: Vec<Value>,
+        queue: VecDeque<Value>,
+    }
+
+    impl FakeEngine {
+        fn new(ratio: f64, offset_ms: f64) -> Self {
+            Self { ratio, offset_ms, drop: vec![], sent: vec![], queue: VecDeque::new() }
+        }
+    }
+
+    impl EngineLink for FakeEngine {
+        fn send(&mut self, payload: &Value) -> Result<(), String> {
+            self.sent.push(payload.clone());
+            for (index, job) in payload["jobs"].as_array().unwrap().iter().enumerate() {
+                let path = job["input"]["subtitle"]["path"].as_str().unwrap();
+                let text = std::fs::read_to_string(path).unwrap();
+                let mut out = String::new();
+                for (n, (line, (start, end))) in {
+                    let mut placed: Vec<_> = pgs::read_timing_srt(&text).into_iter().collect();
+                    placed.sort();
+                    placed
+                }
+                .into_iter()
+                .enumerate()
+                {
+                    if self.drop.contains(&line) {
+                        continue;
+                    }
+                    let at = |ms: i64| {
+                        let ms = (ms as f64 * self.ratio + self.offset_ms).round() as i64;
+                        format!("{:02}:{:02}:{:02},{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
+                    };
+                    out.push_str(&format!("{}\n{} --> {}\nline {line}\n\n", n + 1, at(start), at(end)));
+                }
+                let dir = Path::new(job["output"]["dir"].as_str().unwrap());
+                std::fs::create_dir_all(dir).unwrap();
+                let copy = dir.join(format!("{}.synced.srt", Path::new(path).file_stem().unwrap().to_string_lossy()));
+                std::fs::write(&copy, out).unwrap();
+                self.queue.push_back(serde_json::json!({
+                    "type": "subsJobDone", "job": index, "id": job["id"],
+                    "outputs": [{ "path": copy.to_string_lossy(), "kind": "subtitle" }],
+                    "report": { "offsetMs": self.offset_ms, "ratio": self.ratio, "splits": [], "score": 1.0, "confidence": "high", "method": "audio" },
+                    "summary": "Matched", "warnings": [],
+                }));
+            }
+            self.queue.push_back(serde_json::json!({ "type": "subsBatchDone" }));
+            Ok(())
+        }
+
+        fn recv(&mut self, _timeout: Duration) -> Result<Value, String> {
+            self.queue.pop_front().ok_or_else(|| "nothing more".to_string())
+        }
+    }
+
+    fn picture_request(jobs: Vec<SubsyncJob>) -> SubsyncRequest {
+        SubsyncRequest { jobs, ..request(SubsyncEngine::Audio, None) }
+    }
+
+    fn results(sink: &Recorder) -> HashMap<String, Value> {
+        sink.named("subsync-result").into_iter().map(|value| (value["key"].as_str().unwrap().to_string(), value)).collect()
+    }
+
+    #[test]
+    fn a_pgs_file_goes_to_the_engine_as_its_timing_and_a_plain_offset_is_its_delay() {
+        let dir = tempfile::tempdir().unwrap();
+        let sup = dir.path().join("Show.S01E01.sup");
+        std::fs::write(&sup, pgs::testing::sup(&[(1000, 2000), (3000, 4500), (6000, 7000)], &[])).unwrap();
+        let mut engine = FakeEngine::new(1.0, -2500.0);
+        let sink = Recorder::default();
+        let request = picture_request(vec![job("e01", &sup.to_string_lossy())]);
+        assert_eq!(run(&mut engine, &sink, &AtomicBool::new(false), &request).unwrap(), RunEnd::default());
+
+        let sent = &engine.sent[0]["jobs"][0];
+        let stand_in = PathBuf::from(sent["input"]["subtitle"]["path"].as_str().unwrap());
+        assert_eq!(stand_in.file_name().unwrap(), "Show.S01E01.srt");
+        assert!(!stand_in.starts_with(dir.path()), "the stand-in is not left beside the subtitle");
+        assert!(!stand_in.exists(), "the work folder goes when the run ends");
+        let result = &results(&sink)["e01"];
+        assert_eq!(result["offsetS"], -2.5);
+        assert_eq!(result["applied"], true);
+        assert!(result["retimedPath"].is_null(), "{result}");
+        assert!(!dir.path().join(DEFAULT_FOLDER).exists(), "no copy for a plain delay");
+    }
+
+    #[test]
+    fn a_frame_rate_change_writes_a_re_timed_sup_beside_the_text_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let sup = dir.path().join("Show.S01E03.sup");
+        std::fs::write(&sup, pgs::testing::sup(&[(10_000, 12_000), (20_000, 21_000), (30_000, 31_000)], &[0])).unwrap();
+        let ratio = 25.0 / 23.976;
+        let mut engine = FakeEngine::new(ratio, 100.0);
+        engine.drop = vec![1];
+        let sink = Recorder::default();
+        run(&mut engine, &sink, &AtomicBool::new(false), &picture_request(vec![job("e03", &sup.to_string_lossy())])).unwrap();
+
+        let result = &results(&sink)["e03"];
+        let copy = PathBuf::from(result["retimedPath"].as_str().unwrap_or_else(|| panic!("{result}")));
+        assert_eq!(copy, dir.path().join(DEFAULT_FOLDER).join("Show.S01E03.synced.sup"));
+        let sets: Vec<i64> = pgs::parse(std::fs::read(&copy).unwrap()).unwrap().sets.iter().map(|set| (set.pts / 90) as i64).collect();
+        let at = |ms: f64| (ms * ratio + 100.0).round() as i64;
+        // Line 0 (with its fade), line 1 dropped by the engine (moves with line 0), line 2.
+        let shift0 = at(10_000.0) - 10_000;
+        assert_eq!(sets, vec![at(10_000.0), (11_000.0 * ratio + 100.0).round() as i64, at(12_000.0), 20_000 + shift0, 21_000 + shift0, at(30_000.0), at(31_000.0)]);
+    }
+
+    #[test]
+    fn what_cannot_be_read_fails_alone_and_dvd_pictures_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let broken = dir.path().join("broken.sup");
+        std::fs::write(&broken, b"not pgs at all").unwrap();
+        let good = dir.path().join("good.sup");
+        std::fs::write(&good, pgs::testing::sup(&[(1000, 2000), (3000, 4000)], &[])).unwrap();
+        let idx = dir.path().join("dvd.idx");
+        let mut engine = FakeEngine::new(1.0, 500.0);
+        let sink = Recorder::default();
+        let jobs = vec![job("broken", &broken.to_string_lossy()), job("good", &good.to_string_lossy()), job("dvd", &idx.to_string_lossy())];
+        run(&mut engine, &sink, &AtomicBool::new(false), &picture_request(jobs)).unwrap();
+        let results = results(&sink);
+        assert!(results["broken"]["error"].as_str().unwrap().contains("not a Blu-ray"), "{}", results["broken"]);
+        assert_eq!(results["dvd"]["error"], IMAGE_SUBTITLE);
+        assert_eq!(results["good"]["offsetS"], 0.5);
+        assert_eq!(engine.sent[0]["jobs"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_pgs_reference_goes_to_the_engine_as_its_timing_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let reference = work.path().join("reference.srt");
+        std::fs::write(&reference, "1\n00:00:01,000 --> 00:00:02,000\nline 0\n\n").unwrap();
+        let prepared = Prepared { work, pictures: None, reference: Some(reference.clone()) };
+        let mut text = job("k", &dir.path().join("a.srt").to_string_lossy());
+        text.reference_track = Some(1);
+        text.reference_pictures = true;
+        let value = engine_job_with(&text, &request(SubsyncEngine::Subtitle, None), Some(&prepared));
+        assert_eq!(value["options"]["reference"], serde_json::json!({ "path": reference.to_string_lossy() }));
+        // The text subtitle itself goes as it is, its copy beside it as always.
+        assert_eq!(value["input"]["subtitle"]["path"], text.subtitle_path.as_str());
+        assert_eq!(value["output"]["dir"], dir.path().join(DEFAULT_FOLDER).to_string_lossy().as_ref());
+    }
+
     /// Real engine on the test season: `cargo test -- --ignored --nocapture`
     /// with AUDIOSYNC_REPO and MBM_TEST_MEDIA set and ffmpeg on PATH.
     mod real {
@@ -673,6 +1000,8 @@ mod tests {
                 video_path: root.join("Show").join("Season 1").join(format!("Show.S01E0{n}.mkv")).to_string_lossy().into_owned(),
                 audio_track: 0,
                 reference_track: Some(0),
+                subtitle_pictures: false,
+                reference_pictures: false,
             }
         }
 
@@ -713,6 +1042,95 @@ mod tests {
                 let n: u32 = result.key.as_deref().unwrap()[2..].parse().unwrap();
                 println!("subtitle {:?}: offset {:+.4} s, truth {:+.3} s, score {:?}", result.key, result.offset_s.unwrap(), planted(n), result.score);
                 assert!((result.offset_s.unwrap() - planted(n)).abs() < 0.05);
+            }
+        }
+
+        /// E0n's subtitle as Blu-ray pictures, with the same timing, in `dir`.
+        fn pictures_of(n: u32, dir: &Path) -> PathBuf {
+            let srt = std::fs::read_to_string(external(n).subtitle_path).unwrap();
+            let sup = dir.join(format!("Show.S01E0{n}.en.sup"));
+            std::fs::write(&sup, pgs::testing::sup(&pgs::testing::srt_times(&srt), &[])).unwrap();
+            sup
+        }
+
+        fn tool(program: &str, args: &[std::ffi::OsString]) {
+            let status = crate::hidden_command(program).args(args).stdout(std::process::Stdio::null()).status().unwrap();
+            assert!(status.code().is_some_and(|code| code <= 1), "{program} failed: {status}");
+        }
+
+        /// The test season's subtitles as PGS, a `.sup` and inside an `.mks`,
+        /// measured the same as the text they came from; E03's frame-rate fix
+        /// moves the pictures where the video's own track has its lines; and a
+        /// PGS track inside the video is a reference like a text one.
+        #[test]
+        #[ignore = "needs the engine, ffmpeg, mkvmerge, mkvextract and the test media"]
+        fn pictures_sync_by_their_timing() {
+            let truth = truth();
+            let planted = |n: u32| -truth[format!("S01E0{n}")]["subShiftS"].as_f64().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join("out");
+            let os = |path: &Path| path.as_os_str().to_owned();
+            let arg = |text: &str| std::ffi::OsString::from(text);
+
+            let as_pictures = |n: u32| SubsyncJob { key: format!("p0{n}"), subtitle_path: pictures_of(n, dir.path()).to_string_lossy().into_owned(), ..external(n) };
+            let mks = dir.path().join("Show.S01E01.subs.mks");
+            tool("mkvmerge", &[arg("-q"), arg("-o"), os(&mks), os(&pictures_of(1, dir.path()))]);
+            let inside_mks = SubsyncJob { key: "m01".into(), subtitle_path: mks.to_string_lossy().into_owned(), subtitle_track: Some(0), subtitle_pictures: true, ..external(1) };
+
+            // Against the video's own (text) track: as exact as the text.
+            let reference = measure(SubsyncEngine::Subtitle, vec![external(1), as_pictures(1), inside_mks.clone(), as_pictures(2)], &out);
+            let by = |results: &[ResultEvent], key: &str| results.iter().find(|r| r.key.as_deref() == Some(key)).unwrap_or_else(|| panic!("no {key}")).clone();
+            for result in &reference {
+                println!("subtitle engine {:?}: offset {:?}, ratio {:?}, score {:?}, copy {:?}, error {:?}", result.key, result.offset_s, result.ratio, result.score, result.retimed_path, result.error);
+            }
+            let text = by(&reference, "e01").offset_s.unwrap();
+            for key in ["p01", "m01"] {
+                let result = by(&reference, key);
+                assert!(result.error.is_none() && result.applied, "{result:?}");
+                assert!((result.offset_s.unwrap() - text).abs() < 0.002, "{key}: {:?} against the text's {text}", result.offset_s);
+                assert!((result.offset_s.unwrap() - planted(1)).abs() < 0.05);
+                assert!(result.retimed_path.is_none(), "a plain delay needs no copy");
+            }
+            assert!((by(&reference, "p02").offset_s.unwrap() - planted(2)).abs() < 0.05);
+
+            // E03, timed for 25 fps (its video has no subtitle track: by speech):
+            // the pictures land where the engine's re-timed text puts its lines.
+            let speech = measure(SubsyncEngine::Audio, vec![external(3), as_pictures(3)], &out);
+            for result in &speech {
+                println!("audio engine {:?}: offset {:?}, ratio {:?}, score {:?}, copy {:?}, error {:?}", result.key, result.offset_s, result.ratio, result.score, result.retimed_path, result.error);
+            }
+            let (e03_text, e03) = (by(&speech, "e03"), by(&speech, "p03"));
+            assert!((e03.ratio.unwrap() - 25.0 / 23.976).abs() < 1e-4, "{e03:?}");
+            assert!((e03.offset_s.unwrap() - e03_text.offset_s.unwrap()).abs() < 0.002, "{e03:?} against {e03_text:?}");
+            let copy = PathBuf::from(e03.retimed_path.clone().unwrap());
+            assert_eq!(copy.extension().unwrap(), "sup");
+            let video = PathBuf::from(external(3).video_path);
+            let wanted: Vec<(u32, u32)> = pgs::testing::srt_times(&std::fs::read_to_string(e03_text.retimed_path.unwrap()).unwrap());
+            let moved = pgs::parse(std::fs::read(&copy).unwrap()).unwrap();
+            let got: Vec<(u32, u32)> = pgs::lines(&moved.sets).iter().map(|line| (line.start / 90, line.end / 90)).collect();
+            assert_eq!(got.len(), wanted.len());
+            let worst = got.iter().zip(&wanted).map(|(a, b)| (a.0 as i64 - b.0 as i64).abs().max((a.1 as i64 - b.1 as i64).abs())).max().unwrap();
+            println!("E03 copy: {} lines, ratio {:.6}, worst {worst} ms from the engine's re-timed text", got.len(), e03.ratio.unwrap());
+            assert!(worst <= 1, "{got:?} against {wanted:?}");
+            // mkvmerge muxes the copy.
+            let muxed = dir.path().join("E03.muxed.mkv");
+            tool("mkvmerge", &[arg("-q"), arg("-o"), os(&muxed), os(&video), os(&copy)]);
+            let info = crate::hidden_command("mkvmerge").arg("-J").arg(&muxed).output().unwrap();
+            let json: Value = serde_json::from_slice(&info.stdout).unwrap();
+            assert!(json["tracks"].as_array().unwrap().iter().any(|track| track["codec"].as_str().is_some_and(|codec| codec.contains("PGS"))));
+
+            // A video whose own subtitle is PGS: the reference by its timing.
+            let pgs_video = dir.path().join("Show.S01E01.pgs.mkv");
+            let inside_e01 = dir.path().join("inside01.srt");
+            tool("mkvextract", &[arg(&external(1).video_path), arg("tracks"), format!("2:{}", inside_e01.display()).into()]);
+            let reference_sup = dir.path().join("inside01.sup");
+            std::fs::write(&reference_sup, pgs::testing::sup(&pgs::testing::srt_times(&std::fs::read_to_string(&inside_e01).unwrap()), &[])).unwrap();
+            tool("mkvmerge", &[arg("-q"), arg("-o"), os(&pgs_video), arg("-S"), arg(&external(1).video_path), os(&reference_sup)]);
+            let against_pictures = |job: SubsyncJob| SubsyncJob { video_path: pgs_video.to_string_lossy().into_owned(), reference_track: Some(0), reference_pictures: true, ..job };
+            let pictures = measure(SubsyncEngine::Subtitle, vec![against_pictures(external(1)), against_pictures(as_pictures(1))], &out);
+            for result in &pictures {
+                println!("PGS reference {:?}: offset {:?}, score {:?}, error {:?}", result.key, result.offset_s, result.score, result.error);
+                assert!((result.offset_s.unwrap() - planted(1)).abs() < 0.05, "{result:?}");
             }
         }
     }

@@ -130,6 +130,10 @@ export interface SubsyncJob {
   /** For the subtitle engine: the video's subtitle stream to sync against, as a subtitle-stream index
    *  (the N of `0:s:N`, counting subtitle tracks only). Null takes the first. */
   referenceTrack: number | null;
+  /** The subtitle is Blu-ray pictures (PGS): synced by when they are shown. */
+  subtitlePictures?: boolean;
+  /** The reference track inside the video is PGS. */
+  referencePictures?: boolean;
 }
 
 export interface SubsyncRequest {

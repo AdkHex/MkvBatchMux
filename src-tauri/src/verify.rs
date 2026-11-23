@@ -141,6 +141,11 @@ pub(crate) struct Expected {
     /// dropped (its tracks carry no lengths of their own to tell), so an
     /// output shorter than it is only worth a warning.
     pub length_may_be_dropped_track: bool,
+    /// mkvmerge was given no `--track-order`, so it chose the order itself:
+    /// current versions sort the tracks by type (video, audio, subtitles),
+    /// each type in the source's order, where older ones kept the source's
+    /// order. Either is what was asked for.
+    pub order_by_type_ok: bool,
 }
 
 impl Expected {
@@ -261,7 +266,9 @@ pub(crate) fn expected_from_mux(job: &MuxJobRequest, settings: &MuxSettings, sou
 
     // mkvmerge puts the listed tracks first, in that order, and any it was
     // not told about after them; entries for tracks it does not mux are skipped.
-    if let Some(order) = track_order(job, &added) {
+    let order = track_order(job, &added);
+    expected.order_by_type_ok = order.is_none();
+    if let Some(order) = order {
         let mut rest = tracks;
         let mut ordered = Vec::with_capacity(rest.len());
         for (file, track) in order {
@@ -570,6 +577,15 @@ fn pair_tracks<'a>(expected: &'a Expected, output: &'a OutputFile) -> Vec<(&'a E
         .collect()
 }
 
+/// Track types in mkvmerge's own order when it is given none: video, then
+/// audio, then subtitles, each type keeping its order.
+fn sorted_by_type<'a>(kinds: &[&'a str]) -> Vec<&'a str> {
+    let rank = |kind: &str| ["video", "audio", "subtitle"].iter().position(|known| *known == kind).unwrap_or(3);
+    let mut sorted = kinds.to_vec();
+    sorted.sort_by_key(|kind| rank(kind));
+    sorted
+}
+
 /// Everything but sync: tracks, added tracks, length, chapters, attachments,
 /// order, names and flags, and the added audio's own length.
 pub(crate) fn structure_checks(expected: &Expected, output: &OutputFile, source_duration: Option<f64>) -> Vec<Check> {
@@ -690,7 +706,7 @@ pub(crate) fn structure_checks(expected: &Expected, output: &OutputFile, source_
         Check::new("order", "Track order", CheckStatus::Skip, "The source's tracks were never read")
     } else if !counts_agree {
         Check::new("order", "Track order", CheckStatus::Skip, "Not compared: the tracks do not add up")
-    } else if expected_kinds == output_kinds {
+    } else if expected_kinds == output_kinds || (expected.order_by_type_ok && sorted_by_type(&expected_kinds) == output_kinds) {
         Check::new("order", "Track order", CheckStatus::Pass, "As asked")
     } else {
         Check::new("order", "Track order", CheckStatus::Warn, format!("Not the order asked for: {}", output_kinds.join(", ")))

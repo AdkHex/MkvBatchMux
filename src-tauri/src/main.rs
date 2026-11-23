@@ -9,6 +9,7 @@ mod process_job;
 mod remote_status;
 mod service;
 mod store;
+mod pgs;
 mod subsync;
 #[cfg(test)]
 mod ui_e2e;

@@ -939,8 +939,16 @@ fn real_e02_conformed_losslessly_passes_on_the_full_timeline() {
     print_report("E02 conformed losslessly + delay 0", &report);
     let sync = status_of(&report.checks, "sync");
     assert_eq!(sync.status, CheckStatus::Pass, "{sync:?}");
-    assert!(sync.detail.starts_with("Quick check said") && sync.detail.contains("full-timeline check: every stretch within"), "{sync:?}");
-    assert_eq!(engine.second_opinions(), 1);
+    // Up to AudioSyncMaster v2.22 the quick check read this pair 69 ms out over
+    // its repeating music, and only the full-timeline second opinion passed it
+    // (second_opinion_verdict's own tests keep that route covered). From v2.23
+    // the quick check searches the waveforms and measures it itself.
+    if engine.second_opinions() > 0 {
+        assert_eq!(engine.second_opinions(), 1);
+        assert!(sync.detail.starts_with("Quick check said") && sync.detail.contains("full-timeline check: every stretch within"), "{sync:?}");
+    } else {
+        assert!(sync.detail.starts_with("In sync"), "{sync:?}");
+    }
     let residual = report.residual_ms.expect("measured");
     assert!(residual.abs() < 32.0, "the plan's worst stretch {residual} ms");
     assert!(report.ok && final_path.exists());
@@ -1107,4 +1115,102 @@ fn a_dub_muxed_with_a_frame_rate_correction_is_not_checked_rather_than_flagged()
 
 fn job_without_stretch() -> MuxJobRequest {
     job("/v/Ep.mkv", episode_tracks(), dub("/a/Ep.hin.eac3", "hin", -1.999), serde_json::json!([]), serde_json::json!([]))
+}
+
+// ------------------------------------------------- mkvmerge's own track order
+
+/// A source whose subtitle comes before its audio, nothing added, its subtitle
+/// made the default: what a batch that only changes flags muxes.
+fn subtitle_first_job() -> MuxJobRequest {
+    let tracks = serde_json::json!([
+        { "id": "0", "type": "video", "language": "und", "isDefault": false, "isForced": false },
+        { "id": "1", "type": "subtitle", "language": "eng", "isDefault": true, "isForced": false },
+        { "id": "2", "type": "audio", "language": "jpn", "isDefault": true, "isForced": false },
+    ]);
+    job("/v/Ep.mkv", tracks, serde_json::json!([]), serde_json::json!([]), serde_json::json!([]))
+}
+
+fn output_of(kinds: &[&str]) -> OutputFile {
+    OutputFile {
+        tracks: kinds
+            .iter()
+            .map(|kind| match *kind {
+                "video" => output_track("video", "und", "und"),
+                "audio" => OutputTrack { default: Some(true), ..output_track("audio", "jpn", "ja") },
+                _ => OutputTrack { default: Some(true), forced: Some(false), ..output_track("subtitle", "eng", "en") },
+            })
+            .collect(),
+        ..OutputFile::default()
+    }
+}
+
+#[test]
+fn without_a_track_order_mkvmerge_may_sort_the_tracks_by_type() {
+    let expected = expected_from_mux(&subtitle_first_job(), &settings(serde_json::json!({})), None);
+    assert!(expected.order_by_type_ok);
+    // Current mkvmerge: video, audio, subtitles. Older ones: the source's order.
+    for kinds in [["video", "audio", "subtitle"], ["video", "subtitle", "audio"]] {
+        let checks = structure_checks(&expected, &output_of(&kinds), None);
+        assert_eq!(status_of(&checks, "order").status, CheckStatus::Pass, "{kinds:?}");
+        assert_eq!(status_of(&checks, "flags").status, CheckStatus::Pass, "{kinds:?}: {checks:#?}");
+    }
+    // Any other order is still a real difference.
+    let checks = structure_checks(&expected, &output_of(&["audio", "video", "subtitle"]), None);
+    assert_eq!(status_of(&checks, "order").status, CheckStatus::Warn);
+}
+
+#[test]
+fn with_a_track_order_only_that_order_passes() {
+    let mut job = subtitle_first_job();
+    job.audios = serde_json::from_value(dub("/a/Ep.hin.eac3", "hin", 0.0)).unwrap();
+    let expected = expected_from_mux(&job, &settings(serde_json::json!({})), None);
+    assert!(!expected.order_by_type_ok);
+    let kinds: Vec<&str> = expected.tracks.iter().map(|t| t.kind.as_str()).collect();
+    assert_eq!(kinds, vec!["video", "audio", "audio", "subtitle"]);
+}
+
+#[test]
+#[ignore = "needs mkvmerge, ffmpeg and the test media: see the note above"]
+fn real_a_subtitle_first_source_muxed_without_changes_keeps_a_clean_order_check() {
+    let Some(media) = media() else { return };
+    if !crate::tool_available("ffmpeg", "-version") {
+        eprintln!("SKIPPED: ffmpeg is not on PATH");
+        return;
+    }
+    let out = scratch("subtitle-first");
+    // E01 rewritten with its subtitle ahead of its audio.
+    let source = out.join("Show.S01E01.mkv");
+    let status = crate::hidden_command("ffmpeg")
+        .args(["-v", "error", "-y", "-i"])
+        .arg(episode(&media, 1))
+        .args(["-map", "0:v", "-map", "0:s", "-map", "0:a", "-c", "copy"])
+        .arg(&source)
+        .status()
+        .expect("ffmpeg runs");
+    assert!(status.success());
+    let source_kinds: Vec<String> = parse_mkvmerge_tracks(&probe(&source).unwrap()).into_iter().map(|t| t.track_type).collect();
+    assert_eq!(source_kinds, ["video", "subtitle", "audio"]);
+
+    let tracks = serde_json::json!([
+        { "id": "0", "type": "video", "language": "und", "isDefault": false, "isForced": false },
+        { "id": "1", "type": "subtitle", "language": "eng", "isDefault": true, "isForced": false },
+        { "id": "2", "type": "audio", "language": "eng", "name": "Stereo", "isDefault": false, "isForced": false },
+    ]);
+    let job = job(&source.to_string_lossy(), tracks, serde_json::json!([]), serde_json::json!([]), serde_json::json!([]));
+    let dest = out.join("out");
+    std::fs::create_dir_all(&dest).unwrap();
+    let settings = settings(serde_json::json!({ "destinationDir": dest.to_string_lossy() }));
+    let (output, final_path) = mux(&job, &settings);
+    let output_kinds: Vec<String> = read_output(&probe(&output).unwrap()).tracks.into_iter().map(|t| t.kind).collect();
+    eprintln!("mkvmerge wrote {output_kinds:?} from a {source_kinds:?} source");
+    let report = match verify(&job, &settings, &output, &final_path, None) {
+        Verdict::Passed(report) => report,
+        Verdict::Failed { report, .. } => panic!("failed: {report:#?}"),
+        Verdict::Interrupted => panic!("interrupted"),
+    };
+    print_report("E01 with its subtitle first, subtitle made default", &report);
+    for id in ["tracks", "duration", "order", "flags"] {
+        assert_eq!(status_of(&report.checks, id).status, CheckStatus::Pass, "{id}: {report:#?}");
+    }
+    let _ = std::fs::remove_dir_all(&out);
 }

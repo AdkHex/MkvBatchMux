@@ -34,7 +34,7 @@ import {
   applySyncAnyway,
   chooseReference,
   describeSync,
-  isPictureSubtitle,
+  isUnsyncablePicture,
   canUndoSync,
   pendingSyncDelay,
   syncStatus,
@@ -851,14 +851,14 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
     const video = videoOf(file);
     const record = file.subsync;
     const reference = video ? chooseReference(file, video) : null;
-    const against = !video ? "No video" : isPictureSubtitle(file) ? PICTURE_MESSAGE : reference && "label" in reference ? reference.label : (reference as { reason: string } | null)?.reason ?? "—";
+    const against = !video ? "No video" : isUnsyncablePicture(file) ? PICTURE_MESSAGE : reference && "label" in reference ? reference.label : (reference as { reason: string } | null)?.reason ?? "—";
     const canRun = syncAvailable && !engineBusy && !syncing && Boolean(video);
     if (!record)
       return (
         <>
           <DL rows={[["Sync against", against]]} />
           <Links>
-            <L icon={<TextAlignJustifyRegular />} onClick={() => void beginSync([file.id])} disabled={!canRun || isPictureSubtitle(file)}>Sync this subtitle</L>
+            <L icon={<TextAlignJustifyRegular />} onClick={() => void beginSync([file.id])} disabled={!canRun || isUnsyncablePicture(file)}>Sync this subtitle</L>
           </Links>
           <div className="hr" />
         </>
@@ -1008,7 +1008,7 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
             {rows.map(({ index, video, entry, file }) => {
               const dragProps = drag.rowProps(index);
               const paired = file ? (videoOf(file) ?? video) : undefined;
-              const reference = file && paired ? (isPictureSubtitle(file) ? null : chooseReference(file, paired)) : null;
+              const reference = file && paired ? (isUnsyncablePicture(file) ? null : chooseReference(file, paired)) : null;
               const record = file?.subsync;
               const pending = file ? pendingSyncDelay(file) : null;
               const running = file && syncing ? syncProgress?.active[file.id] : undefined;
@@ -1033,7 +1033,7 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
                   )}
                   <MatchCell file={file} info={file ? pairing.infoOf(file.id) : undefined} conflict={file ? pairing.conflictOf(file.id) : undefined} />
                   <span className="t3 truncate" title={reference && "label" in reference ? reference.label : undefined}>
-                    {!file || !paired ? "" : isPictureSubtitle(file) ? "Pictures" : reference && "label" in reference ? reference.label : "—"}
+                    {!file || !paired ? "" : isUnsyncablePicture(file) ? "DVD pictures" : reference && "label" in reference ? reference.label : "—"}
                   </span>
                   <span
                     className={cx("r num", pending && !record?.held ? "acc" : "t2")}

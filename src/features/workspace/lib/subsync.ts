@@ -10,7 +10,12 @@
  *  on the same season was 78 ms (E01) and 720 ms (E02) off: its speech
  *  detector places the start of a line where the voice starts, not where the
  *  cue does. So its results are filled in only when the engine is sure
- *  (`AUDIO_MIN_SCORE`), and shown with Apply anyway otherwise. */
+ *  (`AUDIO_MIN_SCORE`), and shown with Apply anyway otherwise.
+ *
+ *  Blu-ray picture subtitles (PGS) are synced by when their pictures are on
+ *  screen, which is all the engine compares: src-tauri/src/pgs.rs reads that
+ *  timing, as a subtitle and as a reference track inside the video. DVD
+ *  pictures (VobSub) are not synced. */
 
 import type { ExternalFile, SubtitleSync, Track, VideoFile } from "@/shared/types";
 import type { SubsyncEngine, SubsyncJob, SubsyncRequest, SubsyncResultEvent } from "@/shared/types/engineFeatures";
@@ -36,10 +41,14 @@ export const AUDIO_MIN_SCORE = 0.8;
 /** Subtitle formats that are pictures: the engine cannot read them as text. */
 const PICTURE_CODEC = /pgs|hdmv|vobsub|dvd_?sub|dvb|picture|bitmap|s_image/i;
 const PICTURE_EXTENSION = /\.(sup|sub|idx)$/i;
+/** Blu-ray pictures: synced by when they are on screen. */
+const PGS_CODEC = /pgs|hdmv/i;
+const PGS_EXTENSION = /\.sup$/i;
 /** Plain subtitle files: their path is the subtitle; anything else is a container. */
 const TEXT_EXTENSION = /\.(srt|ass|ssa|vtt|webvtt|sbv|ttml|dfxp|smi|sami|lrc|txt)$/i;
 
 const isPictureTrack = (track: Pick<Track, "codec">) => Boolean(track.codec && PICTURE_CODEC.test(track.codec));
+const isPgsTrack = (track: Pick<Track, "codec">) => Boolean(track.codec && PGS_CODEC.test(track.codec));
 
 /** The subtitle track a sync works on: the file itself for a plain subtitle
  *  file, or the one subtitle track muxed from a container. `streamIndex` is
@@ -58,35 +67,59 @@ export function subtitleTrack(file: ExternalFile): { trackId: number | null; str
   return included[0];
 }
 
-/** A picture subtitle (PGS, VobSub): measured by nobody. */
+/** A picture subtitle: Blu-ray (PGS) or DVD (VobSub, and the like). */
 export function isPictureSubtitle(file: ExternalFile): boolean {
   if (PICTURE_EXTENSION.test(file.path)) return true;
   const chosen = subtitleTrack(file);
   return "track" in chosen && Boolean(chosen.track && isPictureTrack(chosen.track));
 }
 
+/** A Blu-ray picture subtitle (PGS): synced by when its pictures are shown. */
+export function isPgsSubtitle(file: ExternalFile): boolean {
+  if (PGS_EXTENSION.test(file.path)) return true;
+  if (PICTURE_EXTENSION.test(file.path)) return false;
+  const chosen = subtitleTrack(file);
+  return "track" in chosen && Boolean(chosen.track && isPgsTrack(chosen.track));
+}
+
+/** A picture subtitle nothing here can sync: DVD pictures (VobSub). */
+export function isUnsyncablePicture(file: ExternalFile): boolean {
+  return isPictureSubtitle(file) && !isPgsSubtitle(file);
+}
+
 const language = (value: string | undefined) => (value ?? "").trim().toLowerCase();
 
+/** A track that carries only some lines (signs, foreign dialogue): too few to line a whole subtitle up with. */
+const isForcedOnly = (track: Pick<Track, "isForced" | "name">) => Boolean(track.isForced) || /forced/i.test(track.name ?? "");
+
 /** What a row is measured against: a text subtitle track inside the video
- *  (the same language as the file when there is one, else the first), else
- *  the video's first audio track. Null with the reason when neither exists. */
+ *  (the same language as the file when there is one, else the first), else a
+ *  full Blu-ray picture track inside it (by when its pictures are shown; the
+ *  same language first), else the video's first audio track. Null with the
+ *  reason when there is none. `pictures`: the reference track is PGS. */
 export function chooseReference(
   file: ExternalFile,
   video: VideoFile,
-): { engine: SubsyncEngine; track: number; label: string } | { engine: null; reason: string } {
+): { engine: SubsyncEngine; track: number; label: string; pictures?: boolean } | { engine: null; reason: string } {
   const subtitles = (video.tracks ?? []).filter((track) => track.type === "subtitle");
-  const text = subtitles.map((track, index) => ({ track, index })).filter(({ track }) => !isPictureTrack(track) && track.action !== "remove");
+  const usable = subtitles.map((track, index) => ({ track, index })).filter(({ track }) => track.action !== "remove");
+  const own = subtitleTrack(file);
+  const wanted = language(("track" in own ? own.track?.language : undefined) || file.language);
+  const sameLanguage = <T extends { track: Track }>(list: T[]) => (wanted && wanted !== "und" ? list.find(({ track }) => language(track.language) === wanted) : undefined);
+  const text = usable.filter(({ track }) => !isPictureTrack(track));
   if (text.length > 0) {
-    const own = subtitleTrack(file);
-    const wanted = language(("track" in own ? own.track?.language : undefined) || file.language);
-    const same = wanted && wanted !== "und" ? text.find(({ track }) => language(track.language) === wanted) : undefined;
-    const chosen = same ?? text[0];
+    const chosen = sameLanguage(text) ?? text[0];
     return { engine: "subtitle", track: chosen.index, label: referenceLabel("subtitle", chosen.index, chosen.track) };
+  }
+  const pictures = usable.filter(({ track }) => isPgsTrack(track) && !isForcedOnly(track));
+  if (pictures.length > 0) {
+    const chosen = sameLanguage(pictures) ?? pictures[0];
+    return { engine: "subtitle", track: chosen.index, label: referenceLabel("subtitle", chosen.index, chosen.track), pictures: true };
   }
   const audio = (video.tracks ?? []).filter((track) => track.type === "audio");
   // Tracks not read yet (a video added a moment ago): its first audio track.
   if (audio.length > 0 || (video.tracks ?? []).length === 0) return { engine: "audio", track: 0, label: referenceLabel("audio", 0, audio[0]) };
-  return { engine: null, reason: "The video has no text subtitle track and no audio to sync against." };
+  return { engine: null, reason: "The video has no subtitle track to sync against and no audio." };
 }
 
 /** "Subtitle 1 · English · SRT" / "Speech · audio 1 · Korean". */
@@ -117,13 +150,14 @@ export interface PlannedSync {
 
 export interface SubsyncPlan {
   planned: PlannedSync[];
-  /** Answered without the engine: picture subtitles, and rows with nothing to sync against. */
+  /** Answered without the engine: DVD picture subtitles, and rows with nothing to sync against. */
   answered: Array<{ file: ExternalFile; video: VideoFile; outcome: "picture" | "error"; message: string }>;
   /** Not synced: no video, an empty row, several tracks. */
   skipped: Array<{ file: ExternalFile; reason: string }>;
 }
 
-export const PICTURE_MESSAGE = "Can't be synced automatically: this subtitle is pictures (PGS/VobSub), not text.";
+/** The same words as `IMAGE_SUBTITLE` in src-tauri/src/subsync.rs. */
+export const PICTURE_MESSAGE = "Can't be synced automatically: DVD subtitles (VobSub) are pictures, and only Blu-ray (PGS) pictures can be synced.";
 
 /** Engine jobs for these files (all of them when `fileIds` is absent), each
  *  against the video it will be muxed with. */
@@ -138,7 +172,7 @@ export function buildSubsyncPlan({ videoFiles, files, fileIds }: { videoFiles: V
       plan.skipped.push({ file, reason: "It has no video to sync against." });
       continue;
     }
-    if (isPictureSubtitle(file)) {
+    if (isUnsyncablePicture(file)) {
       plan.answered.push({ file, video, outcome: "picture", message: PICTURE_MESSAGE });
       continue;
     }
@@ -161,6 +195,8 @@ export function buildSubsyncPlan({ videoFiles, files, fileIds }: { videoFiles: V
         videoPath: video.path,
         audioTrack: reference.engine === "audio" ? reference.track : 0,
         referenceTrack: reference.engine === "subtitle" ? reference.track : null,
+        subtitlePictures: isPgsSubtitle(file),
+        referencePictures: Boolean(reference.pictures),
       },
       engine: reference.engine,
       fileId: file.id,

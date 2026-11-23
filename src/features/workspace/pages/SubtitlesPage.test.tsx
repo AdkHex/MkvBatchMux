@@ -340,15 +340,35 @@ describe("Sync subtitles", () => {
     expect(filesByTrack["1"][2].subsync).toBeUndefined();
   });
 
-  it("says a picture subtitle can't be synced, without asking the engine", async () => {
+  it("says a DVD picture subtitle can't be synced, without asking the engine", async () => {
+    slots(["1"]);
+    const idx = sub("p1", { name: "Episode 01.idx", path: "/subs/Episode 01.idx", matchedVideoId: "v1" });
+    render(<Harness initial={{ "1": [idx] }} videos={[withText(1)]} />);
+    const syncButton = await screen.findByRole("button", { name: "Sync subtitles" });
+    await waitFor(() => expect(syncButton).toBeEnabled());
+    expect(within(screen.getByRole("row", { name: "Episode 01.idx" })).getByText("DVD pictures")).toBeInTheDocument();
+    fireEvent.click(syncButton);
+    await waitFor(() => expect(within(screen.getByRole("row", { name: "Episode 01.idx" })).getByText("Can't be synced automatically")).toBeInTheDocument());
+    expect(syncMock.start).not.toHaveBeenCalled();
+  });
+
+  it("syncs a Blu-ray picture subtitle by its timing and muxes its re-timed copy", async () => {
     slots(["1"]);
     const sup = sub("p1", { name: "Episode 01.sup", path: "/subs/Episode 01.sup", matchedVideoId: "v1" });
     render(<Harness initial={{ "1": [sup] }} videos={[withText(1)]} />);
     const syncButton = await screen.findByRole("button", { name: "Sync subtitles" });
     await waitFor(() => expect(syncButton).toBeEnabled());
+    const row = () => screen.getByRole("row", { name: "Episode 01.sup" });
+    expect(within(row()).getByText("Subtitle 1 · eng · SubRip/SRT")).toBeInTheDocument();
     fireEvent.click(syncButton);
-    await waitFor(() => expect(within(screen.getByRole("row", { name: "Episode 01.sup" })).getByText("Can't be synced automatically")).toBeInTheDocument());
-    expect(syncMock.start).not.toHaveBeenCalled();
+    await waitFor(() => expect(syncMock.start).toHaveBeenCalledTimes(1));
+    const request = syncMock.start.mock.calls[0][0] as SubsyncRequest;
+    expect(request.jobs).toEqual([expect.objectContaining({ key: "p1", subtitlePath: "/subs/Episode 01.sup", subtitlePictures: true, referencePictures: false })]);
+    const copy = "/subs/MKVBatchMux synced/Episode 01.synced.sup";
+    act(() => void syncMock.handlers.result(result(request, "p1", { ratio: 1.0427083, offsetS: -0.0722, framerate: "25 → 23.976", retimedPath: copy })));
+    await act(async () => void (await syncMock.handlers.done({ runId: request.runId, cancelled: false, error: null })));
+    expect(within(row()).getByText("Re-timed copy")).toBeInTheDocument();
+    expect(within(row()).getByText("copy")).toBeInTheDocument();
   });
 });
 

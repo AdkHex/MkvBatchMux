@@ -58,7 +58,7 @@ once, and let it run through the queue with MKVToolNix.
 | **Import from another video** | Per-stream language, name and delay when pulling tracks out of another MKV |
 | **Measured delays** | Measure each external audio track's offset against its video and fill the delay in for you |
 | **Conform a different cut** | A dub with scenes missing or added is cut to the video's edit, re-rendered or frame-cut without re-encoding, and checked |
-| **Subtitle sync** | Measure each subtitle's offset and frame-rate drift against the video's own subtitle track or its dialogue |
+| **Subtitle sync** | Measure each subtitle's offset and frame-rate drift against the video's own subtitle track or its dialogue, Blu-ray picture (PGS) subtitles included |
 | **Episode pairing** | Files pair with their video by season and episode, not by row; gaps, extras and mismatches are shown before muxing |
 | **Verified output** | Every new file is checked against what was asked, and each added dub is re-measured inside it, before it replaces anything |
 | **Recipes, sessions, watch folders** | Save a show's rules and reuse them, save and reopen a whole workspace, and mux new episodes as they arrive |
@@ -213,11 +213,17 @@ into the mux is not conformed, as the conformed copy carries the dub alone.
 **Sync subtitles** (Subtitles page) measures each external subtitle with
 AudioSyncMaster's Subsync engine: against a text subtitle track inside the
 video when there is one (in its language if possible), which lines up cue
-for cue; otherwise against the dialogue in the video's audio. A plain offset
+for cue; else against a full Blu-ray picture (PGS) track inside it;
+otherwise against the dialogue in the video's audio. A plain offset
 fills in the delay, applied with **Apply** like an audio delay; a frame-rate
 drift or a cut gives a re-timed copy (`MKVBatchMux synced` beside the
 subtitle), muxed instead of the original at delay 0. A weak result is shown
-but not filled in. Picture subtitles (PGS, VobSub) are not synced.
+but not filled in.
+
+Blu-ray picture subtitles (PGS: a `.sup`, or a PGS track in an `.mks`/`.mkv`)
+are synced by when their pictures are on screen, without reading them: the
+timing is all the engine compares. Their re-timed copy is a `.sup` with the
+same pictures at the new times. DVD picture subtitles (VobSub) are not synced.
 
 ### Pairing files with their videos
 

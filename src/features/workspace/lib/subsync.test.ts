@@ -34,7 +34,17 @@ const withSubtitles = (n: number) =>
     { id: "3", type: "subtitle", codec: "SubRip/SRT", language: "kor" },
     { id: "4", type: "subtitle", codec: "SubRip/SRT", language: "eng" },
   ]);
-const speechOnly = (n: number) => video(n, [{ id: "0", type: "video" }, { id: "1", type: "audio", language: "eng" }, { id: "2", type: "subtitle", codec: "HDMV PGS" }]);
+/** Only a forced picture track inside: too few lines to sync against, so its speech. */
+const speechOnly = (n: number) => video(n, [{ id: "0", type: "video" }, { id: "1", type: "audio", language: "eng" }, { id: "2", type: "subtitle", codec: "HDMV PGS", isForced: true }]);
+/** Blu-ray pictures only: forced English, Korean, full English. */
+const picturesOnly = (n: number) =>
+  video(n, [
+    { id: "0", type: "video" },
+    { id: "1", type: "audio", language: "eng" },
+    { id: "2", type: "subtitle", codec: "HDMV PGS", language: "eng", isForced: true },
+    { id: "3", type: "subtitle", codec: "HDMV PGS", language: "kor" },
+    { id: "4", type: "subtitle", codec: "HDMV PGS", language: "eng" },
+  ]);
 
 const subtitle = (n: number, extra: Partial<ExternalFile> = {}): ExternalFile => ({
   id: `s${n}`,
@@ -71,31 +81,46 @@ describe("the reference each row is synced against", () => {
     // Stream indexes count subtitle tracks only, pictures included: eng SRT is 0:s:2.
     expect(chooseReference(subtitle(1), withSubtitles(1))).toMatchObject({ engine: "subtitle", track: 2 });
     expect(chooseReference(subtitle(1, { language: "fre" }), withSubtitles(1))).toMatchObject({ engine: "subtitle", track: 1 });
-    // Only a picture track inside: the speech of its first audio track.
+    // Only a forced picture track inside: the speech of its first audio track.
     expect(chooseReference(subtitle(1), speechOnly(1))).toMatchObject({ engine: "audio", track: 0 });
-    expect(chooseReference(subtitle(1), video(1, [{ id: "0", type: "video" }]))).toEqual({ engine: null, reason: expect.stringMatching(/no text subtitle track and no audio/) });
+    expect(chooseReference(subtitle(1), video(1, [{ id: "0", type: "video" }]))).toEqual({ engine: null, reason: expect.stringMatching(/no subtitle track to sync against and no audio/) });
   });
 
-  it("splits a season into subtitle-engine and speech jobs, and answers pictures itself", () => {
+  it("takes a full Blu-ray picture track when the video has no text one, the file's language first", () => {
+    expect(chooseReference(subtitle(1), picturesOnly(1))).toEqual({ engine: "subtitle", track: 2, label: "Subtitle 3 · eng · HDMV PGS", pictures: true });
+    expect(chooseReference(subtitle(1, { language: "kor" }), picturesOnly(1))).toMatchObject({ track: 1, pictures: true });
+    // A text track still comes first, pictures or not.
+    expect(chooseReference(subtitle(1), withSubtitles(1))).not.toHaveProperty("pictures");
+    // A picture track being removed from the video is no reference.
+    const removed = picturesOnly(1);
+    removed.tracks = removed.tracks!.map((track) => (track.type === "subtitle" && !track.isForced ? { ...track, action: "remove" as const } : track));
+    expect(chooseReference(subtitle(1), removed)).toMatchObject({ engine: "audio" });
+  });
+
+  it("splits a season into subtitle-engine and speech jobs, syncs Blu-ray pictures, and answers DVD pictures itself", () => {
     const files: ExternalFile[] = [
       subtitle(1),
       subtitle(2),
       subtitle(3, { name: "Show.S01E03.sup", path: "/media/Subs/Show.S01E03.sup" }),
       { id: "gap", name: "", path: "", type: "subtitle", placeholder: true, matchedVideoId: "v4" },
       subtitle(5, { matchedVideoId: undefined, name: "Unrelated.srt", path: "/x/Unrelated.srt" }),
+      subtitle(6, { name: "Show.S01E06.idx", path: "/media/Subs/Show.S01E06.idx" }),
+      subtitle(7),
     ];
-    const videos = [withSubtitles(1), speechOnly(2), withSubtitles(3), speechOnly(4)];
+    const videos = [withSubtitles(1), speechOnly(2), withSubtitles(3), speechOnly(4), speechOnly(6), picturesOnly(7)];
     const plan = buildSubsyncPlan({ videoFiles: videos, files });
-    expect(plan.planned.map((entry) => [entry.fileId, entry.engine, entry.job.referenceTrack, entry.job.audioTrack, entry.job.subtitleTrack])).toEqual([
-      ["s1", "subtitle", 2, 0, null],
-      ["s2", "audio", null, 0, null],
+    expect(plan.planned.map((entry) => [entry.fileId, entry.engine, entry.job.referenceTrack, entry.job.audioTrack, entry.job.subtitleTrack, entry.job.subtitlePictures, entry.job.referencePictures])).toEqual([
+      ["s1", "subtitle", 2, 0, null, false, false],
+      ["s2", "audio", null, 0, null, false, false],
+      ["s3", "subtitle", 2, 0, null, true, false],
+      ["s7", "subtitle", 2, 0, null, false, true],
     ]);
     expect(plan.planned[0].job).toMatchObject({ key: "s1", subtitlePath: "/media/Subs/Show.S01E01.en.srt", videoPath: videos[0].path });
-    expect(plan.answered.map((entry) => [entry.file.id, entry.outcome])).toEqual([["s3", "picture"]]);
+    expect(plan.answered.map((entry) => [entry.file.id, entry.outcome, entry.message])).toEqual([["s6", "picture", expect.stringMatching(/only Blu-ray \(PGS\) pictures/)]]);
     expect(plan.skipped.map((entry) => entry.file.id)).toEqual(["s5"]);
   });
 
-  it("syncs the one subtitle track muxed from a container, and refuses a picture track", () => {
+  it("syncs the one subtitle track muxed from a container, Blu-ray pictures too, and refuses DVD pictures", () => {
     const container = subtitle(1, {
       name: "Show.S01E01.subs.mks",
       path: "/media/Subs/Show.S01E01.subs.mks",
@@ -108,6 +133,9 @@ describe("the reference each row is synced against", () => {
     const plan = buildSubsyncPlan({ videoFiles: [withSubtitles(1)], files: [container] });
     expect(plan.planned[0].job.subtitleTrack).toBe(1);
     expect(isPictureSubtitle({ ...container, includedTrackIds: [0] })).toBe(true);
+    expect(buildSubsyncPlan({ videoFiles: [withSubtitles(1)], files: [{ ...container, includedTrackIds: [0] }] }).planned[0].job).toMatchObject({ subtitleTrack: 0, subtitlePictures: true });
+    const dvd = { ...container, tracks: [{ id: "0", type: "subtitle" as const, codec: "VobSub" }], includedTrackIds: [0] };
+    expect(buildSubsyncPlan({ videoFiles: [withSubtitles(1)], files: [dvd] }).answered[0].outcome).toBe("picture");
     expect(buildSubsyncPlan({ videoFiles: [withSubtitles(1)], files: [{ ...container, includedTrackIds: [0, 1] }] }).skipped[0].reason).toMatch(/one subtitle track, and 2/);
   });
 });
