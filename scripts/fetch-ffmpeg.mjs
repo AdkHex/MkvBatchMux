@@ -68,13 +68,32 @@ function run(command, args, options = {}) {
   if (result.status !== 0) fail(`${command} exited with code ${result.status}.`);
 }
 
+/** Waits between download attempts. The builds' "latest" release is replaced
+ *  every day, its files deleted and uploaded again, so a release build that
+ *  lands in that window gets a 404 or a cut-off transfer that a later try does
+ *  not; one failed attempt should not cost a release. */
+const RETRY_DELAYS_MS = [10_000, 30_000, 60_000, 120_000];
+
 async function download(url, into) {
-  console.log(`fetch-ffmpeg: downloading ${url}`);
-  const response = await fetch(url, { redirect: "follow" });
-  if (!response.ok) {
-    fail(`Download failed: ${response.status} ${response.statusText}`, `URL: ${url}`);
+  for (let attempt = 0; ; attempt += 1) {
+    console.log(`fetch-ffmpeg: downloading ${url}${attempt ? ` (attempt ${attempt + 1})` : ""}`);
+    let problem;
+    try {
+      const response = await fetch(url, { redirect: "follow" });
+      if (response.ok) {
+        fs.writeFileSync(into, Buffer.from(await response.arrayBuffer()));
+        return;
+      }
+      problem = `${response.status} ${response.statusText}`;
+      // Gone for good: asking again only delays the failure.
+      if (response.status === 410) fail(`Download failed: ${problem}`, `URL: ${url}`);
+    } catch (error) {
+      problem = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt >= RETRY_DELAYS_MS.length) fail(`Download failed: ${problem}`, `URL: ${url}`);
+    console.log(`fetch-ffmpeg: download failed (${problem}); trying again in ${RETRY_DELAYS_MS[attempt] / 1000} s`);
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
   }
-  fs.writeFileSync(into, Buffer.from(await response.arrayBuffer()));
 }
 
 /** Pull the two binaries out of an extracted tree, wherever they landed. */
