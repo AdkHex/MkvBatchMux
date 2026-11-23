@@ -90,6 +90,14 @@ const APP_VERSION = __APP_VERSION__;
 const MAX_PARALLEL_JOBS = 16;
 const MAX_LOG_LINES = 1000;
 
+/** The lists a watch folder's run writes through `commitLists`. */
+type PendingKey = "videoFiles" | "audioFilesByTrack" | "subtitleFilesByTrack" | "chapterFiles";
+const PENDING_KEYS: PendingKey[] = ["videoFiles", "audioFilesByTrack", "subtitleFilesByTrack", "chapterFiles"];
+/** How long a list the watch folder wrote outranks a render that does not
+ *  show it: React lands queued updates in a frame or two; past this, a list
+ *  that differs was replaced by something newer, and the render's stands. */
+const PENDING_LIMIT_MS = 2000;
+
 export const PAGES: PageTab<PageId>[] = [
   { id: "videos", label: "Videos", icon: <VideoClipMultipleRegular />, on: <VideoClipMultipleFilled />, shortcut: "Ctrl+1" },
   { id: "subtitles", label: "Subtitles", icon: <ClosedCaptionRegular />, on: <ClosedCaptionFilled />, shortcut: "Ctrl+2" },
@@ -659,7 +667,29 @@ export default function Index() {
   /** The workspace as of the last render (and of a watch folder's last
    *  change), for work that outlives the render it started in. */
   const live = useRef({ videoFiles, audioFilesByTrack, subtitleFilesByTrack, chapterFiles, attachmentFiles, perVideoExternal, jobs, muxSettings, outputSettings });
-  live.current = { videoFiles, audioFilesByTrack, subtitleFilesByTrack, chapterFiles, attachmentFiles, perVideoExternal, jobs, muxSettings, outputSettings };
+  /** Lists a watch folder's run wrote that React has not rendered yet. A
+   *  render in between (the synchronous one a useTabState change forces, or
+   *  any other before the queued updates land) still carries the old lists;
+   *  taken as they are, its next step would find its own new episode gone
+   *  and mux nothing. Each is kept until React renders it, or briefly at most
+   *  should something else replace it first. */
+  const pendingLists = useRef<{ at: number; lists: Partial<Pick<WorkspaceLists, PendingKey>> } | null>(null);
+  const rendered = { videoFiles, audioFilesByTrack, subtitleFilesByTrack, chapterFiles, attachmentFiles, perVideoExternal, jobs, muxSettings, outputSettings };
+  const pending = pendingLists.current;
+  if (pending) {
+    const fresh = Date.now() - pending.at < PENDING_LIMIT_MS;
+    const left: Partial<Pick<WorkspaceLists, PendingKey>> = {};
+    for (const key of PENDING_KEYS) {
+      const value = pending.lists[key];
+      if (value === undefined || value === rendered[key]) continue;
+      if (fresh) {
+        (rendered as Record<PendingKey, unknown>)[key] = value;
+        (left as Record<PendingKey, unknown>)[key] = value;
+      }
+    }
+    pendingLists.current = Object.keys(left).length > 0 ? { at: pending.at, lists: left } : null;
+  }
+  live.current = rendered;
 
   /** Send `run` to mkvmerge with these settings. Output names a pattern's
    *  episode tokens need are resolved here, per job; two jobs that would
@@ -1037,6 +1067,11 @@ export default function Index() {
       const before = readLists();
       const next = change(before);
       live.current = { ...live.current, videoFiles: next.videoFiles, audioFilesByTrack: next.audioFilesByTrack, subtitleFilesByTrack: next.subtitleFilesByTrack, chapterFiles: next.chapterFiles };
+      // Held until rendered: the useTabState change below renders at once,
+      // with the lists as they were.
+      const changed: Partial<Pick<WorkspaceLists, PendingKey>> = { ...(pendingLists.current?.lists ?? {}) };
+      for (const key of PENDING_KEYS) if (next[key] !== before[key]) (changed as Record<PendingKey, unknown>)[key] = next[key];
+      if (Object.keys(changed).length > 0) pendingLists.current = { at: Date.now(), lists: changed };
       if (next.audioTracks !== before.audioTracks || next.audioTrackConfigs !== before.audioTrackConfigs || next.subtitleTracks !== before.subtitleTracks || next.subtitleTrackConfigs !== before.subtitleTrackConfigs) {
         useTabState.setState({ audioTracks: next.audioTracks, audioTrackConfigs: next.audioTrackConfigs, subtitleTracks: next.subtitleTracks, subtitleTrackConfigs: next.subtitleTrackConfigs });
       }

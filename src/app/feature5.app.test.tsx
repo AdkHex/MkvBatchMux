@@ -48,9 +48,12 @@ describe("recipes, sessions and watch folders in the app", () => {
       },
       { timeout: 15000, interval: 100 },
     );
-    expect(history.name).toBe("Watch Season 1: Goblin.S01E17.1080p.WEB-DL.x264-HDEX");
-    expect(history.files).toEqual([{ name: "Goblin.S01E17.1080p.WEB-DL.x264-HDEX.mkv", tone: "ok", text: "Muxed and verified" }]);
-    expect(history.outcome.text).toMatch(/1 muxed/);
+    // Name, lines and outcome together: when the run goes wrong, the lines say why.
+    expect({ name: history.name, files: history.files, outcome: history.outcome.text }).toEqual({
+      name: "Watch Season 1: Goblin.S01E17.1080p.WEB-DL.x264-HDEX",
+      files: [{ name: "Goblin.S01E17.1080p.WEB-DL.x264-HDEX.mkv", tone: "ok", text: "Muxed and verified" }],
+      outcome: expect.stringMatching(/1 muxed/),
+    });
 
     // Apply recipe lists its changes first.
     await openFileMenu("Apply recipe");
