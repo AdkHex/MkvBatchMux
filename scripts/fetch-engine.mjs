@@ -210,9 +210,71 @@ function verify() {
         "No output. Check the PyInstaller hidden imports.",
     );
   }
+  probeSubtitleTasks(found);
   const version = fs.readFileSync(path.join(destination, VERSION_FILE), "utf8").trim();
   console.log(`\nfetch-engine: engine ready at ${found}`);
   console.log(`fetch-engine: ${version}\n`);
+}
+
+/** The subtitle tasks the app sends (src-tauri/src/subsync.rs). */
+const SUBTITLE_TASKS = ["sync"];
+
+/** FFmpeg for the engine to run with: the one fetch-ffmpeg bundled, else
+ *  whatever AUDIOSYNC_FFMPEG or PATH gives it. */
+function ffmpegEnv() {
+  const dir = path.join(root, "src-tauri", "resources", "ffmpeg");
+  const tool = (name) => path.join(dir, process.platform === "win32" ? `${name}.exe` : name);
+  const env = { ...process.env };
+  if (!env.AUDIOSYNC_FFMPEG && fs.existsSync(tool("ffmpeg")) && fs.existsSync(tool("ffprobe"))) {
+    env.AUDIOSYNC_FFMPEG = tool("ffmpeg");
+    env.AUDIOSYNC_FFPROBE = tool("ffprobe");
+  }
+  return env;
+}
+
+/** Every subtitle task the app uses must load inside the frozen engine.
+ *  A ping cannot tell: the tasks are imported by name only when a job asks
+ *  for one, so a build missing them answers pings and fails every sync. A job
+ *  with no inputs loads its task first and only then finds nothing to read,
+ *  so any answer but "could not be loaded" means the task is there. */
+function probeSubtitleTasks(engine) {
+  const jobs = SUBTITLE_TASKS.map((task) => ({ task, id: `probe-${task}` }));
+  const run = spawnSync(engine, [], {
+    input: `${JSON.stringify({ command: "subsBatch", jobs })}\n{"command":"shutdown"}\n`,
+    encoding: "utf8",
+    env: ffmpegEnv(),
+    timeout: 120000,
+  });
+  const events = String(run.stdout)
+    .split("\n")
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  const done = events.filter((event) => event.type === "subsJobDone");
+  if (done.length === 0) {
+    const said = events.find((event) => event.type === "subsBatchDone")?.error ?? "";
+    if (/FFmpeg was not found/i.test(said) && !process.env.CI) {
+      console.warn("fetch-engine: subtitle tasks not checked: the engine found no FFmpeg (run fetch-ffmpeg first).");
+      return;
+    }
+    fail(
+      `${engine} did not run a subtitle job${said ? `: ${said}` : ""}.`,
+      String(run.stderr).trim().split("\n").slice(-5).join("\n") || "No output.",
+    );
+  }
+  const missing = done.filter((event) => /could not be loaded|No module named/.test(String(event.error ?? "")));
+  if (missing.length > 0) {
+    fail(
+      `The built engine cannot load a subtitle task: ${missing.map((event) => event.error).join("; ")}`,
+      "The subtitle engines are imported by name; check --collect-submodules audiosync.subs.",
+    );
+  }
+  console.log(`fetch-engine: subtitle tasks load (${SUBTITLE_TASKS.join(", ")}).`);
 }
 
 const pin = readPin();
@@ -267,9 +329,18 @@ const distDir = path.join(repo, "build", "mkvbatchmux-engine");
 // --onedir, not --onefile: a onefile build re-extracts to a temp directory on
 // every launch, which is slow and trips antivirus. Hidden imports let the
 // frozen build find its own package without relying on `python -m`'s cwd.
-// The flags mirror AudioSyncMaster's own release build, so both apps ship the
-// same engine; voiceworker.py is started as a script by the voice tools, so it
-// travels as data rather than as an import.
+// The flags mirror AudioSyncMaster's own release build
+// (.github/workflows/build-release.yml), so both apps ship the same engine;
+// voiceworker.py is started as a script by the voice tools, so it travels as
+// data rather than as an import.
+//
+// The subtitle engines are loaded by name when a job asks for one
+// (audiosync/subs/tasks.py), which PyInstaller cannot follow, so the whole
+// package is collected -- and the scripts its engine packs run with their own
+// Python travel as data. Without them every subtitle sync in the installed app
+// failed with "No module named 'audiosync.subs.sync'". The dub-sync planner is
+// a package of parts collected the same way.
+const subsWorkers = path.join(repo, "audiosync", "subs", "workers");
 const result = spawnSync(
   python,
   [
@@ -305,6 +376,10 @@ const result = spawnSync(
     ].flatMap((module) => ["--hidden-import", module]),
     "--add-data",
     `${path.join(repo, "audiosync", "voiceworker.py")}${path.delimiter}audiosync`,
+    ...["audiosync.dubplan", "audiosync.subs"].flatMap((pkg) =>
+      fs.existsSync(path.join(repo, ...pkg.split("."))) ? ["--collect-submodules", pkg] : [],
+    ),
+    ...(fs.existsSync(subsWorkers) ? ["--add-data", `${subsWorkers}${path.delimiter}audiosync/subs/workers`] : []),
     "--collect-all",
     "numpy",
     ...["scipy", "matplotlib", "tkinter", "PIL", "pandas", "pytest"].flatMap((module) => [
@@ -313,7 +388,14 @@ const result = spawnSync(
     ]),
     entry,
   ],
-  { cwd: repo, stdio: "inherit" },
+  // --collect-submodules looks the package up in a child Python before
+  // --paths applies; without the checkout on its path it finds
+  // "audiosync.subs is not a package" and collects nothing.
+  {
+    cwd: repo,
+    stdio: "inherit",
+    env: { ...process.env, PYTHONPATH: [repo, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) },
+  },
 );
 
 if (result.error) {

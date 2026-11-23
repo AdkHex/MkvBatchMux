@@ -237,6 +237,50 @@ jobs:
           Start-Sleep -Seconds 1
           if (-not $helper.HasExited) { throw "The helper in the install folder was left running." }
 
+          # Held by something the installer cannot end -- a copy started as
+          # administrator, a virus scanner -- which stopped a user's install with
+          # "Error opening file for writing ... MKVBatchMux.exe". A short hold is
+          # waited out; a long one, which (like a running program) still allows a
+          # rename, has the old file moved aside so the new one can be written.
+          function Hold([string]$share, [int]$seconds) {
+            # Returns once the file really is open, so the install never starts first.
+            $marker = Join-Path $env:RUNNER_TEMP ("held-" + [guid]::NewGuid())
+            $job = Start-Job -ScriptBlock {
+              param($path, $share, $seconds, $marker)
+              $f = [System.IO.File]::Open($path, 'Open', 'Read', $share)
+              New-Item -ItemType File -Path $marker | Out-Null
+              Start-Sleep -Seconds $seconds
+              $f.Close()
+            } -ArgumentList $app, $share, $seconds, $marker
+            $started = Get-Date
+            while (-not (Test-Path $marker)) {
+              if ($job.State -eq "Failed" -or ((Get-Date) - $started).TotalSeconds -gt 60) {
+                throw "Could not hold $app open: $($job.ChildJobs[0].JobStateInfo.Reason)"
+              }
+              Start-Sleep -Milliseconds 200
+            }
+            return $job
+          }
+
+          $brief = Hold "Read" 5
+          Install "Over a program something holds open for a few seconds"
+          Wait-Job $brief | Out-Null; Remove-Job $brief
+
+          $kept = Hold "Read, Delete" 300
+          Install "Over a program something keeps open"
+          $aside = @(Get-ChildItem $dir -Filter "MKVBatchMux.exe.*.old")
+          if ($aside.Count -eq 0) { throw "Over a program something keeps open: it was not moved aside." }
+          Write-Host "Moved aside: $($aside.Name -join ', ')"
+          Stop-Job $kept; Remove-Job $kept
+          $free = $false
+          foreach ($try in 1..60) {
+            try { $probe = [System.IO.File]::Open($aside[0].FullName, 'Open', 'Read', 'None'); $probe.Close(); $free = $true; break }
+            catch { Start-Sleep -Milliseconds 500 }
+          }
+          if (-not $free) { throw "The stand-in holder did not let go of $($aside[0].Name)." }
+          Install "After one was moved aside"
+          if (Get-ChildItem $dir -Filter "MKVBatchMux.exe.*.old") { throw "What an install moved aside was not cleared by the next one." }
+
       - name: Write updater manifest
         shell: powershell
         env:

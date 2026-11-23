@@ -594,16 +594,58 @@ SectionEnd
 ; for a reinstall runs from the install folder. WMI rather than Get-Process: this
 ; installer is 32-bit, and a 32-bit process cannot read a 64-bit one's path. Never
 ; for a drive's root, which would be everything on it, nor the Windows folder.
+; Stop-Process only asks: what it stopped is waited for (up to 15 seconds), since
+; the files are copied the moment this returns and a process still on its way out
+; holds them as firmly as a running one.
 !macro EndHelpersInInstallDir
   System::Call 'kernel32::GetCurrentProcessId()i.R0'
-  nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$dir = '$INSTDIR\'; if ($$dir.TrimEnd('\').Length -le 3) { exit 0 }; Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ProcessId -ne $R0 -and $$_.ProcessId -ne $$PID -and $$_.ExecutablePath.StartsWith($$dir, [StringComparison]::OrdinalIgnoreCase) -and -not $$_.ExecutablePath.StartsWith($$env:windir, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"`
+  nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$dir = '$INSTDIR\'; if ($$dir.TrimEnd('\').Length -le 3) { exit 0 }; $$held = @(Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ProcessId -ne $R0 -and $$_.ProcessId -ne $$PID -and $$_.ExecutablePath.StartsWith($$dir, [StringComparison]::OrdinalIgnoreCase) -and -not $$_.ExecutablePath.StartsWith($$env:windir, [StringComparison]::OrdinalIgnoreCase) }); $$held | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; if ($$held.Count -gt 0) { Wait-Process -Id $$held.ProcessId -Timeout 15 -ErrorAction SilentlyContinue }"`
   Pop $R0
+!macroend
+
+; The installed program can still be held open after all of the above: by a copy
+; this installer cannot end (one started "as administrator" is beyond the reach of
+; an installer running as the user, and is not even listed to it), by a virus
+; scanner reading it, or by something else that opened it. Writing over it then
+; stops the install with "Error opening file for writing ... MKVBatchMux.exe".
+; Wait for it to come free; if it does not, move it aside -- Windows lets a running
+; program be renamed, though not replaced -- so the new one is written under the
+; real name. What was moved aside is removed by the next install or the
+; uninstaller once nothing holds it; it is not scheduled for a restart, which would
+; have the installer offer to restart the PC.
+!macro MakeWayForMainBinary
+  Push $R1
+  Push $R2
+  Delete "$INSTDIR\${MAINBINARYNAME}.exe.*.old"
+  StrCpy $R1 0
+  make_way_retry:
+    ${IfNot} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+      Goto make_way_done
+    ${EndIf}
+    ClearErrors
+    FileOpen $R2 "$INSTDIR\${MAINBINARYNAME}.exe" a
+    ${IfNot} ${Errors}
+      FileClose $R2
+      Goto make_way_done
+    ${EndIf}
+    IntOp $R1 $R1 + 1
+    ${If} $R1 < 20
+      Sleep 1000
+      Goto make_way_retry
+    ${EndIf}
+    System::Call 'kernel32::GetTickCount()i.R2'
+    DetailPrint "${MAINBINARYNAME}.exe is still in use; moving it aside"
+    Rename "$INSTDIR\${MAINBINARYNAME}.exe" "$INSTDIR\${MAINBINARYNAME}.exe.$R2.old"
+  make_way_done:
+  Pop $R2
+  Pop $R1
 !macroend
 
 Section Install
   SetOutPath $INSTDIR
 
   !insertmacro CheckIfAppIsRunning
+  !insertmacro MakeWayForMainBinary
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -728,6 +770,8 @@ Section Uninstall
   ; Delete the app directory and its content from disk
   ; Copy main executable
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
+  ; and any copy an install had to move aside (MakeWayForMainBinary)
+  Delete "$INSTDIR\${MAINBINARYNAME}.exe.*.old"
 
   ; Delete resources
   {{#each resources}}
