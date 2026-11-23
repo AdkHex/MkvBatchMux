@@ -17,16 +17,24 @@ const destination = path.join(root, "src-tauri", "resources", "ffmpeg");
 const isWindows = process.platform === "win32";
 const exe = (name) => (isWindows ? `${name}.exe` : name);
 
-/** Fail with something the reader can act on. */
+/** Fail with something the reader can act on. On GitHub Actions the reason
+ *  is also written as an error annotation, which the run's summary (and its
+ *  API) shows without opening the job's log. */
 function fail(message, hint) {
   console.error(`\nfetch-ffmpeg: ${message}\n`);
   if (hint) console.error(`${hint}\n`);
+  if (process.env.GITHUB_ACTIONS) {
+    const text = [message, hint].filter(Boolean).join(" -- ").replace(/%/g, "%25").replace(/\r?\n/g, "%0A");
+    console.log(`::error title=fetch-ffmpeg::${text}`);
+  }
   process.exit(1);
 }
 
 // Static LGPL builds: no runtime shared libraries, and no GPL-only components,
 // so the binaries can ship inside a proprietary installer.
-const BTBN = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest";
+// The builds moved from github.com/BtbN to github.com/FFmpeg-Builds; the old
+// address only redirects here.
+const BTBN = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest";
 
 function downloadUrl() {
   const arch = process.arch;
@@ -62,10 +70,30 @@ function emptyDestination() {
   }
 }
 
+/** Run a tool; null when it worked, else why not, with the end of what it
+ *  printed (Expand-Archive and tar explain themselves only there). */
+function attempt(command, args, options = {}) {
+  const result = spawnSync(command, args, { stdio: "pipe", encoding: "utf8", ...options });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error) return `Could not run ${command}: ${result.error.message}`;
+  if (result.status !== 0) {
+    const said = `${result.stderr || ""}${result.stdout || ""}`.trim().slice(-800);
+    return `${command} exited with code ${result.status}.${said ? ` ${said}` : ""}`;
+  }
+  return null;
+}
+
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { stdio: "inherit", ...options });
-  if (result.error) fail(`Could not run ${command}: ${result.error.message}`);
-  if (result.status !== 0) fail(`${command} exited with code ${result.status}.`);
+  const problem = attempt(command, args, options);
+  if (problem) fail(problem);
+}
+
+/** What an archive body starts with: zip's local file header, xz's magic. */
+function archiveKind(body) {
+  if (body.length > 4 && body[0] === 0x50 && body[1] === 0x4b && body[2] === 0x03 && body[3] === 0x04) return "zip";
+  if (body.length > 6 && body.subarray(0, 6).equals(Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]))) return "xz";
+  return null;
 }
 
 /** Waits between download attempts. The builds' "latest" release is replaced
@@ -75,24 +103,31 @@ function run(command, args, options = {}) {
 const RETRY_DELAYS_MS = [10_000, 30_000, 60_000, 120_000];
 
 async function download(url, into) {
-  for (let attempt = 0; ; attempt += 1) {
-    console.log(`fetch-ffmpeg: downloading ${url}${attempt ? ` (attempt ${attempt + 1})` : ""}`);
+  for (let tries = 0; ; tries += 1) {
+    console.log(`fetch-ffmpeg: downloading ${url}${tries ? ` (attempt ${tries + 1})` : ""}`);
     let problem;
     try {
       const response = await fetch(url, { redirect: "follow" });
       if (response.ok) {
-        fs.writeFileSync(into, Buffer.from(await response.arrayBuffer()));
-        return;
+        const body = Buffer.from(await response.arrayBuffer());
+        const kind = archiveKind(body);
+        if (kind) {
+          fs.writeFileSync(into, body);
+          return;
+        }
+        // A page in place of the file (an error, a sign-in, a cut-off transfer).
+        problem = `the response is not an archive (${response.headers.get("content-type") || "no content type"}, ${body.length} bytes, from ${response.url})`;
+      } else {
+        problem = `${response.status} ${response.statusText}`;
+        // Gone for good: asking again only delays the failure.
+        if (response.status === 410) fail(`Download failed: ${problem}`, `URL: ${url}`);
       }
-      problem = `${response.status} ${response.statusText}`;
-      // Gone for good: asking again only delays the failure.
-      if (response.status === 410) fail(`Download failed: ${problem}`, `URL: ${url}`);
     } catch (error) {
       problem = error instanceof Error ? error.message : String(error);
     }
-    if (attempt >= RETRY_DELAYS_MS.length) fail(`Download failed: ${problem}`, `URL: ${url}`);
-    console.log(`fetch-ffmpeg: download failed (${problem}); trying again in ${RETRY_DELAYS_MS[attempt] / 1000} s`);
-    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+    if (tries >= RETRY_DELAYS_MS.length) fail(`Download failed: ${problem}`, `URL: ${url}`);
+    console.log(`fetch-ffmpeg: download failed (${problem}); trying again in ${RETRY_DELAYS_MS[tries] / 1000} s`);
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[tries]));
   }
 }
 
@@ -169,11 +204,17 @@ try {
     await download(url, zip);
     // PowerShell's Expand-Archive is always present on the Windows runners.
     if (isWindows) {
-      run("powershell", [
+      const expanded = attempt("powershell", [
         "-NoProfile",
         "-Command",
         `Expand-Archive -Path "${zip}" -DestinationPath "${work}" -Force`,
       ]);
+      if (expanded) {
+        // Windows 10 and later also ship bsdtar, which reads zip archives.
+        console.log(`fetch-ffmpeg: Expand-Archive failed (${expanded}); trying tar`);
+        const untarred = attempt("tar", ["-xf", zip, "-C", work]);
+        if (untarred) fail(`Could not unpack the download. Expand-Archive: ${expanded} tar: ${untarred}`);
+      }
     } else {
       run("unzip", ["-o", "-q", zip, "-d", work]);
     }
