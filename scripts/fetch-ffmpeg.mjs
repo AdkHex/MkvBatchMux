@@ -73,7 +73,7 @@ function emptyDestination() {
 /** Run a tool; null when it worked, else why not, with the end of what it
  *  printed (Expand-Archive and tar explain themselves only there). */
 function attempt(command, args, options = {}) {
-  const result = spawnSync(command, args, { stdio: "pipe", encoding: "utf8", ...options });
+  const result = spawnSync(command, args, { stdio: "pipe", encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.error) return `Could not run ${command}: ${result.error.message}`;
@@ -131,11 +131,10 @@ async function download(url, into) {
   }
 }
 
-/** Pull the two binaries out of an extracted tree, wherever they landed. */
-function harvest(fromDir) {
+/** ffmpeg and ffprobe wherever they landed in an extracted tree, by name. */
+function findBinaries(fromDir) {
   const wanted = new Set([exe("ffmpeg"), exe("ffprobe")]);
   const found = new Map();
-
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
@@ -144,17 +143,35 @@ function harvest(fromDir) {
     }
   };
   walk(fromDir);
+  return { wanted, found, missing: [...wanted].filter((name) => !found.has(name)) };
+}
 
-  for (const name of wanted) {
-    const source = found.get(name);
-    if (!source) {
-      fail(
-        `The archive did not contain ${name}.`,
-        "The upstream layout may have changed; check the download URL in this script.",
-      );
+/** What an extracted tree holds, a few levels deep, for a failure message. */
+function listing(fromDir, depth = 3) {
+  const names = [];
+  const walk = (dir, level) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (names.length >= 40) return;
+      names.push(path.relative(fromDir, path.join(dir, entry.name)) + (entry.isDirectory() ? "/" : ""));
+      if (entry.isDirectory() && level < depth) walk(path.join(dir, entry.name), level + 1);
     }
+  };
+  walk(fromDir, 1);
+  return names.length ? names.join(", ") : "nothing";
+}
+
+/** Pull the two binaries out of an extracted tree, wherever they landed. */
+function harvest(fromDir) {
+  const { wanted, found, missing } = findBinaries(fromDir);
+  if (missing.length) {
+    fail(
+      `The archive did not contain ${missing.join(" or ")}.`,
+      `Extracted: ${listing(fromDir)}. The upstream layout may have changed; check the download URL in this script.`,
+    );
+  }
+  for (const name of wanted) {
     const target = path.join(destination, name);
-    fs.copyFileSync(source, target);
+    fs.copyFileSync(found.get(name), target);
     if (!isWindows) fs.chmodSync(target, 0o755);
   }
 }
@@ -202,18 +219,22 @@ try {
   } else if (archive === "zip") {
     const zip = path.join(work, "ffmpeg.zip");
     await download(url, zip);
-    // PowerShell's Expand-Archive is always present on the Windows runners.
     if (isWindows) {
-      const expanded = attempt("powershell", [
-        "-NoProfile",
-        "-Command",
-        `Expand-Archive -Path "${zip}" -DestinationPath "${work}" -Force`,
-      ]);
-      if (expanded) {
-        // Windows 10 and later also ship bsdtar, which reads zip archives.
-        console.log(`fetch-ffmpeg: Expand-Archive failed (${expanded}); trying tar`);
-        const untarred = attempt("tar", ["-xf", zip, "-C", work]);
-        if (untarred) fail(`Could not unpack the download. Expand-Archive: ${expanded} tar: ${untarred}`);
+      // Windows' own bsdtar first, by full path: a GNU tar earlier on PATH
+      // (Git's) cannot read zip. The builds' zips now list bin/ twice, and
+      // Expand-Archive then extracts nothing while PowerShell still exits 0.
+      const tar = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
+      const untarred = attempt(tar, ["-xf", zip, "-C", work]);
+      const tarMissing = untarred ? null : findBinaries(work).missing;
+      if (untarred || tarMissing.length) {
+        const tarSaid = untarred ?? `tar left out ${tarMissing.join(" and ")}`;
+        console.log(`fetch-ffmpeg: ${tarSaid}; trying Expand-Archive`);
+        const expanded = attempt("powershell", [
+          "-NoProfile",
+          "-Command",
+          `$ErrorActionPreference = 'Stop'; Expand-Archive -Path "${zip}" -DestinationPath "${work}" -Force`,
+        ]);
+        if (expanded) fail(`Could not unpack the download. tar: ${tarSaid} Expand-Archive: ${expanded}`, `Extracted: ${listing(work)}`);
       }
     } else {
       run("unzip", ["-o", "-q", zip, "-d", work]);
