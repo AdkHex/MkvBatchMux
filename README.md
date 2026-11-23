@@ -102,7 +102,7 @@ the same analysis engine as
 [AudioSyncMaster](https://github.com/AdkHex/AudioSyncMaster), and is built to
 report the **same number** for the same files:
 
-- The engine is pinned to an AudioSyncMaster **release** (`v2.19.0`), never to
+- The engine is pinned to an AudioSyncMaster **release** (`v2.23.0`), never to
   its `main` branch. Settings → *Audio analysis engine* shows the stamp.
 - The measurement parameters (sample windows, window length, maximum offset)
   default to AudioSyncMaster's (6 × 45 s, 60 s) and are editable in Settings →
@@ -329,7 +329,7 @@ Both are build artifacts and are not committed.
 `package.json` names the AudioSyncMaster release the engine is built from:
 
 ```json
-"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.19.0" }
+"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.23.0" }
 ```
 
 CI checks that tag out, `fetch-engine` refuses a checkout at any other commit
