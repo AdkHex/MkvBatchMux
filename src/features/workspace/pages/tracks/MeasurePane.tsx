@@ -17,10 +17,10 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { engineMsToDelaySeconds, formatFrameOffset, formatPlayerDelayMs, formatRateConversion, frameOffset, playerDelayMs, rateConversionFor } from "@/features/workspace/lib/delayConversion";
-import { isWithheld, measureFindings, measureStatus, type Finding } from "@/features/workspace/lib/measureVerdict";
+import { isWithheld, measureFindings, measureStatus, measuredAgainstAnother, type Finding } from "@/features/workspace/lib/measureVerdict";
 import { canUseTimelineDelay, formatClock } from "@/features/workspace/lib/timelineScan";
 import { shownTrackDelay, type TrackDelay } from "@/features/workspace/lib/trackDelays";
-import type { MeasuredDelay, StretchSetting } from "@/shared/types";
+import type { MeasuredDelay, StretchSetting, VideoFile } from "@/shared/types";
 import type { MeasureWindow } from "@/shared/types/audiosync";
 import { Dialog } from "@/ui/frame";
 import { Btn, DL, Links, Meter, Status, TRow, Toggle, cx } from "@/ui/kit";
@@ -197,6 +197,15 @@ export function WindowDetails({ windows, onClose }: { windows: MeasureWindow[]; 
   );
 }
 
+/** An engine report in full, as it wrote it. */
+export function ReportDetails({ title, sub, text, onClose }: { title: string; sub?: string; text: string; onClose: () => void }) {
+  return (
+    <Dialog size="wide" title={title} sub={sub} onClose={onClose} foot={<Btn accent onClick={onClose}>Close</Btn>}>
+      <pre className="mono" style={{ margin: 0, whiteSpace: "pre-wrap", color: "var(--text-2)", lineHeight: "18px" }}>{text}</pre>
+    </Dialog>
+  );
+}
+
 export function TimelineDetails({ text, onClose }: { text: string; onClose: () => void }) {
   return (
     <Dialog size="wide" title="Timeline scan" sub="AudioSyncMaster's Dub sync plan for this pair" onClose={onClose} foot={<Btn accent onClick={onClose}>Close</Btn>}>
@@ -213,7 +222,7 @@ const TRACK_COLS = "20px minmax(0,1fr) 72px 44px 92px 132px";
 
 /** Every muxed track of a multi-track file, one line each: the delay it goes
  *  into the mux with, and how its own measurement went. */
-export function TrackDelayList({ entries, fps, currentReferenceTrack }: { entries: TrackDelay[]; fps?: number | null; currentReferenceTrack?: number }) {
+export function TrackDelayList({ entries, fps, currentReferenceTrack, currentVideo }: { entries: TrackDelay[]; fps?: number | null; currentReferenceTrack?: number; currentVideo?: Pick<VideoFile, "path" | "name"> }) {
   return (
     <div className="col" style={{ gap: 4 }}>
       <div className="t3 sm" style={{ display: "grid", gridTemplateColumns: TRACK_COLS, gap: 12, padding: "0 11px" }} aria-hidden>
@@ -230,7 +239,7 @@ export function TrackDelayList({ entries, fps, currentReferenceTrack }: { entrie
           const pending = entry.pending !== undefined;
           const shown = shownTrackDelay(entry);
           const frames = measured && (pending || entry.provenance === "measured") ? frameOffset(shown * 1000, fps ?? measured.primaryFps) : null;
-          const status = entry.measured ? measureStatus(entry.measured, { pending, currentReferenceTrack }) : { s: "ready" as const, text: "Not measured" };
+          const status = entry.measured ? measureStatus(entry.measured, { pending, currentReferenceTrack, currentVideo }) : { s: "ready" as const, text: "Not measured" };
           const label = trackLabel(entry);
           return (
             <div key={entry.trackId} className="erow" role="listitem" aria-label={label} style={{ display: "grid", gridTemplateColumns: TRACK_COLS, gap: 12 }}>
@@ -263,6 +272,8 @@ export function MeasureSection({
   measured,
   pending,
   currentReferenceTrack,
+  currentVideo,
+  replaced,
   against,
   stretch,
   onStretch,
@@ -277,6 +288,12 @@ export function MeasureSection({
   /** The measured delay is staged but not in the delay field yet. */
   pending: boolean;
   currentReferenceTrack?: number;
+  /** The video the file is paired with now: a measurement taken against
+   *  another is shown as that, and not offered for Apply. */
+  currentVideo?: Pick<VideoFile, "path" | "name">;
+  /** The file is muxed as its conformed track, at delay 0: a delay here
+   *  would go nowhere, so none is offered. */
+  replaced?: boolean;
   /** The reference track picker for the paired video. */
   against?: ReactNode;
   stretch: StretchSetting | undefined;
@@ -291,12 +308,14 @@ export function MeasureSection({
 }) {
   const [details, setDetails] = useState(false);
   const [windowDetails, setWindowDetails] = useState(false);
-  const findings = measureFindings(measured, currentReferenceTrack);
+  const findings = measureFindings(measured, currentReferenceTrack, currentVideo);
+  // Measured against another video, or muxed as a conformed track: no delay to fill in.
+  const locked = Boolean(currentVideo && measuredAgainstAnother(measured, currentVideo)) || Boolean(replaced);
   // The windows are the survey's; a timeline result was read from the whole
   // runtime instead, and "6 of 6 agree" beside its edits would contradict it.
   const windows = measured.method === "timeline" ? null : windowsSummary(measured);
   const top = findings.find((finding) => finding.tone !== "ok");
-  const withheld = isWithheld(measured);
+  const withheld = !locked && isWithheld(measured);
   const scan = measured.timeline;
   const frames = formatFrameOffset(measured.appliedMs, measured.primaryFps);
 
@@ -331,9 +350,9 @@ export function MeasureSection({
         )}
       </div>
       <Links>
-        {pending && <L icon={<CheckmarkRegular />} onClick={onApply} disabled={busy}>Apply</L>}
+        {pending && !locked && <L icon={<CheckmarkRegular />} onClick={onApply} disabled={busy}>Apply</L>}
         {withheld && <L icon={<CheckmarkRegular />} onClick={onApplyAnyway} disabled={busy} title="Fill this delay in despite the warning">Apply anyway</L>}
-        {canUseTimelineDelay(measured) && (
+        {!locked && canUseTimelineDelay(measured) && (
           <L icon={<TimelineRegular />} onClick={onUseTimelineDelay} disabled={busy}>
             Use timeline delay ({formatPlayerDelayMs(scan!.startOffsetMs)})
           </L>

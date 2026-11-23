@@ -88,12 +88,18 @@ function MenuBar({ menus: source }: { menus: Menu[] | (() => Menu[]) }) {
   useEffect(() => {
     if (open === null) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(null);
+      if (event.key === "Escape") {
+        // Escape closes the menu and does nothing else: caught before the
+        // window's own shortcuts, where Escape stops a running batch.
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(null);
+      }
       if (event.key === "ArrowRight") show((open + 1) % menus.length);
       if (event.key === "ArrowLeft") show((open - 1 + menus.length) % menus.length);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [open, menus.length, show]);
 
   const checks = open !== null && menus[open].items.some((item) => item !== "separator" && item.checked !== undefined);

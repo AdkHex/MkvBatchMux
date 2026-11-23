@@ -167,15 +167,43 @@ export function matchExternalToVideos(
   });
 }
 
-/** Pair the nth external file with the nth video; extras past the video count keep their existing link. */
+/** An empty row standing in for a missing file (see `ExternalFile.placeholder`). */
+export const isPlaceholder = (file: ExternalFile | undefined | null): boolean => Boolean(file?.placeholder);
+
+/** The files that are files: no empty rows. Anything that counts, muxes,
+ *  measures or edits files works on these. */
+export const realFiles = (files: ExternalFile[]): ExternalFile[] =>
+  files.some(isPlaceholder) ? files.filter((file) => !file.placeholder) : files;
+
+/** The empty row for a video: its id follows from the video's, so arranging
+ *  the same list twice gives the same rows. */
+export function placeholderFor(video: VideoFile, type: ExternalFile["type"]): ExternalFile {
+  return { id: `gap-${video.id}`, name: "", path: "", type, placeholder: true, matchedVideoId: video.id };
+}
+
+/** Pair the nth external file with the nth video. A file past the last video
+ *  has none: a link it kept from before would mux it into a video another row
+ *  already pairs with. A file that moves to another video loses what tied it
+ *  to the old one (picked by hand, heard by audio). Unchanged files are
+ *  returned as they were, so a list already in step is the same list. */
 export function linkExternalFilesByOrder(
   externalFiles: ExternalFile[],
   videoFiles: VideoFile[],
 ): ExternalFile[] {
   const videoIds = videoFiles.map((video) => video.id);
-  return externalFiles.map((file, index) =>
-    index < videoIds.length ? { ...file, matchedVideoId: videoIds[index] } : file,
-  );
+  let changed = false;
+  const linked = externalFiles.map((file, index) => {
+    const videoId = index < videoIds.length ? videoIds[index] : undefined;
+    const staleHand = Boolean(file.isManuallyLinked && file.matchedVideoId !== videoId);
+    const staleAudio = Boolean(file.audioMatch && file.audioMatch.videoId !== videoId);
+    if (file.matchedVideoId === videoId && !staleHand && !staleAudio) return file;
+    changed = true;
+    const next: ExternalFile = { ...file, matchedVideoId: videoId };
+    if (staleHand) next.isManuallyLinked = false;
+    if (staleAudio) delete next.audioMatch;
+    return next;
+  });
+  return changed ? linked : externalFiles;
 }
 
 export function assignExternalFileToVideo(
@@ -207,5 +235,5 @@ export function getUnlinkedExternalFiles(
   videoFiles: VideoFile[],
 ): ExternalFile[] {
   const videoIds = new Set(videoFiles.map((video) => video.id));
-  return externalFiles.filter((file) => !file.matchedVideoId || !videoIds.has(file.matchedVideoId));
+  return externalFiles.filter((file) => !file.placeholder && (!file.matchedVideoId || !videoIds.has(file.matchedVideoId)));
 }

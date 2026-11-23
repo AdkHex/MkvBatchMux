@@ -36,6 +36,23 @@ const audioTrack = (id: string, isDefault = false): Track => ({
 });
 
 describe("buildMeasurementPlan", () => {
+  it("leaves empty rows out: nothing to measure, and not unmatched either", () => {
+    const videos = [makeVideo("v1", "Show.S01E01.mkv"), makeVideo("v2", "Show.S01E02.mkv")];
+    const plan = buildMeasurementPlan({
+      videoFiles: videos,
+      audioFiles: [
+        { id: "gap-v1", name: "", path: "", type: "audio", placeholder: true, matchedVideoId: "v1" },
+        makeAudio("a2", "Show.S01E02.Hindi.eac3", { matchedVideoId: "v2" }),
+      ],
+      force: true,
+    });
+    expect(plan.measurements.map((m) => [m.audioFileId, m.videoId])).toEqual([["a2", "v2"]]);
+    expect(plan.unmatched).toEqual([]);
+    expect(plan.skipped).toEqual([]);
+    // Even asked for by id.
+    expect(buildMeasurementPlan({ videoFiles: videos, audioFiles: [{ id: "gap-v1", name: "", path: "", type: "audio", placeholder: true, matchedVideoId: "v1" }], onlyAudioFileIds: ["gap-v1"], force: true }).measurements).toEqual([]);
+  });
+
   it("pairs each audio with the video the mux would give it", () => {
     // A separate matcher could measure a different pairing than the mux performs.
     const videos = [makeVideo("v1", "Show - 01.mkv"), makeVideo("v2", "Show - 02.mkv")];

@@ -368,6 +368,8 @@ svg { flex-shrink: 0; }
 .tbl .tr { height: 32px; }
 .tbl .tr.on::before { top: 8px; }
 .tbl .tr.drop { box-shadow: inset 0 2px 0 var(--accent); }
+/* Dragged down, the row lands below the one under the pointer. */
+.tbl .tr.drop.after { box-shadow: inset 0 -2px 0 var(--accent); }
 .tbl .tr.dragging { opacity: .5; }
 .grip-h { font-size: 14px; display: grid; color: var(--text-4); cursor: grab; }
 .tr:hover .grip-h { color: var(--text-3); }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExternalFile, MeasuredDelay } from "@/shared/types";
-import { isWithheld, measureFindings, measureOutcome, measureStatus } from "./measureVerdict";
+import { buildMeasuredDelay } from "./applyMeasurement";
+import { ANOTHER_VIDEO, isMeasuredAgainstAnother, isWithheld, measureFindings, measureOutcome, measureStatus, measuredAgainstAnother } from "./measureVerdict";
 
 const m = (overrides: Partial<MeasuredDelay> = {}): MeasuredDelay => ({
   engineDelayMs: -1312,
@@ -127,3 +128,34 @@ describe("a minor slip", () => {
     expect(isWithheld(m({ isLikelyCut: true, isMinorSlip: false, cutMagnitudeMs: 3000 }))).toBe(true);
   });
 });
+
+describe("a measurement against another video", () => {
+  const e01 = { path: "D:\\Shows\\Goblin.S01E01.mkv", name: "Goblin.S01E01.mkv" };
+  const e02 = { path: "D:\\Shows\\Goblin.S01E02.mkv", name: "Goblin.S01E02.mkv" };
+
+  it("is recorded from the engine's result and told apart when the pairing moved", () => {
+    const stored = buildMeasuredDelay(
+      { videoFile: "Goblin.S01E01.mkv", audioFile: "a", primaryPath: e01.path, delayMs: -1312, delayAtStartMs: null, confidence: 0.96, driftMsPerS: null, totalDriftMs: null, hasSignificantDrift: false, startDelayMs: null, endDelayMs: null, windowsUsed: 6, windowsTotal: 6, error: null, elapsedMs: 1 },
+      0,
+      "2026-11-23T10:00:00.000Z",
+    );
+    expect([stored.videoPath, stored.videoFile]).toEqual([e01.path, "Goblin.S01E01.mkv"]);
+    expect(measuredAgainstAnother(stored, e01)).toBe(false);
+    // The same path in another spelling is the same video.
+    expect(measuredAgainstAnother(stored, { ...e01, path: "d:/shows/goblin.s01e01.mkv" })).toBe(false);
+    expect(measuredAgainstAnother(stored, e02)).toBe(true);
+    // By name alone when that is all there is; records from before either are taken as current.
+    expect(measuredAgainstAnother({ videoFile: "Goblin.S01E01.mkv" }, e02)).toBe(true);
+    expect(measuredAgainstAnother({}, e02)).toBe(false);
+    expect(isMeasuredAgainstAnother(file(m({ videoPath: e01.path })), e02)).toBe(true);
+  });
+
+  it("is the row's status, ahead of everything else, and is not offered for Apply", () => {
+    const stale = m({ videoPath: e01.path, isLikelyCut: true });
+    expect(measureStatus(stale, { pending: true, currentVideo: e02 })).toEqual({ s: "warn", text: ANOTHER_VIDEO });
+    expect(measureFindings(stale, undefined, e02)[0].line).toBe("Measured against Goblin.S01E01.mkv; this row's video is Goblin.S01E02.mkv. Not used.");
+    expect(measureStatus(m({ videoPath: e01.path }), { pending: true, currentVideo: e01 })).toEqual({ s: "ok", text: "Measured" });
+    expect(measureOutcome([file(m({ videoPath: e01.path }))], () => e02).parts).toEqual(["0 measured", "1 measured against another video"]);
+  });
+});
+

@@ -336,6 +336,11 @@ export interface MeasuredDelay {
   warnings?: string[];
   /** Which of the video's audio tracks this was measured against. */
   referenceTrack: number;
+  /** The video it was measured against, path and file name, so a measurement
+   *  that no longer matches the file's pairing can be told apart. Absent in
+   *  records stored before it existed: those are taken as current. */
+  videoPath?: string | null;
+  videoFile?: string | null;
   primaryFps: number | null;
   /** ISO 8601 -- a string, not a Date, because JSON has no Date type. */
   measuredAt: string;

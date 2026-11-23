@@ -57,6 +57,11 @@ once, and let it run through the queue with MKVToolNix.
 | **Full track control** | Language, name, default flag, delay, and drag-to-reorder |
 | **Import from another video** | Per-stream language, name and delay when pulling tracks out of another MKV |
 | **Measured delays** | Measure each external audio track's offset against its video and fill the delay in for you |
+| **Conform a different cut** | A dub with scenes missing or added is cut to the video's edit, re-rendered or frame-cut without re-encoding, and checked |
+| **Subtitle sync** | Measure each subtitle's offset and frame-rate drift against the video's own subtitle track or its dialogue |
+| **Episode pairing** | Files pair with their video by season and episode, not by row; gaps, extras and mismatches are shown before muxing |
+| **Verified output** | Every new file is checked against what was asked, and each added dub is re-measured inside it, before it replaces anything |
+| **Recipes, sessions, watch folders** | Save a show's rules and reuse them, save and reopen a whole workspace, and mux new episodes as they arrive |
 | **Safe queue** | Validation, change reports, progress tracking, pause and resume |
 | **Advanced mux settings** | Chapters, attachments, tags, safety checks |
 | **Desktop workspace** | Menu bar, docked list and inspector, an Output log and a History of past runs, dark and light themes |
@@ -97,7 +102,7 @@ the same analysis engine as
 [AudioSyncMaster](https://github.com/AdkHex/AudioSyncMaster), and is built to
 report the **same number** for the same files:
 
-- The engine is pinned to an AudioSyncMaster **release** (`v2.15.0`), never to
+- The engine is pinned to an AudioSyncMaster **release** (`v2.19.0`), never to
   its `main` branch. Settings → *Audio analysis engine* shows the stamp.
 - The measurement parameters (sample windows, window length, maximum offset)
   default to AudioSyncMaster's (6 × 45 s, 60 s) and are editable in Settings →
@@ -178,6 +183,88 @@ It is off by default because it reads both files end to end, twice: minutes
 per film on a large BluRay encode, where the windows take seconds. It only
 warns: the delay written is still the measured one.
 
+### Conforming a dub of a different cut
+
+A delay cannot fix a dub that lacks a scene the video has, or has one it
+lacks. A row measured **Different cut** offers **Conform** (on the row, in
+bulk beside Apply, or from the file's dialog): the engine's Dub sync plan, the
+same one the timeline scan shows, places every stretch of the dub where it
+belongs on the video's timeline, and the conformed copy is muxed instead of
+the original, at delay 0. **Undo** goes back to the original. Two ways,
+chosen in Settings → *Delay measurement*:
+
+- **Re-rendered** (the default): AudioSyncMaster renders the track in the
+  dub's own codec and bitrate (or FLAC) and checks it against the video;
+  scenes the dub lacks are filled from the video's own audio, as
+  AudioSyncMaster does.
+- **Lossless**: the dub's own frames are cut and joined by mkvmerge, with
+  silence encoded in its codec where a scene is missing; nothing is
+  re-encoded and each edit lands within half an audio frame (16 ms for
+  E-AC-3). The result is planned against the video again and must be within
+  one frame everywhere. A dub that cannot be cut this way (another speed,
+  FLAC, PCM, TrueHD, DTS) is re-rendered instead, and the row says why.
+
+Conformed copies go to a `MKVBatchMux conformed` folder beside the dub;
+nothing overwrites the original. A file that also brings its own subtitles
+into the mux is not conformed, as the conformed copy carries the dub alone.
+
+### Syncing subtitles
+
+**Sync subtitles** (Subtitles page) measures each external subtitle with
+AudioSyncMaster's Subsync engine: against a text subtitle track inside the
+video when there is one (in its language if possible), which lines up cue
+for cue; otherwise against the dialogue in the video's audio. A plain offset
+fills in the delay, applied with **Apply** like an audio delay; a frame-rate
+drift or a cut gives a re-timed copy (`MKVBatchMux synced` beside the
+subtitle), muxed instead of the original at delay 0. A weak result is shown
+but not filled in. Picture subtitles (PGS, VobSub) are not synced.
+
+### Pairing files with their videos
+
+Audio, subtitle and chapter files pair with videos by season and episode when
+their names say (`S01E02`, `1x02`, `S01E01-E02`, `Season 1/…`, ` - 02`,
+`第2話`…), and by row order otherwise; **Pair by** switches a page between the
+two. A missing episode leaves an empty row rather than shifting the rest, a
+second file for one episode or a file beside another episode's video stops
+the mux with the row named, and lengths more than 5 % apart are flagged.
+**Match by audio** places files whose names say nothing by listening to them
+against the unpaired videos. Dragging a file to another row pairs it by hand.
+
+### Verification after muxing
+
+Each new file is read back before it counts as done and before it replaces a
+source (Mux → Options, on by default):
+
+- **Structure**: the tracks of each type, the added tracks and their
+  languages, the order, names and flags asked for, chapters, and a length that
+  matches the source's.
+- **Sync**: each added audio track is measured against the original audio
+  inside the new file and must be within 40 ms (adjustable). A failing quick
+  check is confirmed along the whole timeline before the job fails.
+
+A file that fails is kept as `<name>.unverified.mkv` and the source is left
+as it was. The queue shows *Verified*, *Verified with warnings* or the failed
+check, and the job's details list every check.
+
+### Recipes, sessions and watch folders
+
+- **Sessions**: File → *Save session…* / *Open session…* keep the whole
+  workspace in a `.mbmux` file, the workspace is saved as you go and offered
+  back at the next launch, and the mux options survive a restart. Files that
+  have moved since are listed when a session opens.
+- **Recipes** (File → *Recipes…*): a show's track rules (drop commentary,
+  make the dub default, rename, set languages), its audio and subtitle slots,
+  an output name with `{show}`, `{season}`, `{episode}` and
+  `{original_filename}`, its destination and mux options, and what to do with
+  measurements (apply above a confidence, conform different cuts).
+  *Apply recipe…* lists every change before it is made.
+- **Watch folders** (File → *Watch folders…*, off by default): a folder is
+  checked every few seconds, also on a network share; once a new episode has
+  stopped growing, and nothing else is running, it is loaded, paired with the
+  files in its dub, subtitle and chapter folders, measured, conformed if its
+  recipe says so, muxed and verified, and the result goes to History. An
+  episode that needs a look is held back with the reason.
+
 ---
 
 ## Building from source
@@ -242,7 +329,7 @@ Both are build artifacts and are not committed.
 `package.json` names the AudioSyncMaster release the engine is built from:
 
 ```json
-"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.15.0" }
+"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.19.0" }
 ```
 
 CI checks that tag out, `fetch-engine` refuses a checkout at any other commit

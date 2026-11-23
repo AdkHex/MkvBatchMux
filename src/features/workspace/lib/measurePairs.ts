@@ -165,9 +165,11 @@ export function buildMeasurementPlan({
   const unmatched: ExternalFile[] = [];
   const skipped: ExternalFile[] = [];
 
+  // Empty rows have no file to measure, and are not "unmatched" either.
+  const files = audioFiles.filter((file) => !file.placeholder);
   const candidates = onlyAudioFileIds
-    ? audioFiles.filter((file) => onlyAudioFileIds.includes(file.id))
-    : audioFiles;
+    ? files.filter((file) => onlyAudioFileIds.includes(file.id))
+    : files;
 
   candidates.forEach((file) => {
     if (!force && shouldSkip(file)) {

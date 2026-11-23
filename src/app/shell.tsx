@@ -20,8 +20,10 @@ import type { CommonDock } from "./dock";
 
 export type PageId = "videos" | "subtitles" | "audio" | "chapters" | "attachments" | "mux";
 
-/** A page that runs something that must not overlap another page's run. */
-export type EnginePage = Extract<PageId, "audio" | "mux">;
+/** What runs something that must not overlap another run: measuring
+ *  (Audio), validating or muxing (Mux), or a watch folder working on new
+ *  episodes, which has no page of its own. */
+export type EnginePage = Extract<PageId, "audio" | "subtitles" | "mux"> | "watch";
 
 /** What a page can be asked to do from outside it: the menu bar, the
  *  keyboard, and files dropped on the window. Any may be absent. */

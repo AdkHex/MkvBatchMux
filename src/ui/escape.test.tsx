@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 
-import { Dialog } from "./frame";
+import { AppWindow, Dialog } from "./frame";
 import { LangCombo } from "./kit";
 
 // Escape closes the innermost thing only: the language list before the dialog
@@ -54,5 +54,28 @@ describe("Escape", () => {
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(over).toHaveBeenCalledTimes(1);
     expect(under).not.toHaveBeenCalled();
+  });
+
+  it("closes a title-bar menu without reaching the window's shortcuts", () => {
+    // The app's shortcuts listen on the window, from before any menu opens,
+    // and Escape there stops a running batch.
+    const shortcuts = vi.fn();
+    window.addEventListener("keydown", shortcuts);
+    try {
+      render(
+        <AppWindow title="Mux" menus={[{ label: "File", items: [{ label: "Open log file" }] }]} footer={null}>
+          body
+        </AppWindow>,
+      );
+      const file = screen.getByRole("menuitem", { name: "File" });
+      fireEvent.click(file);
+      expect(screen.getByRole("menu")).toBeInTheDocument();
+
+      fireEvent.keyDown(file, { key: "Escape" });
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(shortcuts).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("keydown", shortcuts);
+    }
   });
 });

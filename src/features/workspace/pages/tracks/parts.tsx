@@ -23,6 +23,11 @@ export const languageName = (code: string | undefined) => (code ? (CODE_TO_LABEL
 
 const slotName = (kind: SlotKind) => (kind === "audio" ? "Audio" : "Subtitle");
 
+/** The id for a new slot: one past the highest there is. Counting the slots
+ *  instead would, after Audio 2 of 1, 2, 3 is deleted, hand out "3" again: two
+ *  tabs on one slot's files and settings, and deleting either deletes both. */
+export const nextSlotId = (slots: string[]) => String(Math.max(0, ...slots.map(Number).filter(Number.isFinite)) + 1);
+
 /** The track slots as tabs on the list's header: Audio 1 Hindi, Audio 2
  *  English, then + for a new one and a copy of the one showing. A tab's ×
  *  deletes that slot; the only slot has none. */

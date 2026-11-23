@@ -53,9 +53,12 @@ function Tracks({ title, tracks }: { title: string; tracks: Track[] }) {
 
 export function MediaInfoDialog({ open, onOpenChange, files }: MediaInfoDialogProps) {
   const [activeId, setActiveId] = useState(files[0]?.id ?? "");
+  // Keyed on which videos, not on the array: the page passes a fresh one on
+  // every render (many a second while muxing), which would snap the tab back.
+  const ids = files.map((f) => f.id).join("\n");
   useEffect(() => {
-    if (open) setActiveId(files[0]?.id ?? "");
-  }, [open, files]);
+    if (open) setActiveId(ids.split("\n")[0] ?? "");
+  }, [open, ids]);
   if (!open || files.length === 0) return null;
   const file = files.find((f) => f.id === activeId) ?? files[0];
   const tracks = file.tracks || [];

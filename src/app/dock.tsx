@@ -97,6 +97,18 @@ export const OutputBody = memo(function OutputBody({ lines }: { lines: LogLine[]
     const el = ref.current;
     if (el && atEnd.current) el.scrollTop = el.scrollHeight;
   }, [lines.length, last]);
+  // Every page has its own copy of the log, and a hidden page's is not laid
+  // out, so scrolling it to the end does nothing: it catches up with the end
+  // when it is shown, which is when it takes on a size.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (atEnd.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   return (
     <div
       className="log"

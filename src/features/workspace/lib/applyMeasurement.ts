@@ -28,6 +28,8 @@ export function buildMeasuredDelay(
     rateTargetFps: result.rateDiagnosis?.targetFps ?? null,
     rateExplanation: result.rateDiagnosis?.explanation ?? null,
     referenceTrack,
+    ...(result.primaryPath ? { videoPath: result.primaryPath } : {}),
+    ...(result.videoFile ? { videoFile: result.videoFile } : {}),
     primaryFps: result.primaryFps ?? null,
     measuredAt,
     error: result.error ?? null,

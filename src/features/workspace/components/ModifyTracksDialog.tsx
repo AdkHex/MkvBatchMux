@@ -1,12 +1,13 @@
 /** Modify tracks: change the tracks every loaded video already holds, by
- *  position — track 2 of each video at once — or one video's when a video is
- *  selected. Which to keep, default and forced flags, names, languages and
- *  order. The rows are built and applied exactly as before (lib/modifyTracks). */
+ *  position — track 2 of each video at once — or only the selected videos'
+ *  when some are selected. Which to keep, default and forced flags, names,
+ *  languages and order. The rows are built and applied by lib/modifyTracks:
+ *  a field left as the dialog showed it keeps each video's own value. */
 
 import { ArrowDownRegular, ArrowUpRegular } from "@fluentui/react-icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { applyTrackRowsToVideo, moveTrackRow, type TrackRowDraft } from "@/features/workspace/lib/modifyTracks";
+import { aggregateTrackRows, applyTrackRowsToVideo, moveTrackRow, type AggregatedTrackRow } from "@/features/workspace/lib/modifyTracks";
 import { CODE_TO_LABEL } from "@/shared/data/languages-iso6393";
 import type { Track, VideoFile } from "@/shared/types";
 import { Dialog, DialogTabs } from "@/ui/frame";
@@ -18,16 +19,14 @@ interface ModifyTracksDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   videoFiles: VideoFile[];
-  selectedVideoId?: string | null;
+  /** The videos to change; none or absent means every video. */
+  selectedVideoIds?: string[];
   onFilesChange: (files: VideoFile[]) => void;
 }
 
 type TrackTab = "videos" | "subtitles" | "audios";
 
-interface TrackRow extends TrackRowDraft {
-  originalTrack: Track;
-  bitrate?: number;
-}
+type TrackRow = AggregatedTrackRow;
 
 const TABS: { id: TrackTab; label: string; type: Track["type"] }[] = [
   { id: "videos", label: "Videos", type: "video" },
@@ -35,51 +34,24 @@ const TABS: { id: TrackTab; label: string; type: Track["type"] }[] = [
   { id: "audios", label: "Audio", type: "audio" },
 ];
 
-export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVideoId, onFilesChange }: ModifyTracksDialogProps) {
+export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVideoIds, onFilesChange }: ModifyTracksDialogProps) {
   const [activeTab, setActiveTab] = useState<TrackTab>("subtitles");
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [videoTracks, setVideoTracks] = useState<TrackRow[]>([]);
   const [subtitleTracks, setSubtitleTracks] = useState<TrackRow[]>([]);
   const [audioTracks, setAudioTracks] = useState<TrackRow[]>([]);
 
+  // Keyed on the ids, not the array, so a re-render of the page does not
+  // rebuild the rows and throw away the edits made here.
+  const scopeKey = (selectedVideoIds ?? []).join("\n");
   const scopedFiles = useMemo(() => {
-    if (!selectedVideoId) return videoFiles;
-    const selected = videoFiles.find((file) => file.id === selectedVideoId);
-    return selected ? [selected] : videoFiles;
-  }, [selectedVideoId, videoFiles]);
+    const ids = new Set(scopeKey ? scopeKey.split("\n") : []);
+    const selected = videoFiles.filter((file) => ids.has(file.id));
+    return selected.length ? selected : videoFiles;
+  }, [scopeKey, videoFiles]);
+  const scoped = scopedFiles.length < videoFiles.length;
 
-  const buildAggregatedRows = useCallback(
-    (type: Track["type"]) => {
-      const trackLists = scopedFiles.map((file) => (file.tracks || []).filter((track) => track.type === type));
-      const maxCount = Math.max(0, ...trackLists.map((list) => list.length));
-      const rows: TrackRow[] = [];
-      for (let index = 0; index < maxCount; index += 1) {
-        const tracksAtIndex = trackLists.map((list) => list[index]).filter(Boolean) as Track[];
-        const names = tracksAtIndex.map((track) => track.name || track.codec || "");
-        const languages = tracksAtIndex.map((track) => track.language || "und");
-        const uniqueName = names.find(Boolean) && names.every((name) => name === names[0]) ? names[0] : "Multiple";
-        const uniqueLanguage = languages.length > 0 && languages.every((lang) => lang === languages[0]) ? languages[0] : "und";
-        const copyTrack = tracksAtIndex.length > 0 && tracksAtIndex.every((track) => track.action !== "remove");
-        const setDefault = tracksAtIndex.every((track) => track.isDefault === true) && !tracksAtIndex.some((track) => track.isDefault === undefined);
-        const setForced = tracksAtIndex.every((track) => track.isForced === true) && !tracksAtIndex.some((track) => track.isForced === undefined);
-        const trackWithBitrate = type === "audio" ? tracksAtIndex.find((track) => track.bitrate !== undefined) || tracksAtIndex[0] : tracksAtIndex[0];
-        rows.push({
-          id: `${type}-${index}`,
-          sourceTrackPosition: index,
-          trackIndex: index + 1,
-          copyTrack,
-          setDefault,
-          setForced,
-          trackName: uniqueName || `Track ${index + 1}`,
-          language: uniqueLanguage,
-          originalTrack: trackWithBitrate || { id: `${type}-${index}`, type },
-          bitrate: trackWithBitrate?.bitrate,
-        });
-      }
-      return rows;
-    },
-    [scopedFiles],
-  );
+  const buildAggregatedRows = useCallback((type: Track["type"]) => aggregateTrackRows(scopedFiles, type), [scopedFiles]);
 
   const rebuild = useCallback(() => {
     setVideoTracks(buildAggregatedRows("video"));
@@ -137,7 +109,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
   const applyChanges = () => {
     onFilesChange(
       videoFiles.map((file) => {
-        if (selectedVideoId && file.id !== selectedVideoId) return file;
+        if (!scopedFiles.includes(file)) return file;
         let updated = applyTrackRowsToVideo(file, videoTracks, "video");
         updated = applyTrackRowsToVideo(updated, subtitleTracks, "subtitle");
         return applyTrackRowsToVideo(updated, audioTracks, "audio");
@@ -155,7 +127,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
     <Dialog
       size="xl"
       title="Modify tracks"
-      sub={scopedFiles.length === 1 && selectedVideoId ? scopedFiles[0].name : "Every loaded video, track by position"}
+      sub={scopedFiles.length === 1 && scopeKey ? scopedFiles[0].name : scoped ? `${scopedFiles.length} selected videos, track by position` : "Every loaded video, track by position"}
       onClose={() => onOpenChange(false)}
       left={<Btn onClick={rebuild}>Reset</Btn>}
       bar={
@@ -193,7 +165,7 @@ export function ModifyTracksDialog({ open, onOpenChange, videoFiles, selectedVid
         <div className="frame">
           <div className="dtabs"><span className="tab on">Track {String(selectedIndexRaw >= 0 ? selectedIndexRaw + 1 : 1).padStart(2, "0")} in each video</span></div>
           <Table cols="minmax(0,1fr) 64px 64px 56px 120px 96px" head={["Video", "Found", "Default", "Forced", "Name", "Language"]} label="The selected track in each video" style={{ maxHeight: 180 }}>
-            {videoFiles.map((file) => {
+            {scopedFiles.map((file) => {
               const tracks = (file.tracks || []).filter((track) => track.type === tabType);
               const track = tracks[selectedRow.sourceTrackPosition];
               return (

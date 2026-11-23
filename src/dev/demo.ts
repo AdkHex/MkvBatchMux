@@ -12,22 +12,44 @@
  *    /?demo=measured   ready, then every dub measured (one different cut, one
  *                      frame-rate change, one weak match, one broken file)
  *    /?demo=muxing     ready and queued, muxing under way
- *    /?demo=done       muxed, one job failed
+ *    /?demo=done       muxed and verified: E03 with a warning, E05 failing
+ *                      verification (its dub went in without its delay), E07
+ *                      unreadable
  *    /?demo=unlinked   ready, with a 17th dub that has no video
  *    /?demo=engine     ready, the audio analysis engine missing
  *
  *  Options: `&page=audio` opens that page at the end, `&multi=1` makes E01's
  *  dub one file of three (Hindi, Tamil, Telugu), `&speed=0.25` runs the
  *  mocked commands four times faster, `&update=1` offers version 1.71.0,
- *  `&tools=missing` reports MediaInfo missing, `&os=mac|windows` picks the
+ *  `&tools=missing` reports MediaInfo missing, `&pairing=gap` leaves E05
+ *  without a dub and names E07's "Hindi dub, final mix.eac3" (no episode in
+ *  it: Match by audio places it), `&os=mac|windows` picks the
  *  window chrome (src/ui/frame.tsx). `window.__demo.drop([...paths])` fakes a
- *  file drop on the page showing. */
+ *  file drop on the page showing.
+ *
+ *  Recipes, sessions and watch folders (Feature 5): `&recipes=1` saves a
+ *  sample recipe ("Goblin — Hindi") and a watch folder on the show's folder
+ *  that uses it, off; `&watch=1` leaves that watch folder on, so it starts
+ *  with the app. `window.__demo.watch([...paths])` fakes new files landing
+ *  in the first watch folder that is on (no paths: Goblin E17 and its dub);
+ *  the store, session files and watchers live in memory.
+ *
+ *  Conform and Sync subtitles (Features 1 and 3): `/?demo=measured&page=audio`
+ *  offers Conform on E05, the different cut, which completes and checks out.
+ *  On the Subtitles page, Sync subtitles measures every row against the
+ *  video's own English track, except E11, whose release carries no subtitles
+ *  and is synced against its speech, not sure enough to be filled in (Apply
+ *  anyway); E09's subtitle was timed for PAL and comes back as a re-timed
+ *  copy; the rest are plain delays. */
 
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 
 import type { MuxStartRequest, ScanRequest } from "@/shared/lib/backend";
 import type { ExternalFile, MuxPreviewResult, VideoFile } from "@/shared/types";
 import type { MeasureStartRequest } from "@/shared/types/audiosync";
+import type { ConformRequest, SubsyncRequest } from "@/shared/types/engineFeatures";
+import type { VerificationCheck, VerificationReport } from "@/shared/types/verify";
+import type { Recipe, WatchFolderConfig, WatchInfo, WatchRequest } from "@/shared/types/recipes";
 
 import {
   CHAP_DIR,
@@ -83,9 +105,18 @@ interface DemoState {
   extraDub: boolean;
   /** E01's dub is one file with three dubs in it, each its own offset. */
   multiDub: boolean;
+  /** No dub for E05, and E07's under a name without its episode. */
+  pairingGap: boolean;
   engine: boolean;
   update: boolean;
   mediainfo: boolean;
+  /** The app data folder's JSON files, by store key. */
+  store: Record<string, unknown>;
+  /** Session files saved this run, by path. */
+  sessions: Record<string, unknown>;
+  watchers: Map<string, { request: WatchRequest; paused: boolean; reported: number }>;
+  /** Episodes that "arrived" in a watch folder (index from 0), by video path. */
+  arrivals: Map<string, number>;
 }
 
 let state: DemoState;
@@ -110,10 +141,21 @@ function pickFolder(): string {
   return SHOW_DIR;
 }
 
+/** E07's dub under `&pairing=gap`: a name pairing by episode cannot place. */
+const RENAMED_DUB = "Hindi dub, final mix.eac3";
+/** The episode a dub really is, whatever its name says. */
+const trueEpisodeOf = (name: string) => (name === RENAMED_DUB ? 6 : episodeOf(name));
+
+function demoDub(i: number): ExternalFile {
+  if (i === 0 && state.multiDub) return multiDubFile();
+  if (i === 6 && state.pairingGap) return { ...dubFile(6), id: "dub-renamed", name: RENAMED_DUB, path: `${DUB_DIR}\\${RENAMED_DUB}` };
+  return dubFile(i);
+}
+
 function scan(request: ScanRequest): (VideoFile | ExternalFile)[] {
   const all = Array.from({ length: EPISODES }, (_, i) => i);
   if (request.type === "video") return all.map((i) => videoFile(i, false));
-  if (request.type === "audio") return [...all.map((i) => (i === 0 && state.multiDub ? multiDubFile() : dubFile(i))), ...(state.extraDub ? [dubFile(EPISODES, true)] : [])];
+  if (request.type === "audio") return [...all.filter((i) => !(state.pairingGap && i === 4)).map(demoDub), ...(state.extraDub ? [dubFile(EPISODES, true)] : [])];
   if (request.type === "subtitle") return all.map(subFile);
   if (request.type === "chapter") return all.map(chapterFile);
   return FONTS;
@@ -123,7 +165,8 @@ function inspect(paths: string[], type: string): (VideoFile | ExternalFile)[] {
   return paths.map((path) => {
     const name = nameOf(path);
     const i = episodeOf(name);
-    if (type === "video") return { ...videoFile(i, true), path, name };
+    // E11's release has no subtitles of its own: Sync subtitles listens to its speech.
+    if (type === "video") return { ...videoFile(i, true), path, name, ...(i === 10 ? { tracks: videoFile(i, true).tracks.filter((t) => t.type !== "subtitle") } : {}) };
     if (type === "audio") return { ...dubFile(i), path, name, id: `dropped-${name}` };
     if (type === "subtitle") return { ...subFile(i), path, name, id: `dropped-${name}` };
     return { id: `dropped-${name}`, name, path, type: type as ExternalFile["type"], size: 2048 };
@@ -156,6 +199,8 @@ async function measure(request: MeasureStartRequest) {
   let processed = 0;
   const total = request.pairs.length;
   const queue = [...request.pairs];
+  // Match by audio: a quick listen that hears the right episode, and not the others.
+  const matching = request.runId.startsWith("match-");
   // As the real engine does: several pairs at once, each announced by its
   // video when it starts and as its windows complete; the progress event
   // comes after a result and names the pair that just finished.
@@ -164,7 +209,7 @@ async function measure(request: MeasureStartRequest) {
       const pair = queue.shift()!;
       const video = nameOf(pair.primaryPath);
       emitEvent("measure-delays-file", { runId: request.runId, file: video, percent: 0 });
-      const windows = 6;
+      const windows = matching ? 2 : 6;
       for (let w = 1; w <= windows; w++) {
         await nap((700 + (episodeOf(nameOf(pair.secondaryPath)) % 3) * 400) / windows);
         if (state.measureCancelled) return;
@@ -172,7 +217,9 @@ async function measure(request: MeasureStartRequest) {
       }
       const i = episodeOf(nameOf(pair.secondaryPath));
       emitEvent("audiosync-log", `Measured ${nameOf(pair.secondaryPath)} against ${video}`);
-      const result = measureResult(i, video, nameOf(pair.secondaryPath));
+      const result = matching
+        ? { ...measureResult(i, video, nameOf(pair.secondaryPath)), confidence: trueEpisodeOf(nameOf(pair.secondaryPath)) === episodeOf(video) ? 0.93 : 0.11 }
+        : measureResult(i, video, nameOf(pair.secondaryPath));
       // Each dub of a multi-dub file sits at its own offset.
       const shift = pair.secondaryTrack * 160;
       emitEvent("measure-delays-result", {
@@ -186,6 +233,78 @@ async function measure(request: MeasureStartRequest) {
   };
   await Promise.all(Array.from({ length: Math.min(4, request.maxWorkers || 4) }, worker));
   emitEvent("measure-delays-done", { runId: request.runId, cancelled: state.measureCancelled, error: null });
+}
+
+/** Conform: each dub laid onto its video's cut, checked, as the engine does. */
+async function conform(request: ConformRequest) {
+  const total = request.pairs.length;
+  let processed = 0;
+  for (const pair of request.pairs) {
+    const stages = request.mode === "lossless" ? ["Planning", "Cutting the dub's frames", "Checking the conformed track"] : ["Planning", "Rendering", "Checking the finished track"];
+    for (const [n, stage] of stages.entries()) {
+      for (const percent of [10, 55, 90]) {
+        await nap(260);
+        if (state.measureCancelled) return emitEvent("conform-done", { runId: request.runId, cancelled: true, error: null });
+        const overall = request.mode === "lossless" ? Math.round((n * 100 + percent) / stages.length) : percent;
+        emitEvent("conform-progress", { runId: request.runId, key: pair.key, percent: overall, stage, processed, total });
+      }
+    }
+    const dub = nameOf(pair.secondaryPath).replace(/\.[^.]+$/, "");
+    const folder = request.outputDir ?? `${pair.secondaryPath.replace(/[\\/][^\\/]*$/, "")}\\MKVBatchMux conformed`;
+    const lossless = request.mode === "lossless";
+    emitEvent("audiosync-log", `Conformed ${nameOf(pair.secondaryPath)} to ${nameOf(pair.primaryPath)}`);
+    emitEvent("conform-result", {
+      runId: request.runId,
+      key: pair.key,
+      outputPath: `${folder}\\${dub}.conformed.${lossless ? "mka" : request.codec === "flac" ? "flac" : "eac3"}`,
+      mode: request.mode,
+      codec: request.codec === "flac" && !lossless ? "flac" : "eac3",
+      verified: true,
+      verificationText: lossless
+        ? "Checked against the video: the dub sits within one 32 ms frame throughout (-8.0 to +13.4 ms)."
+        : "Checked against the video at 12 spots and a sweep of 40 windows: every one within lip-sync, the worst 0.4 ms.",
+      residualMs: lossless ? 13.4 : -0.4,
+      plan: null,
+      description: "Stretch 1: 0:00 – 41:07 at +1.312 s\nGap 41:07 – 41:19: 12.5 s of the video the dub lacks (silence)\nStretch 2: 41:19 – 1:03:57 at -11.168 s",
+      error: null,
+      fallbackReason: null,
+    });
+    processed += 1;
+    emitEvent("conform-progress", { runId: request.runId, key: pair.key, percent: 100, stage: null, processed, total });
+  }
+  emitEvent("conform-done", { runId: request.runId, cancelled: false, error: null });
+}
+
+/** Sync subtitles: E09 timed for PAL (a re-timed copy), E11 against speech
+ *  and not sure, the rest plain delays against the video's own track. */
+async function subsync(request: SubsyncRequest) {
+  const total = request.jobs.length;
+  let processed = 0;
+  for (const job of request.jobs) {
+    for (const [percent, stage] of [[15, "Reading the subtitle"], [45, request.engine === "audio" ? "Finding speech" : "Reading the reference"], [80, "Lining up"]] as const) {
+      await nap(220);
+      if (state.measureCancelled) return emitEvent("subsync-done", { runId: request.runId, cancelled: true, error: null });
+      emitEvent("subsync-progress", { runId: request.runId, key: job.key, percent, stage, processed, total });
+    }
+    const i = episodeOf(nameOf(job.subtitlePath));
+    const engineName = request.engine === "audio" ? "the video's speech" : "the reference subtitle";
+    const copy = `${job.subtitlePath.replace(/[\\/][^\\/]*$/, "")}\\MKVBatchMux synced\\${nameOf(job.subtitlePath)}`;
+    const base = { runId: request.runId, key: job.key, method: request.engine, retimedPath: copy, error: null, applied: true, splitPoints: [], warnings: [] as string[], splits: 0, framerate: null as string | null };
+    const result =
+      i === 8
+        ? { ...base, offsetS: -0.0722, ratio: 1.0427083333, score: 0.97, confidence: "high", framerate: "25 → 23.976", description: `Matched against ${engineName} (high confidence, score 0.97): shifted by -0.072 s, converted 25 → 23.976 fps.` }
+        : request.engine === "audio"
+          ? { ...base, offsetS: 0.31, ratio: 1, score: 0.58, confidence: "medium", description: `Matched against ${engineName} (medium confidence, score 0.58): shifted by +0.310 s.` }
+          : (() => {
+              const offset = -(2.5 + (i % 4) * 0.042);
+              return { ...base, offsetS: offset, ratio: 1, score: 1, confidence: "high", description: `Matched against ${engineName} (high confidence, score 1.00): shifted by ${offset.toFixed(3)} s.` };
+            })();
+    emitEvent("audiosync-log", `Synced ${nameOf(job.subtitlePath)} against ${nameOf(job.videoPath)}`);
+    emitEvent("subsync-result", result);
+    processed += 1;
+    emitEvent("subsync-progress", { runId: request.runId, key: job.key, percent: 100, stage: null, processed, total });
+  }
+  emitEvent("subsync-done", { runId: request.runId, cancelled: false, error: null });
 }
 
 async function mux(request: MuxStartRequest) {
@@ -209,9 +328,25 @@ async function mux(request: MuxStartRequest) {
         emitEvent("mux-progress", { job_id: job.id, status: "stopped", progress });
         return;
       }
-      emitEvent("mux-progress", { job_id: job.id, status: progress < 100 ? "processing" : "completed", progress, size_after: progress === 100 ? Math.round(job.video.size * 1.07) : undefined });
+      if (progress < 100) emitEvent("mux-progress", { job_id: job.id, status: "processing", progress });
     }
     emitEvent("mux-log", { job_id: job.id, line: `Multiplexing took ${20 + (episodeOf(job.video.name) % 9)} seconds.` });
+    const size_after = Math.round(job.video.size * 1.07);
+    if (request.settings.verifyOutput === false) {
+      emitEvent("mux-progress", { job_id: job.id, status: "completed", progress: 100, size_after });
+      return;
+    }
+    // As the backend does: the output is checked before it counts as done.
+    emitEvent("mux-progress", { job_id: job.id, status: "processing", progress: 100, message: "Verifying the output", stage: "verifying" });
+    await nap(job.audios.length && request.settings.verifySync !== false ? 900 : 250);
+    const verification = verificationOf(job, request.settings, out);
+    if (verification.ok) {
+      emitEvent("mux-progress", { job_id: job.id, status: "completed", progress: 100, size_after, verification });
+      return;
+    }
+    const failure = verification.checks.find((check) => check.status === "fail")!;
+    emitEvent("mux-log", { job_id: job.id, line: `Kept the unverified output as ${verification.keptPath}; the source was not touched` });
+    emitEvent("mux-progress", { job_id: job.id, status: "error", progress: 0, message: "Verification failed", error_message: `Verification failed: ${failure.detail}`, verification });
   };
   const worker = async () => {
     while (jobs.length > 0) {
@@ -224,6 +359,45 @@ async function mux(request: MuxStartRequest) {
   await Promise.all(Array.from({ length: parallel }, worker));
   if (state.mux.stopped) for (const job of jobs) emitEvent("mux-progress", { job_id: job.id, status: "stopped", progress: 0 });
   state.mux.running = false;
+}
+
+/** What checking a demo job's output finds: E03's dub runs short (a
+ *  warning), E05's went in without its delay (a failure), the rest pass. */
+function verificationOf(job: MuxStartRequest["jobs"][number], settings: MuxStartRequest["settings"], out: string): VerificationReport {
+  const i = episodeOf(job.video.name);
+  const dub = job.audios[0];
+  const pass = (id: string, label: string, detail: string): VerificationCheck => ({ id, label, status: "pass", detail });
+  const skip = (id: string, label: string, detail: string): VerificationCheck => ({ id, label, status: "skip", detail });
+  const checks: VerificationCheck[] = [
+    pass("tracks", "Tracks", `1 video, ${dub ? 2 : 1} audio, ${1 + job.subtitles.length} subtitle tracks`),
+    dub || job.subtitles.length ? pass("added", "Added tracks", `${job.audios.length + job.subtitles.length} added tracks there, each in its language`) : skip("added", "Added tracks", "Nothing added"),
+    pass("duration", "Duration", "23:41, as the source"),
+    job.chapters.length ? pass("chapters", "Chapters", "6 chapters") : skip("chapters", "Chapters", "None added"),
+    job.attachments.length ? pass("attachments", "Attachments", `${job.attachments.length} files added`) : skip("attachments", "Attachments", "None added"),
+    pass("order", "Track order", "As asked"),
+    pass("flags", "Names and flags", "As asked"),
+    !dub
+      ? skip("audioLength", "Added audio length", "No audio added")
+      : i === 2
+        ? { id: "audioLength", label: "Added audio length", status: "warn", detail: `${dub.name} runs 22:58.4, 3.0 % shorter than the video` }
+        : pass("audioLength", "Added audio length", "Each runs as long as the video"),
+  ];
+  let residualMs: number | null = null;
+  let syncConfidence: number | null = null;
+  if (!dub) checks.push(skip("sync", "Sync", "No audio added"));
+  else if (settings.verifySync === false) checks.push(skip("sync", "Sync", "Turned off"));
+  else {
+    const tolerance = settings.verifySyncToleranceMs ?? 40;
+    residualMs = i === 4 ? 1312.4 : 3 + (i % 5) * 2.1;
+    syncConfidence = i === 4 ? 0.998 : 0.97;
+    checks.push(
+      residualMs > tolerance
+        ? { id: "sync", label: `Sync: ${dub.name}`, status: "fail", detail: `${dub.name} plays ${Math.round(residualMs)} ms late, more than the ${tolerance} ms allowed (100 % confidence)` }
+        : pass("sync", `Sync: ${dub.name}`, `In sync: ${Math.round(residualMs)} ms late, within ${tolerance} ms (97 % confidence)`),
+    );
+  }
+  const ok = !checks.some((check) => check.status === "fail");
+  return { ok, checks, residualMs, syncConfidence, keptPath: ok ? null : out.replace(/\.mkv$/, ".unverified.mkv") };
 }
 
 function preview(request: MuxStartRequest): MuxPreviewResult[] {
@@ -257,10 +431,10 @@ async function handle(cmd: string, args: Args): Promise<unknown> {
       return null;
     case "scan_media":
       await nap(300);
-      return scan(request as unknown as ScanRequest);
+      return [...scan(request as unknown as ScanRequest), ...arrivedFiles(request as unknown as ScanRequest)];
     case "inspect_paths":
       await nap(200);
-      return inspect((request.paths as string[]) ?? [], String(request.type));
+      return inspectArrived((request.paths as string[]) ?? [], String(request.type));
     case "inspect_paths_stream":
       void streamInspect(request as { scan_id: string; paths: string[]; type: string });
       return null;
@@ -309,6 +483,48 @@ async function handle(cmd: string, args: Args): Promise<unknown> {
     case "measure_delays_cancel":
       state.measureCancelled = true;
       return null;
+    case "conform_dubs_start":
+      state.measureCancelled = false;
+      void conform(request as unknown as ConformRequest);
+      return null;
+    case "subsync_start":
+      state.measureCancelled = false;
+      void subsync(request as unknown as SubsyncRequest);
+      return null;
+    case "store_read":
+      return structuredClone(state.store[String(args.key)] ?? null);
+    case "store_write":
+      state.store[String(args.key)] = structuredClone(args.value);
+      return null;
+    case "store_delete":
+      delete state.store[String(args.key)];
+      return null;
+    case "store_location":
+      return { dir: "C:\\Users\\demo\\AppData\\Roaming\\MKVBatchMux" };
+    case "session_save":
+      state.sessions[String(args.path)] = structuredClone(args.value);
+      return null;
+    case "session_open":
+      if (!(String(args.path) in state.sessions)) throw `${args.path} doesn't exist.`;
+      return structuredClone(state.sessions[String(args.path)]);
+    case "paths_exist":
+      return ((args.paths as string[]) ?? []).map((path) => Boolean(path.trim()));
+    case "watch_start":
+      return watchStart(request as unknown as WatchRequest);
+    case "watch_stop": {
+      const had = state.watchers.delete(String(args.id));
+      if (had) setTimeout(() => emitEvent("watch-status", { id: args.id, state: "stopped", error: null }), 50);
+      return had;
+    }
+    case "watch_set_paused": {
+      const watcher = state.watchers.get(String(args.id));
+      if (!watcher) return false;
+      watcher.paused = Boolean(args.paused);
+      emitEvent("watch-status", { id: args.id, state: watcher.paused ? "paused" : "watching", error: null });
+      return true;
+    }
+    case "watch_list":
+      return [...state.watchers.keys()].sort().map(watchInfo);
     case "scan_timeline_start":
       setTimeout(() => emitEvent("timeline-scan-done", { runId: (request as { runId: string }).runId, cancelled: false, error: null }), 100);
       return null;
@@ -352,6 +568,9 @@ async function tauriModule(args: Args): Promise<unknown> {
   }
   if (module === "Dialog") {
     const options = (message.options ?? {}) as Record<string, unknown>;
+    // Sessions: saved as one demo file, opened as the last one saved.
+    if (message.cmd === "saveDialog") return "C:\\Users\\demo\\Documents\\Goblin S01.mbmux";
+    if (JSON.stringify(options.filters ?? []).includes("mbmux")) return Object.keys(state.sessions).pop() ?? null;
     if (options.directory) return pickFolder();
     if (activePage().startsWith("Attachments")) return FONTS.map((f) => f.path);
     return options.multiple ? [`${SUB_DIR}\\Goblin.S01E03.en.forced.srt`] : `${SUB_DIR}\\Goblin.S01E03.en.forced.srt`;
@@ -359,6 +578,81 @@ async function tauriModule(args: Args): Promise<unknown> {
   if (module === "Shell" || module === "Process") return null;
   console.warn("[demo] unhandled module", module, message);
   return null;
+}
+
+// ------------------------------------------------------ watch folders
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+function watchInfo(id: string): WatchInfo {
+  const watcher = state.watchers.get(id)!;
+  const { request } = watcher;
+  return { id, folder: request.folder, extensions: request.extensions ?? [], recursive: Boolean(request.recursive), intervalSeconds: request.intervalSeconds ?? 10, stablePolls: 2, state: watcher.paused ? "paused" : "watching", error: null, paused: watcher.paused, settling: 0, reported: watcher.reported, held: 0 };
+}
+
+function watchStart(request: WatchRequest): WatchInfo {
+  const replaced = state.watchers.has(request.id);
+  state.watchers.set(request.id, { request, paused: Boolean(request.paused), reported: 0 });
+  // As the backend did before it was fixed: a replaced watcher's last word comes late.
+  if (replaced) setTimeout(() => emitEvent("watch-status", { id: request.id, state: "stopped", error: null }), 80);
+  setTimeout(() => emitEvent("watch-status", { id: request.id, state: request.paused ? "paused" : "watching", error: null }), 20);
+  return watchInfo(request.id);
+}
+
+/** A new episode (index from 0, past the season's 16) as the watcher would find it. */
+const arrivalPath = (i: number) => `${SHOW_DIR}\\Goblin.S01E${pad2(i + 1)}.1080p.WEB-DL.x264-HDEX.mkv`;
+
+/** The dubs of episodes that arrived, as the dub folder now holds them. */
+function arrivedFiles(request: ScanRequest): ExternalFile[] {
+  if (request.type !== "audio" || request.folder !== DUB_DIR) return [];
+  return [...new Set(state.arrivals.values())].map((i) => {
+    const name = `Goblin.S01E${pad2(i + 1)}.Hindi.DDP5.1.eac3`;
+    return { ...dubFile(i % EPISODES), id: `dub-${pad2(i + 1)}`, name, path: `${DUB_DIR}\\${name}` };
+  });
+}
+
+function inspectArrived(paths: string[], type: string): (VideoFile | ExternalFile)[] {
+  const arrived = type === "video" ? paths.filter((path) => state.arrivals.has(path)) : [];
+  const rest = inspect(paths.filter((path) => !arrived.includes(path)), type);
+  return [...rest, ...arrived.map((path) => ({ ...videoFile(state.arrivals.get(path)! % EPISODES, true), id: `video-${pad2(state.arrivals.get(path)! + 1)}`, path, name: nameOf(path) }))];
+}
+
+/** `window.__demo.watch([...paths])`: files landing in the first watch folder that is on. */
+function fakeArrival(paths?: string[]) {
+  const id = [...state.watchers.entries()].find(([, watcher]) => !watcher.paused)?.[0];
+  if (!id) {
+    console.warn("[demo] no watch folder is on: turn one on in File › Watch folders (or load with &recipes=1&watch=1)");
+    return;
+  }
+  const next = paths?.length ? paths : [arrivalPath(EPISODES + state.arrivals.size)];
+  next.forEach((path) => {
+    if (!state.arrivals.has(path)) state.arrivals.set(path, episodeOf(nameOf(path)) || EPISODES + state.arrivals.size);
+  });
+  state.watchers.get(id)!.reported += next.length;
+  emitEvent("watch-files", { id, paths: next });
+}
+
+function sampleRecipe(): Recipe {
+  return {
+    id: "recipe-goblin",
+    name: "Goblin — Hindi",
+    show: "Goblin",
+    trackRules: [
+      { id: "rule-sdh", label: "Drop the SDH subtitles", match: { type: "subtitle", nameRegex: "sdh" }, action: { keep: false } },
+      { id: "rule-kor", label: "Korean stereo by its layout", match: { type: "audio", languages: ["kor"], codecRegex: "flac" }, action: { rename: "Korean {channels}" } },
+    ],
+    audioSlots: [{ sourceFolder: DUB_DIR, extension: "all", language: "hin", trackName: "Hindi", delay: "0.000", isDefault: true, isForced: false, muxAfter: "video" }],
+    subtitleSlots: [],
+    namingPattern: "{show} - {episode}",
+    destination: OUT_DIR,
+    measurement: { autoMeasure: true, autoApply: true, autoApplyMinConfidence: 0.9, autoConformCuts: false },
+    createdAt: "2026-11-23T09:00:00.000Z",
+    updatedAt: "2026-11-23T09:00:00.000Z",
+  };
+}
+
+function sampleWatch(on: boolean): WatchFolderConfig {
+  return { id: "watch-goblin", enabled: on, recipeId: "recipe-goblin", videoFolder: SHOW_DIR, videoExtensions: ["mkv"], recursive: false, audioFolder: DUB_DIR, subtitleFolder: "", chapterFolder: "", intervalSeconds: 10 };
 }
 
 // -------------------------------------------------------------- scenarios
@@ -427,12 +721,17 @@ export function installDemo(scenario: string) {
     measureCancelled: false,
     extraDub: scenario === "unlinked",
     multiDub: options.get("multi") === "1",
+    pairingGap: options.get("pairing") === "gap",
     engine: scenario !== "engine",
     update: options.get("update") === "1",
     mediainfo: options.get("tools") !== "missing",
+    store: options.get("recipes") === "1" ? { recipes: { version: 1, recipes: [sampleRecipe()] }, "watch-folders": { version: 1, folders: [sampleWatch(options.get("watch") === "1")] } } : {},
+    sessions: {},
+    watchers: new Map(),
+    arrivals: new Map(),
   };
   mockWindows("main");
   mockIPC((cmd, args) => handle(cmd, (args ?? {}) as Args));
-  (window as unknown as Record<string, unknown>).__demo = { marker: MARKER, drop, key, go, paths: videoPaths };
+  (window as unknown as Record<string, unknown>).__demo = { marker: MARKER, drop, key, go, paths: videoPaths, watch: fakeArrival };
   void run(scenario);
 }

@@ -2,10 +2,18 @@
 
 mod all_users_copy;
 mod audiosync;
+mod conform;
+mod engine_link;
 mod menu;
 mod process_job;
 mod remote_status;
 mod service;
+mod store;
+mod subsync;
+#[cfg(test)]
+mod ui_e2e;
+mod verify;
+mod watch;
 mod window_size;
 
 use crc32fast::Hasher;
@@ -99,6 +107,22 @@ struct MeasurementSettings {
     window_seconds: f64,
     window_count: u32,
     max_offset_ms: f64,
+    // The fields below are the frontend's to read; they are kept here only so
+    // saving the options writes them back. Each defaults to absent, so a
+    // setting.json from before them loads, and an absent one means the
+    // frontend's default (off; render; the dub's own codec; beside the dub).
+    /// Lay every pair along its whole timeline (Preferences › Measurement).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    full_timeline: Option<bool>,
+    /// Conforming a dub to another cut: "render" or "lossless".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conform_mode: Option<String>,
+    /// "same" or "flac".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conform_codec: Option<String>,
+    /// Where conformed dubs go; absent: a folder beside each dub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conform_output_dir: Option<String>,
 }
 
 impl Default for MeasurementSettings {
@@ -107,6 +131,10 @@ impl Default for MeasurementSettings {
             window_seconds: 45.0,
             window_count: 6,
             max_offset_ms: 300000.0,
+            full_timeline: None,
+            conform_mode: None,
+            conform_codec: None,
+            conform_output_dir: None,
         }
     }
 }
@@ -375,6 +403,24 @@ struct MuxSettings {
     make_audio_default_language: Option<String>,
     make_subtitle_default_language: Option<String>,
     use_mkvpropedit: bool,
+    /// Check every output before it replaces the source or counts as done
+    /// (src/verify.rs). Absent from requests older frontends send: on.
+    #[serde(default = "default_on")]
+    verify_output: bool,
+    /// Also measure each added audio track against the source's audio in the output.
+    #[serde(default = "default_on")]
+    verify_sync: bool,
+    /// How far an added audio track may sit from the source's audio and still pass.
+    #[serde(default = "default_sync_tolerance_ms")]
+    verify_sync_tolerance_ms: f64,
+}
+
+fn default_on() -> bool {
+    true
+}
+
+fn default_sync_tolerance_ms() -> f64 {
+    40.0
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -385,6 +431,11 @@ struct MuxJobRequest {
     subtitles: Vec<ExternalFileInfo>,
     chapters: Vec<ExternalFileInfo>,
     attachments: Vec<ExternalFileInfo>,
+    /// The output's file name without ".mkv", already resolved by the
+    /// frontend (a recipe's {show} {season} {episode}, which only it can read
+    /// from the file names). Absent or blank: the naming pattern decides.
+    #[serde(default, rename = "outputName", skip_serializing_if = "Option::is_none")]
+    output_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -421,6 +472,18 @@ struct MuxProgressEvent {
     message: Option<String>,
     size_after: Option<u64>,
     error_message: Option<String>,
+}
+
+/// A progress event with verification on it: `stage` while the output is
+/// being checked, the report with the job's final status.
+#[derive(Debug, Serialize, Clone)]
+struct VerifyProgressEvent<'a> {
+    #[serde(flatten)]
+    event: MuxProgressEvent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification: Option<&'a verify::VerificationReport>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1827,11 +1890,10 @@ fn get_output_paths(job: &MuxJobRequest, settings: &MuxSettings) -> (PathBuf, Pa
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("output");
-    let output_stem = render_output_template(
-        settings.output_naming_pattern.as_deref(),
-        &job.video,
-        file_stem,
-    );
+    let output_stem = match job.output_name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => sanitize_file_stem(name),
+        None => render_output_template(settings.output_naming_pattern.as_deref(), &job.video, file_stem),
+    };
     let overwrite_mode = settings.destination_dir.trim().is_empty() || settings.overwrite_source;
 
     if overwrite_mode {
@@ -2182,12 +2244,26 @@ fn intersect_ids(left: Vec<usize>, right: Vec<usize>) -> Vec<usize> {
     left.into_iter().filter(|id| right.contains(id)).collect()
 }
 
-fn apply_track_selection(
-    args: &mut Vec<String>,
+/// The ids "Keep audio/subtitles in" leaves of the source's tracks of one
+/// type, or None when that option is off for the type.
+fn only_keep_ids(job: &MuxJobRequest, settings: &MuxSettings, track_type: &str) -> Option<Vec<usize>> {
+    let (enabled, languages) = match track_type {
+        "audio" => (settings.only_keep_audios_enabled, &settings.only_keep_audio_languages),
+        "subtitle" => (settings.only_keep_subtitles_enabled, &settings.only_keep_subtitle_languages),
+        _ => return None,
+    };
+    (enabled && !languages.is_empty())
+        .then(|| collect_track_ids_by_language(&job.video.tracks, track_type, languages))
+}
+
+/// The source's tracks of one type that go into the output: None when that
+/// is all of them, so mkvmerge needs no option; otherwise exactly these,
+/// possibly none. The command and its verification both read it from here.
+fn source_track_selection(
     tracks: &[TrackInfo],
     track_type: &str,
     only_keep_ids: Option<Vec<usize>>,
-) {
+) -> Option<Vec<usize>> {
     let (action_ids, has_removed) = collect_track_ids_by_action(tracks, track_type);
     let type_ids: Vec<usize> = tracks
         .iter()
@@ -2197,7 +2273,7 @@ fn apply_track_selection(
         .collect();
 
     if type_ids.is_empty() {
-        return;
+        return None;
     }
 
     let mut selected = if has_removed {
@@ -2211,8 +2287,20 @@ fn apply_track_selection(
     }
 
     if selected.len() == type_ids.len() && !has_removed && only_keep_ids.is_none() {
-        return;
+        return None;
     }
+    Some(selected)
+}
+
+fn apply_track_selection(
+    args: &mut Vec<String>,
+    tracks: &[TrackInfo],
+    track_type: &str,
+    only_keep_ids: Option<Vec<usize>>,
+) {
+    let Some(selected) = source_track_selection(tracks, track_type, only_keep_ids) else {
+        return;
+    };
 
     if selected.is_empty() {
         match track_type {
@@ -2280,18 +2368,10 @@ fn build_mkvpropedit_args(job: &MuxJobRequest) -> Vec<String> {
             ));
         }
 
-        // Forced flag (for subtitles, use flag-forced-display)
-        if track.track_type == "subtitle" {
-            if let Some(is_forced) = track.is_forced {
-                args.push("--edit".to_string());
-                args.push(format!("track:{}", track_id));
-                args.push("--set".to_string());
-                args.push(format!(
-                    "flag-forced-display={}",
-                    if is_forced { "1" } else { "0" }
-                ));
-            }
-        } else if track.track_type == "audio" || track.track_type == "video" {
+        // Forced flag. mkvpropedit calls it flag-forced for every type: the
+        // "flag-forced-display" this used to write for subtitles is not a
+        // property it knows, and it refused the whole edit over it.
+        if matches!(track.track_type.as_str(), "subtitle" | "audio" | "video") {
             if let Some(is_forced) = track.is_forced {
                 args.push("--edit".to_string());
                 args.push(format!("track:{}", track_id));
@@ -2509,19 +2589,34 @@ fn log_job_plan(state: &AppState, job: &MuxJobRequest, output_path: &Path) {
     );
 }
 
-fn build_mkvmerge_command(
-    job: &MuxJobRequest,
-    settings: &MuxSettings,
-    output_path: &Path,
-    _state: &AppState,
-) -> Vec<String> {
-    let mut args = vec![
-        "--gui-mode".to_string(),
-        "--output".to_string(),
-        output_path.to_string_lossy().to_string(),
-    ];
+/// One track an added file brings: the file, set up for that track, and the
+/// track's id inside the file.
+type AddedTrack = (ExternalFileInfo, u64);
 
-    let mut resolved_external_audios: Vec<(ExternalFileInfo, u64)> = Vec::new();
+/// Every track a job adds, in the order mkvmerge reads them: each audio
+/// track, then each subtitle track (from subtitle files, then those carried
+/// inside audio files). Input file numbers follow this order: the source is
+/// 0, the first added track's file 1. The command and its verification
+/// (src/verify.rs) both read a job through this, so they cannot disagree
+/// about what was added.
+struct AddedTracks {
+    audios: Vec<AddedTrack>,
+    subtitles: Vec<AddedTrack>,
+}
+
+impl AddedTracks {
+    /// An added audio track is the default, so the source's audio is not.
+    fn audio_default(&self) -> bool {
+        self.audios.iter().any(|(audio, _)| audio.is_default.unwrap_or(false))
+    }
+
+    fn subtitle_default(&self) -> bool {
+        self.subtitles.iter().any(|(subtitle, _)| subtitle.is_default.unwrap_or(false))
+    }
+}
+
+fn resolve_added_tracks(job: &MuxJobRequest) -> AddedTracks {
+    let mut resolved_external_audios: Vec<AddedTrack> = Vec::new();
     for audio in &job.audios {
         let mut resolved_ids: Vec<u64> = Vec::new();
         if let Some(ids) = &audio.included_track_ids {
@@ -2558,8 +2653,8 @@ fn build_mkvmerge_command(
         }
     }
 
-    let mut resolved_external_subtitles: Vec<(ExternalFileInfo, u64)> = Vec::new();
-    let mut resolved_external_subtitles_from_audio: Vec<(ExternalFileInfo, u64)> = Vec::new();
+    let mut resolved_external_subtitles: Vec<AddedTrack> = Vec::new();
+    let mut resolved_external_subtitles_from_audio: Vec<AddedTrack> = Vec::new();
     for subtitle in &job.subtitles {
         let mut resolved_ids: Vec<u64> = Vec::new();
         if let Some(ids) = &subtitle.included_track_ids {
@@ -2632,6 +2727,155 @@ fn build_mkvmerge_command(
         }
     }
 
+    resolved_external_subtitles.extend(resolved_external_subtitles_from_audio);
+    AddedTracks {
+        audios: resolved_external_audios,
+        subtitles: resolved_external_subtitles,
+    }
+}
+
+/// What an added track is written with: its own override first, then the
+/// file's settings. A file's language goes on its first track only, unless a
+/// track has its own (`apply_language`).
+struct AddedTrackSettings {
+    language: Option<String>,
+    name: Option<String>,
+    delay: Option<f64>,
+    stretch: Option<StretchSetting>,
+}
+
+fn added_track_settings(file: &ExternalFileInfo, track_id: u64) -> AddedTrackSettings {
+    let override_entry = file.track_overrides.get(&track_id.to_string());
+    AddedTrackSettings {
+        language: override_entry
+            .and_then(|entry| entry.language.clone())
+            .or_else(|| file.apply_language.then(|| file.language.clone()).flatten()),
+        name: override_entry
+            .and_then(|entry| entry.track_name.clone())
+            .or_else(|| file.track_name.clone()),
+        delay: override_entry.and_then(|entry| entry.delay).or(file.delay),
+        stretch: override_entry.and_then(|entry| entry.stretch).or(file.stretch),
+    }
+}
+
+/// The default flags put on the source's tracks before each track's own, in
+/// the order they are written; a later one for the same track wins. When an
+/// added track of a type is the default, none of the source's tracks of that
+/// type is; otherwise "Default audio/subtitle: <language>" marks the source's
+/// tracks in that language.
+fn source_default_flags(job: &MuxJobRequest, settings: &MuxSettings, added: &AddedTracks) -> Vec<(usize, bool)> {
+    let mut flags = Vec::new();
+    let external_default = [("audio", added.audio_default()), ("subtitle", added.subtitle_default())];
+    for (track_type, is_default) in external_default {
+        if !is_default {
+            continue;
+        }
+        for (index, track) in job.video.tracks.iter().enumerate() {
+            if track.track_type == track_type {
+                flags.push((parse_track_id(track, index), false));
+            }
+        }
+    }
+    // "Default audio: <language>" picks among the source's tracks, so it
+    // gives way when an added audio file is the default already.
+    let by_language = [
+        ("audio", settings.make_audio_default_language.as_ref(), added.audio_default()),
+        ("subtitle", settings.make_subtitle_default_language.as_ref(), added.subtitle_default()),
+    ];
+    for (track_type, language, external) in by_language {
+        let Some(language) = language.filter(|_| !external) else {
+            continue;
+        };
+        for id in collect_track_ids_by_language(&job.video.tracks, track_type, &[language.clone()]) {
+            flags.push((id, true));
+        }
+    }
+    flags
+}
+
+/// The `--track-order` of a job that adds tracks, as (input file, track id):
+/// the source's video, the added audio (bulk before per-video), the source's
+/// audio, added subtitles placed first, the source's subtitles, then the
+/// other added subtitles (bulk before per-video). None when nothing is added,
+/// so the source's own order stands.
+fn track_order(job: &MuxJobRequest, added: &AddedTracks) -> Option<Vec<(usize, u64)>> {
+    if added.audios.is_empty() && added.subtitles.is_empty() {
+        return None;
+    }
+    let source = |track_type: &str| -> Vec<(usize, u64)> {
+        job.video
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| track.track_type == track_type && !is_track_removed(track))
+            .map(|(index, track)| (0, parse_track_id(track, index) as u64))
+            .collect()
+    };
+
+    let mut order = source("video");
+    let mut file_index = 1usize;
+    let mut bulk_audio_entries = Vec::new();
+    let mut per_video_audio_entries = Vec::new();
+    for (audio, track_id) in &added.audios {
+        let entry = (file_index, *track_id);
+        if audio.source.as_deref() == Some("per-file") {
+            per_video_audio_entries.push(entry);
+        } else {
+            bulk_audio_entries.push(entry);
+        }
+        file_index += 1;
+    }
+    order.extend(bulk_audio_entries);
+    order.extend(per_video_audio_entries);
+    order.extend(source("audio"));
+
+    let mut first_subtitle_entries = Vec::new();
+    let mut bulk_subtitle_entries = Vec::new();
+    let mut per_video_subtitle_entries = Vec::new();
+    for (subtitle, track_id) in &added.subtitles {
+        let entry = (file_index, *track_id);
+        if subtitle.mux_after.as_deref() == Some("subtitle-first") {
+            first_subtitle_entries.push(entry);
+        } else if subtitle.source.as_deref() == Some("per-file") {
+            per_video_subtitle_entries.push(entry);
+        } else {
+            bulk_subtitle_entries.push(entry);
+        }
+        file_index += 1;
+    }
+    order.extend(first_subtitle_entries);
+    order.extend(source("subtitle"));
+    order.extend(bulk_subtitle_entries);
+    order.extend(per_video_subtitle_entries);
+    Some(order)
+}
+
+/// The attachments a job adds: every file, or only the first of each name
+/// (compared without case) when duplicates are not allowed.
+fn attachments_to_add<'a>(job: &'a MuxJobRequest, settings: &MuxSettings) -> Vec<&'a ExternalFileInfo> {
+    let mut attached_names = HashSet::new();
+    job.attachments
+        .iter()
+        .filter(|attachment| {
+            settings.allow_duplicate_attachments || attached_names.insert(attachment.name.to_ascii_lowercase())
+        })
+        .collect()
+}
+
+fn build_mkvmerge_command(
+    job: &MuxJobRequest,
+    settings: &MuxSettings,
+    output_path: &Path,
+    _state: &AppState,
+) -> Vec<String> {
+    let mut args = vec![
+        "--gui-mode".to_string(),
+        "--output".to_string(),
+        output_path.to_string_lossy().to_string(),
+    ];
+
+    let added = resolve_added_tracks(job);
+
     if settings.discard_old_chapters {
         args.push("--no-chapters".to_string());
     }
@@ -2642,81 +2886,16 @@ fn build_mkvmerge_command(
         args.push("--no-global-tags".to_string());
     }
 
-    let external_audio_present = !resolved_external_audios.is_empty();
-    let external_subtitle_present = !resolved_external_subtitles.is_empty()
-        || !resolved_external_subtitles_from_audio.is_empty();
-
-    let external_audio_default = resolved_external_audios
-        .iter()
-        .any(|(audio, _)| audio.is_default.unwrap_or(false));
-    if external_audio_default {
-        for (index, track) in job.video.tracks.iter().enumerate() {
-            if track.track_type != "audio" {
-                continue;
-            }
-            let id = parse_track_id(track, index);
-            args.push("--default-track-flag".to_string());
-            args.push(format!("{id}:no"));
-        }
+    let external_audio_default = added.audio_default();
+    let external_subtitle_default = added.subtitle_default();
+    for (id, is_default) in source_default_flags(job, settings, &added) {
+        args.push("--default-track-flag".to_string());
+        args.push(format!("{id}:{}", if is_default { "yes" } else { "no" }));
     }
-
-    let external_subtitle_default = resolved_external_subtitles
-        .iter()
-        .chain(resolved_external_subtitles_from_audio.iter())
-        .any(|(subtitle, _)| subtitle.is_default.unwrap_or(false));
-    if external_subtitle_default {
-        for (index, track) in job.video.tracks.iter().enumerate() {
-            if track.track_type != "subtitle" {
-                continue;
-            }
-            let id = parse_track_id(track, index);
-            args.push("--default-track-flag".to_string());
-            args.push(format!("{id}:no"));
-        }
-    }
-
-    // "Default audio: <language>" picks among the source's tracks, so it
-    // gives way when an added audio file is the default already.
-    if let Some(language) = settings.make_audio_default_language.as_ref().filter(|_| !external_audio_default) {
-        let ids = collect_track_ids_by_language(&job.video.tracks, "audio", &[language.clone()]);
-        for id in ids {
-            args.push("--default-track-flag".to_string());
-            args.push(format!("{}:yes", id));
-        }
-    }
-    if let Some(language) = settings.make_subtitle_default_language.as_ref().filter(|_| !external_subtitle_default) {
-        let ids = collect_track_ids_by_language(&job.video.tracks, "subtitle", &[language.clone()]);
-        for id in ids {
-            args.push("--default-track-flag".to_string());
-            args.push(format!("{}:yes", id));
-        }
-    }
-
-    let audio_keep_ids =
-        if settings.only_keep_audios_enabled && !settings.only_keep_audio_languages.is_empty() {
-            Some(collect_track_ids_by_language(
-                &job.video.tracks,
-                "audio",
-                &settings.only_keep_audio_languages,
-            ))
-        } else {
-            None
-        };
-    let subtitle_keep_ids = if settings.only_keep_subtitles_enabled
-        && !settings.only_keep_subtitle_languages.is_empty()
-    {
-        Some(collect_track_ids_by_language(
-            &job.video.tracks,
-            "subtitle",
-            &settings.only_keep_subtitle_languages,
-        ))
-    } else {
-        None
-    };
 
     apply_track_selection(&mut args, &job.video.tracks, "video", None);
-    apply_track_selection(&mut args, &job.video.tracks, "audio", audio_keep_ids);
-    apply_track_selection(&mut args, &job.video.tracks, "subtitle", subtitle_keep_ids);
+    apply_track_selection(&mut args, &job.video.tracks, "audio", only_keep_ids(job, settings, "audio"));
+    apply_track_selection(&mut args, &job.video.tracks, "subtitle", only_keep_ids(job, settings, "subtitle"));
 
     // Apply individual track modifications (name, language, default, forced) BEFORE adding source file
     // Format: --default-track-flag TID:value (no 0: prefix when flag comes before the file)
@@ -2767,97 +2946,22 @@ fn build_mkvmerge_command(
         }
     }
 
-    // Enforce audio ordering when external audio exists:
-    // bulk audio (from Audio tab) -> per-file external audio -> original audio tracks.
-    if external_audio_present || external_subtitle_present {
-        let mut order: Vec<String> = Vec::new();
-        let source_video_tracks: Vec<usize> = job
-            .video
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, track)| track.track_type == "video" && !is_track_removed(track))
-            .map(|(index, track)| parse_track_id(track, index))
-            .collect();
-        let source_audio_tracks: Vec<usize> = job
-            .video
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, track)| track.track_type == "audio" && !is_track_removed(track))
-            .map(|(index, track)| parse_track_id(track, index))
-            .collect();
-        let source_subtitle_tracks: Vec<usize> = job
-            .video
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, track)| track.track_type == "subtitle" && !is_track_removed(track))
-            .map(|(index, track)| parse_track_id(track, index))
-            .collect();
-
-        for id in source_video_tracks {
-            order.push(format!("0:{}", id));
-        }
-
-        let mut file_index = 1usize;
-        let mut bulk_audio_entries: Vec<String> = Vec::new();
-        let mut per_video_audio_entries: Vec<String> = Vec::new();
-        for (audio, track_id) in &resolved_external_audios {
-            let entry = format!("{}:{}", file_index, track_id);
-            let is_per_video = audio.source.as_deref() == Some("per-file");
-            if is_per_video {
-                per_video_audio_entries.push(entry);
-            } else {
-                bulk_audio_entries.push(entry);
-            }
-            file_index += 1;
-        }
-
-        order.extend(bulk_audio_entries);
-        order.extend(per_video_audio_entries);
-        for id in source_audio_tracks {
-            order.push(format!("0:{}", id));
-        }
-
-        let mut first_subtitle_entries: Vec<String> = Vec::new();
-        let mut bulk_subtitle_entries: Vec<String> = Vec::new();
-        let mut per_video_subtitle_entries: Vec<String> = Vec::new();
-        let all_subtitles: Vec<(ExternalFileInfo, u64)> = resolved_external_subtitles
-            .iter()
-            .cloned()
-            .chain(resolved_external_subtitles_from_audio.iter().cloned())
-            .collect();
-        for (subtitle, track_id) in &all_subtitles {
-            let entry = format!("{}:{}", file_index, track_id);
-            let is_per_video = subtitle.source.as_deref() == Some("per-file");
-            if subtitle.mux_after.as_deref() == Some("subtitle-first") {
-                first_subtitle_entries.push(entry);
-            } else if is_per_video {
-                per_video_subtitle_entries.push(entry);
-            } else {
-                bulk_subtitle_entries.push(entry);
-            }
-            file_index += 1;
-        }
-        // Subtitle order: flagged-first externals, then source subtitles, then
-        // bulk externals, then per-video externals.
-        order.extend(first_subtitle_entries);
-        for id in source_subtitle_tracks {
-            order.push(format!("0:{}", id));
-        }
-        order.extend(bulk_subtitle_entries);
-        order.extend(per_video_subtitle_entries);
-
+    if let Some(order) = track_order(job, &added) {
         if !order.is_empty() {
             args.push("--track-order".to_string());
-            args.push(order.join(","));
+            args.push(
+                order
+                    .iter()
+                    .map(|(file, track)| format!("{file}:{track}"))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
         }
     }
 
     args.push(job.video.path.clone());
 
-    for (audio, track_id) in &resolved_external_audios {
+    for (audio, track_id) in &added.audios {
         args.push("--no-video".to_string());
         args.push("--no-subtitles".to_string());
         args.push("--no-chapters".to_string());
@@ -2865,43 +2969,25 @@ fn build_mkvmerge_command(
         args.push("--no-global-tags".to_string());
         args.push("--audio-tracks".to_string());
         args.push(track_id.to_string());
-        let override_entry = audio.track_overrides.get(&track_id.to_string());
-        let language = override_entry
-            .and_then(|entry| entry.language.clone())
-            .or_else(|| {
-                if audio.apply_language {
-                    audio.language.clone()
-                } else {
-                    None
-                }
-            });
-        if let Some(language) = language {
+        let track = added_track_settings(audio, *track_id);
+        if let Some(language) = track.language {
             args.push("--language".to_string());
             args.push(format!("{}:{}", track_id, language));
         }
-        let track_name = override_entry
-            .and_then(|entry| entry.track_name.clone())
-            .or_else(|| audio.track_name.clone());
-        if let Some(name) = track_name {
+        if let Some(name) = track.name {
             if !name.trim().is_empty() {
                 args.push("--track-name".to_string());
                 args.push(format!("{}:{}", track_id, name));
             }
         }
-        let delay = override_entry
-            .and_then(|entry| entry.delay)
-            .or_else(|| audio.delay);
-        let stretch = override_entry
-            .and_then(|entry| entry.stretch)
-            .or(audio.stretch);
         // A stretch on its own still needs a --sync to carry it, so the
         // argument is emitted whenever either half is present.
-        if delay.is_some() || stretch.filter(StretchSetting::is_usable).is_some() {
+        if track.delay.is_some() || track.stretch.filter(StretchSetting::is_usable).is_some() {
             args.push("--sync".to_string());
             args.push(format_sync_value(
                 *track_id,
-                delay.unwrap_or(0.0),
-                stretch,
+                track.delay.unwrap_or(0.0),
+                track.stretch,
             ));
         }
         if let Some(is_default) = audio.is_default {
@@ -2918,12 +3004,7 @@ fn build_mkvmerge_command(
         args.push(audio.path.clone());
     }
 
-    let all_subtitles: Vec<(ExternalFileInfo, u64)> = resolved_external_subtitles
-        .iter()
-        .cloned()
-        .chain(resolved_external_subtitles_from_audio.iter().cloned())
-        .collect();
-    for (subtitle, track_id) in &all_subtitles {
+    for (subtitle, track_id) in &added.subtitles {
         args.push("--no-video".to_string());
         args.push("--no-audio".to_string());
         args.push("--no-chapters".to_string());
@@ -2931,33 +3012,18 @@ fn build_mkvmerge_command(
         args.push("--no-global-tags".to_string());
         args.push("--subtitle-tracks".to_string());
         args.push(track_id.to_string());
-        let override_entry = subtitle.track_overrides.get(&track_id.to_string());
-        let language = override_entry
-            .and_then(|entry| entry.language.clone())
-            .or_else(|| {
-                if subtitle.apply_language {
-                    subtitle.language.clone()
-                } else {
-                    None
-                }
-            });
-        if let Some(language) = language {
+        let track = added_track_settings(subtitle, *track_id);
+        if let Some(language) = track.language {
             args.push("--language".to_string());
             args.push(format!("{}:{}", track_id, language));
         }
-        let track_name = override_entry
-            .and_then(|entry| entry.track_name.clone())
-            .or_else(|| subtitle.track_name.clone());
-        if let Some(name) = track_name {
+        if let Some(name) = track.name {
             if !name.trim().is_empty() {
                 args.push("--track-name".to_string());
                 args.push(format!("{}:{}", track_id, name));
             }
         }
-        let delay = override_entry
-            .and_then(|entry| entry.delay)
-            .or_else(|| subtitle.delay);
-        if let Some(delay) = delay {
+        if let Some(delay) = track.delay {
             args.push("--sync".to_string());
             args.push(format_sync_value(*track_id, delay, None));
         }
@@ -2994,12 +3060,7 @@ fn build_mkvmerge_command(
         }
     }
 
-    let mut attached_names = HashSet::new();
-    for attachment in &job.attachments {
-        let normalized_name = attachment.name.to_ascii_lowercase();
-        if !settings.allow_duplicate_attachments && !attached_names.insert(normalized_name) {
-            continue;
-        }
+    for attachment in attachments_to_add(job, settings) {
         args.push("--attach-file".to_string());
         args.push(attachment.path.clone());
     }
@@ -3232,6 +3293,147 @@ fn discard_failed_temp_output(overwrite_mode: bool, output_path: &Path, state: &
     }
 }
 
+fn emit_verified_progress(
+    app: &AppHandle,
+    event: MuxProgressEvent,
+    stage: Option<&str>,
+    verification: Option<&verify::VerificationReport>,
+) {
+    let _ = app.emit_all("mux-progress", VerifyProgressEvent { event, stage, verification });
+}
+
+/// Check a job's output (src/verify.rs), showing the job as verifying while
+/// it runs, and write every check to the log.
+fn verify_job(
+    app: &AppHandle,
+    state: &AppState,
+    settings: &MuxSettings,
+    job: &MuxJobRequest,
+    output_path: &Path,
+    final_path: &Path,
+    in_place: bool,
+) -> verify::Verdict {
+    emit_verified_progress(
+        app,
+        MuxProgressEvent {
+            job_id: job.id.clone(),
+            status: "processing".to_string(),
+            progress: 100,
+            message: Some("Verifying the output".to_string()),
+            size_after: None,
+            error_message: None,
+        },
+        Some("verifying"),
+        None,
+    );
+    let _ = write_log_line(&state.paths, &format!("Verifying {}", output_path.display()));
+    // A stop, or the remote lock, cancels the sync measurement like it ends mkvmerge.
+    let interrupted = || state.stop_requested() || state.service.is_locked();
+    let engine = verify::AppEngine { app, interrupted: &interrupted };
+    let verdict = verify::verify_job_output(&verify::VerifyRequest {
+        job,
+        settings,
+        output: output_path,
+        final_path,
+        in_place,
+        engine: Some(&engine),
+        window: verify::SyncWindow::from_options(&state.paths.options_path),
+    });
+    let report = match &verdict {
+        verify::Verdict::Passed(report) | verify::Verdict::Failed { report, .. } => report,
+        verify::Verdict::Interrupted => {
+            let _ = write_log_line(&state.paths, &format!("Verification of job {} stopped", job.id));
+            return verdict;
+        }
+    };
+    for check in &report.checks {
+        let status = match check.status {
+            verify::CheckStatus::Pass => "pass",
+            verify::CheckStatus::Warn => "warning",
+            verify::CheckStatus::Fail => "FAILED",
+            verify::CheckStatus::Skip => "skipped",
+        };
+        let _ = write_log_line(&state.paths, &format!("  {}: {status}. {}", check.label, check.detail));
+    }
+    let name = final_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    if report.ok {
+        let line = match report.warnings().next() {
+            Some(first) => format!("Warning: {name} verified with warnings. {}: {}", first.label, first.detail),
+            None => format!("Verified {name}: every check passed"),
+        };
+        let _ = write_log_line(&state.paths, &line);
+        let _ = app.emit_all("mux-log", serde_json::json!({ "job_id": job.id, "line": line }));
+    }
+    verdict
+}
+
+/// A job whose output failed verification: an error, with the report, and
+/// the queue stopped if it stops at the first error. `kept` is where the
+/// output went (None for an in-place edit, which stays the source).
+fn emit_verification_failure(
+    app: &AppHandle,
+    state: &AppState,
+    settings: &MuxSettings,
+    job: &MuxJobRequest,
+    report: &verify::VerificationReport,
+    kept: Option<Result<PathBuf, String>>,
+) {
+    let reason = report.first_failure().map(|check| check.detail.clone()).unwrap_or_default();
+    let _ = write_log_line(&state.paths, &format!("Job {} failed verification: {reason}", job.id));
+    let kept_line = match kept {
+        Some(Ok(path)) => Some(format!(
+            "Kept the unverified output as {}; the source was not touched",
+            path.display()
+        )),
+        Some(Err(err)) => Some(format!("The unverified output could not be set aside: {err}")),
+        None => None,
+    };
+    if let Some(line) = kept_line {
+        let _ = write_log_line(&state.paths, &line);
+        let _ = app.emit_all("mux-log", serde_json::json!({ "job_id": job.id, "line": line }));
+    }
+    emit_verified_progress(
+        app,
+        MuxProgressEvent {
+            job_id: job.id.clone(),
+            status: "error".to_string(),
+            progress: 0,
+            message: Some("Verification failed".to_string()),
+            size_after: None,
+            error_message: Some(format!("Verification failed: {reason}")),
+        },
+        None,
+        Some(report),
+    );
+    if settings.abort_on_errors {
+        abort_mux_queue(state);
+    }
+}
+
+/// A failed output that could not be set aside as `<stem>.unverified.mkv`.
+/// When it is the temporary `<stem>#…` file beside the source it is deleted,
+/// not left among the episodes under a name nobody chose, and the error says
+/// which of the two happened.
+fn discard_unkept_output(
+    overwrite_mode: bool,
+    output_path: &Path,
+    kept: Option<Result<PathBuf, String>>,
+    state: &AppState,
+) -> Option<Result<PathBuf, String>> {
+    match kept {
+        Some(Err(err)) if overwrite_mode => {
+            discard_failed_temp_output(true, output_path, state);
+            let outcome = if output_path.exists() {
+                format!("the temporary output {} could not be deleted either", output_path.display())
+            } else {
+                "the temporary output was deleted instead".to_string()
+            };
+            Some(Err(format!("{err}; {outcome}")))
+        }
+        other => other,
+    }
+}
+
 fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: MuxJobRequest) {
     if state.mux().stop {
         return;
@@ -3381,8 +3583,22 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
 
             match status {
                 Some(code) if code == 0 => {
+                    // The edit is already in the source: a failed check is
+                    // reported, but there is nothing left to keep aside.
+                    let source = PathBuf::from(&job.video.path);
+                    let verification = match settings
+                        .verify_output
+                        .then(|| verify_job(app, state, settings, &job, &source, &source, true))
+                    {
+                        Some(verify::Verdict::Failed { report, .. }) => {
+                            emit_verification_failure(app, state, settings, &job, &report, None);
+                            return;
+                        }
+                        Some(verify::Verdict::Passed(report)) => Some(report),
+                        Some(verify::Verdict::Interrupted) | None => None,
+                    };
                     let final_size = fs::metadata(&job.video.path).ok().map(|m| m.len());
-                    emit_progress(
+                    emit_verified_progress(
                         app,
                         MuxProgressEvent {
                             job_id: job.id.clone(),
@@ -3392,6 +3608,8 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
                             size_after: final_size,
                             error_message: None,
                         },
+                        None,
+                        verification.as_ref(),
                     );
                 }
                 Some(code) => {
@@ -3511,6 +3729,25 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
         }
     }
 
+    // Checked before anything replaces the source or takes the final name: a
+    // failed output is kept aside as <stem>.unverified.mkv, the source untouched.
+    let verification = if settings.verify_output {
+        match verify_job(app, state, settings, &job, &output_path, &final_path, false) {
+            verify::Verdict::Passed(report) => Some(report),
+            verify::Verdict::Failed { report, kept } => {
+                let kept = discard_unkept_output(overwrite_mode, &output_path, kept, state);
+                emit_verification_failure(app, state, settings, &job, &report, kept);
+                return;
+            }
+            verify::Verdict::Interrupted => {
+                end_interrupted_job(app, state, job, overwrite_mode, &output_path, created_output);
+                return;
+            }
+        }
+    } else {
+        None
+    };
+
     if overwrite_mode && output_path.exists() {
         match safe_replace_source(Path::new(&job.video.path), &output_path, &final_path) {
             Ok(Some(warning)) => {
@@ -3555,7 +3792,7 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
 
     let size_after = fs::metadata(&final_output).map(|m| m.len()).ok();
 
-    emit_progress(
+    emit_verified_progress(
         app,
         MuxProgressEvent {
             job_id: job.id.clone(),
@@ -3565,6 +3802,8 @@ fn process_job(app: &AppHandle, state: &AppState, settings: &MuxSettings, job: M
             size_after,
             error_message: None,
         },
+        None,
+        verification.as_ref(),
     );
     let _ = write_log_line(
         &state.paths,
@@ -4092,11 +4331,24 @@ fn main() {
             audiosync::measure_delays_start,
             audiosync::measure_delays_cancel,
             audiosync::scan_timeline_start,
+            conform::conform_dubs_start,
+            subsync::subsync_start,
             service::service_lock,
             service::check_service_status,
             service::unlock_access,
             all_users_copy::all_users_copy_notice,
             all_users_copy::dismiss_all_users_copy_notice,
+            store::store_read,
+            store::store_write,
+            store::store_delete,
+            store::store_location,
+            store::session_save,
+            store::session_open,
+            store::paths_exist,
+            watch::watch_start,
+            watch::watch_stop,
+            watch::watch_set_paused,
+            watch::watch_list,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
@@ -4337,6 +4589,42 @@ mod regression_tests {
         assert_eq!(parsed.delay, Some(-0.088));
     }
 
+    /// A recipe's per-episode name wins over the pattern, cleaned the same
+    /// way; a blank one, or none (older frontends), leaves the pattern in charge.
+    #[test]
+    fn a_job_output_name_overrides_the_pattern() {
+        let mut settings = overwrite_settings();
+        settings.destination_dir = "/out".into();
+        settings.overwrite_source = false;
+        settings.output_naming_pattern = Some("{original_filename} [muxed]".into());
+
+        let mut named = job("/media/show/Episode.mkv");
+        named.output_name = Some("  Show - S01E02: Pilot?  ".into());
+        let (output_path, final_path, overwrite) = get_output_paths(&named, &settings);
+        assert!(!overwrite);
+        assert_eq!(output_path, final_path);
+        assert_eq!(final_path, Path::new("/out").join("Show - S01E02_ Pilot_.mkv"));
+
+        named.output_name = Some("   ".into());
+        assert_eq!(get_output_paths(&named, &settings).1.file_name().unwrap(), "Episode [muxed].mkv");
+        let plain = job("/media/show/Episode.mkv");
+        assert!(plain.output_name.is_none(), "absent in the JSON is None");
+        assert_eq!(get_output_paths(&plain, &settings).1.file_name().unwrap(), "Episode [muxed].mkv");
+
+        let parsed: MuxJobRequest = serde_json::from_value(serde_json::json!({
+            "id": "job-2",
+            "video": serde_json::to_value(video("/media/show/Episode.mkv")).unwrap(),
+            "audios": [], "subtitles": [], "chapters": [], "attachments": [],
+            "outputName": "Show - S01E03",
+        }))
+        .expect("outputName parses");
+        assert_eq!(parsed.output_name.as_deref(), Some("Show - S01E03"));
+        // In overwrite mode the name still decides the final file beside the source.
+        let (temp, final_path, _) = get_output_paths(&parsed, &overwrite_settings());
+        assert_eq!(final_path.file_name().unwrap(), "Show - S01E03.mkv");
+        assert_ne!(temp, final_path);
+    }
+
     /// The temp file must differ from the final path, otherwise
     /// safe_replace_source refuses to run.
     #[test]
@@ -4345,5 +4633,37 @@ mod regression_tests {
         let (output_path, final_path, _) = get_output_paths(&job("/media/show/Episode.mkv"), &settings);
         assert_ne!(output_path, final_path);
         assert_eq!(final_path.file_name().unwrap(), "Episode.mkv");
+    }
+    /// A failed output that can't be renamed to `.unverified.mkv` (here a
+    /// folder already has that name) must not stay beside the source under
+    /// its temporary `#` name.
+    #[test]
+    fn a_failed_temp_output_that_cannot_be_set_aside_is_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let output = dir.join("Episode#1732361234567890123-0.mkv");
+        let final_path = dir.join("Episode.mkv");
+        fs::write(&output, b"failed mux").unwrap();
+        fs::create_dir_all(dir.join("Episode.unverified.mkv").join("blocker")).unwrap();
+        let state = AppState {
+            paths: AppPaths { app_data_dir: dir.clone(), options_path: dir.join("setting.json"), log_path: dir.join("log.txt") },
+            mux_state: Arc::new(Mutex::new(MuxState::default())),
+            cancelled_scans: Arc::new(Mutex::new(HashSet::new())),
+            service: Arc::new(remote_status::Service::disabled()),
+        };
+        let kept = Some(verify::keep_unverified(&output, &final_path));
+        assert!(matches!(kept, Some(Err(_))), "the rename must fail for this test: {kept:?}");
+
+        let settled = discard_unkept_output(true, &output, kept, &state);
+        let Some(Err(message)) = settled else { panic!("still an error: {settled:?}") };
+        assert!(message.ends_with("the temporary output was deleted instead"), "{message}");
+        assert!(!output.exists(), "the # temp file is gone");
+
+        // Writing to a destination folder there is no temp file: nothing is deleted.
+        let elsewhere = dir.join("Other.mkv");
+        fs::write(&elsewhere, b"output").unwrap();
+        let settled = discard_unkept_output(false, &elsewhere, Some(Err("no".into())), &state);
+        assert!(matches!(settled, Some(Err(ref message)) if message == "no"));
+        assert!(elsewhere.exists());
     }
 }

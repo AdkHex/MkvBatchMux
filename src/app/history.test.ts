@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { HISTORY_KEY, MAX_HISTORY, loadHistory, muxOutcome, runName, saveHistory, timeLeftText, tookText, whenText, type HistoryEntry } from "./history";
+import type { VerificationReport } from "@/shared/types/verify";
+import { HISTORY_KEY, MAX_HISTORY, loadHistory, muxFileLine, muxOutcome, runName, saveHistory, timeLeftText, tookText, whenText, type HistoryEntry } from "./history";
 
 const memory = () => {
   const data = new Map<string, string>();
@@ -30,6 +31,42 @@ describe("muxOutcome", () => {
 
   it("leads with Stopped when the user stopped the batch", () => {
     expect(muxOutcome([{ status: "completed" }, { status: "stopped" }, { status: "stopped" }])).toEqual({ tone: "warn", parts: ["Stopped", "1 muxed"] });
+  });
+});
+
+const report = (statuses: ("pass" | "warn" | "fail" | "skip")[]): VerificationReport => ({
+  ok: !statuses.includes("fail"),
+  checks: statuses.map((status, i) => ({ id: `c${i}`, label: i === 0 ? "Sync: Ep.hin.eac3" : `Check ${i}`, status, detail: status === "pass" ? "Fine" : `Detail ${i}` })),
+});
+
+describe("verification in History", () => {
+  it("adds how the checks went to the run's outcome", () => {
+    expect(muxOutcome([{ status: "completed", verification: report(["pass"]) }, { status: "completed", verification: report(["pass", "skip"]) }])).toEqual({
+      tone: "ok",
+      parts: ["2 muxed", "2 verified"],
+    });
+    // A warning is worth a look: the run is not plain green.
+    expect(muxOutcome([{ status: "completed", verification: report(["warn", "pass"]) }, { status: "completed", verification: report(["pass"]) }])).toEqual({
+      tone: "warn",
+      parts: ["2 muxed", "2 verified", "1 with warnings"],
+    });
+  });
+
+  it("says a failure was a failed verification only when every failure was one", () => {
+    const failedCheck = { status: "error" as const, verification: report(["fail"]) };
+    expect(muxOutcome([{ status: "completed", verification: report(["pass"]) }, failedCheck])).toEqual({ tone: "warn", parts: ["1 muxed", "1 failed verification", "1 verified"] });
+    expect(muxOutcome([failedCheck, { status: "error" }]).parts).toEqual(["0 muxed", "2 failed"]);
+  });
+
+  it("gives each file its verification line", () => {
+    expect(muxFileLine({ status: "completed", verification: report(["pass"]) })).toEqual({ tone: "ok", text: "Muxed and verified" });
+    expect(muxFileLine({ status: "completed", verification: report(["warn"]) })).toEqual({ tone: "warn", text: "Muxed, verified with warnings: Sync: Ep.hin.eac3: Detail 0" });
+    expect(muxFileLine({ status: "completed" })).toEqual({ tone: "ok", text: "Muxed" });
+    expect(muxFileLine({ status: "error", errorMessage: "Verification failed: Ep.hin.eac3 plays 1317 ms late", verification: report(["fail"]) })).toEqual({
+      tone: "bad",
+      text: "Verification failed: Ep.hin.eac3 plays 1317 ms late",
+    });
+    expect(muxFileLine({ status: "stopped" })).toEqual({ tone: "warn", text: "Stopped" });
   });
 });
 

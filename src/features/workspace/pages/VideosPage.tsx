@@ -35,6 +35,7 @@ import { VIDEO_EXTENSIONS } from "@/shared/lib/extensions";
 import type { ExternalFile, Preset, VideoFile } from "@/shared/types";
 import { Crumb, PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
 import { Btn, Cmd, Combo, Empty, MidText, Table, Tr } from "@/ui/kit";
+import { toast } from "@/ui/toast";
 
 import {
   SORT_OPTIONS,
@@ -91,9 +92,10 @@ export function VideosPage({
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortValue>("loaded");
   const [isModifyTracksOpen, setIsModifyTracksOpen] = useState(false);
-  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
-  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
+  // Shift-click's anchor, by id: an index would point at another video once
+  // the list is sorted differently.
+  const [anchorId, setAnchorId] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0 });
   const [editingFile, setEditingFile] = useState<VideoFile | null>(null);
@@ -112,8 +114,7 @@ export function VideosPage({
   // Remove take a file with no sign it was included.
   useEffect(() => {
     setSelectedFileIds([]);
-    setSelectedFileId(null);
-    setLastSelectedIndex(null);
+    setAnchorId(null);
   }, [search]);
 
   const shouldVirtualize = displayFiles.length > VIRTUAL_FROM;
@@ -138,50 +139,39 @@ export function VideosPage({
   useEffect(() => {
     if (files.length === 0) {
       setSelectedFileIds([]);
-      setSelectedFileId(null);
-      setLastSelectedIndex(null);
+      setAnchorId(null);
       return;
     }
     setSelectedFileIds((prev) => prev.filter((id) => files.some((file) => file.id === id)));
-    if (selectedFileId && !files.some((file) => file.id === selectedFileId)) setSelectedFileId(null);
-  }, [files, selectedFileId]);
+  }, [files]);
 
   const selectAll = useCallback(() => {
     const allIds = displayFiles.map((file) => file.id);
     setSelectedFileIds(allIds);
-    setSelectedFileId(allIds[0] ?? null);
-    setLastSelectedIndex(displayFiles.length > 0 ? displayFiles.length - 1 : null);
+    setAnchorId(allIds[allIds.length - 1] ?? null);
   }, [displayFiles]);
 
   const handleRowClick = useCallback(
     (event: MouseEvent | { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }, index: number, fileId: string) => {
       const isToggle = event.metaKey || event.ctrlKey;
       const isRange = event.shiftKey;
-      if (isRange && lastSelectedIndex !== null) {
-        const start = Math.min(lastSelectedIndex, index);
-        const end = Math.max(lastSelectedIndex, index);
+      const anchorIndex = anchorId === null ? -1 : displayFiles.findIndex((file) => file.id === anchorId);
+      if (isRange && anchorIndex >= 0) {
+        const start = Math.min(anchorIndex, index);
+        const end = Math.max(anchorIndex, index);
         setSelectedFileIds(displayFiles.slice(start, end + 1).map((file) => file.id));
-        setSelectedFileId(fileId);
-        setLastSelectedIndex(index);
+        setAnchorId(fileId);
         return;
       }
       if (isToggle) {
-        setSelectedFileIds((prev) => {
-          const set = new Set(prev);
-          if (set.has(fileId)) set.delete(fileId);
-          else set.add(fileId);
-          const next = Array.from(set);
-          setSelectedFileId(set.has(selectedFileId || "") ? fileId : (next[0] ?? null));
-          return next;
-        });
-        setLastSelectedIndex(index);
+        setSelectedFileIds((prev) => (prev.includes(fileId) ? prev.filter((id) => id !== fileId) : [...prev, fileId]));
+        setAnchorId(fileId);
         return;
       }
       setSelectedFileIds([fileId]);
-      setSelectedFileId(fileId);
-      setLastSelectedIndex(index);
+      setAnchorId(fileId);
     },
-    [displayFiles, lastSelectedIndex, selectedFileId],
+    [displayFiles, anchorId],
   );
 
   const openEdit = useCallback((file: VideoFile) => {
@@ -342,6 +332,10 @@ export function VideosPage({
 
   const selected = useMemo(() => files.filter((f) => selectedFileIds.includes(f.id)), [files, selectedFileIds]);
   const one = selected.length === 1 ? selected[0] : null;
+  // The list is the mux queue: while a batch runs (the engine is the Mux
+  // page's), removing, clearing or replacing it would pull videos out from
+  // under the run.
+  const muxing = shell.enginePage === "mux";
 
   usePageCommands("videos", {
     chooseFolder: () => void chooseFolder(),
@@ -357,13 +351,17 @@ export function VideosPage({
     mediaInfo: () => selected.length && setIsMediaInfoOpen(true),
     stop: isScanning ? cancelScan : undefined,
     drop: (paths) => {
+      if (muxing) {
+        toast({ title: "Muxing is running", description: "Add videos once the batch finishes, or stop it first." });
+        return;
+      }
       const folder = paths.find(looksLikeFolder);
       if (folder) {
         onSourceFolderChange(folder);
         void scanVideos(folder);
       } else void addDroppedVideos(paths);
     },
-    disabled: { removeSelected: selected.length === 0, mediaInfo: selected.length === 0, chooseFolder: isScanning },
+    disabled: { removeSelected: selected.length === 0 || muxing, mediaInfo: selected.length === 0, chooseFolder: isScanning || muxing, clear: muxing },
   });
 
   // --------------------------------------------------------------- display
@@ -390,9 +388,9 @@ export function VideosPage({
       dock={dock}
       tools={
         <>
-          <Cmd icon={<FolderOpenRegular />} disabled={isScanning} onClick={() => void chooseFolder()}>Choose folder</Cmd>
-          <Cmd icon={<ArrowSyncRegular />} title="Rescan" disabled={!sourceFolder || isScanning} onClick={() => void scanVideos(sourceFolder)} />
-          <Cmd icon={<DeleteRegular />} title="Remove (Del)" disabled={selected.length === 0} onClick={removeSelected} />
+          <Cmd icon={<FolderOpenRegular />} disabled={isScanning || muxing} onClick={() => void chooseFolder()}>Choose folder</Cmd>
+          <Cmd icon={<ArrowSyncRegular />} title="Rescan" disabled={!sourceFolder || isScanning || muxing} onClick={() => void scanVideos(sourceFolder)} />
+          <Cmd icon={<DeleteRegular />} title="Remove (Del)" disabled={selected.length === 0 || muxing} onClick={removeSelected} />
           <Cmd icon={<EditRegular />} title="Edit tracks" disabled={!one} onClick={() => one && openEdit(one)} />
           <Cmd icon={<InfoRegular />} title="Media info (Ctrl+I)" disabled={selected.length === 0} onClick={() => setIsMediaInfoOpen(true)} />
         </>
@@ -460,14 +458,15 @@ export function VideosPage({
             <Empty icon={<VideoClipMultipleRegular />} title="Listing the videos" />
           ) : (
             <Empty icon={<VideoClipMultipleRegular />} title="Drop a folder of videos">
-              <Btn icon={<FolderOpenRegular />} onClick={() => void chooseFolder()}>Choose folder</Btn>
+              <Btn icon={<FolderOpenRegular />} disabled={muxing} onClick={() => void chooseFolder()}>Choose folder</Btn>
             </Empty>
           )}
         </section>
       )}
 
       <MediaInfoDialog open={isMediaInfoOpen} onOpenChange={setIsMediaInfoOpen} files={selected.slice(0, MEDIA_INFO_MAX)} />
-      <ModifyTracksDialog open={isModifyTracksOpen} onOpenChange={setIsModifyTracksOpen} videoFiles={files} selectedVideoId={selectedFileId} onFilesChange={onFilesChange} />
+      {/* The selected videos, or every video when none is selected (as Ctrl+M). */}
+      <ModifyTracksDialog open={isModifyTracksOpen} onOpenChange={setIsModifyTracksOpen} videoFiles={files} selectedVideoIds={selectedFileIds} onFilesChange={onFilesChange} />
       <VideoFileEditDialog
         open={isEditDialogOpen}
         onOpenChange={setIsEditDialogOpen}

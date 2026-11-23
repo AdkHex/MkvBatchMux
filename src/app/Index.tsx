@@ -32,8 +32,14 @@ import { SubtitlesPage } from "@/features/workspace/pages/SubtitlesPage";
 import { VideosPage } from "@/features/workspace/pages/VideosPage";
 import { ModifyTracksDialog } from "@/features/workspace/components/ModifyTracksDialog";
 import { installUpdateAndRestart, useAutoUpdate } from "@/features/workspace/hooks/useAutoUpdate";
+import { engineIO, useWatchPipeline, type EpisodeReport } from "@/features/workspace/hooks/useWatchPipeline";
 import { buildMuxJobRequests } from "@/features/workspace/lib/muxJobBuilder";
-import { jobsToRun, parallelJobs, syncJobs } from "@/features/workspace/lib/queue";
+import { attachOutputNames, describeCollisions } from "@/features/workspace/lib/outputNames";
+import { planRecipe, type RecipePlan } from "@/features/workspace/lib/recipeApply";
+import { applyRecipeSettings, resolveOutputName } from "@/features/workspace/lib/recipes";
+import { conflictMessages, defaultPairBy, describePairing, pairByEpisode } from "@/features/workspace/lib/smartPairing";
+import { jobIdOf, jobsToRun, parallelJobs, syncJobs } from "@/features/workspace/lib/queue";
+import { OutputRegistry, fromTemplate, type WorkspaceLists } from "@/features/workspace/lib/watchPipeline";
 import { areVideoListsEquivalent } from "@/features/workspace/lib/videoCompare";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import {
@@ -48,23 +54,34 @@ import {
   previewMux,
   resumeMuxing,
   saveOptions,
+  scanMedia,
   startMuxing,
   stopMuxing,
   type DependencyStatus,
   type MuxProgressEvent,
 } from "@/shared/lib/backend";
-import { getUnlinkedExternalFiles } from "@/shared/lib/matchUtils";
+import { linkExternalFilesByOrder, realFiles } from "@/shared/lib/matchUtils";
+import { conformedSubtitleIssues } from "@/features/workspace/lib/conform";
+import { naturalCompare } from "@/shared/lib/naturalOrder";
 import type { ExternalFile, MuxJob, MuxPreviewResult, MuxSettings, OptionsData, OutputSettings, Preset, VideoFile } from "@/shared/types";
+import type { LoadedSession, Recipe, WorkspaceSnapshot } from "@/shared/types/recipes";
 import { AppWindow, IS_MAC, PageBar, type Menu, type PageTab, type StatusProps } from "@/ui/frame";
 import { toast } from "@/ui/toast";
 
+import { ApplyRecipeDialog } from "./ApplyRecipeDialog";
 import { HistoryBody, HistoryTools, OutputBody, OutputTools, severityOf, useHistoryFilter, type CommonTab, type LogLine } from "./dock";
-import { loadHistory, muxOutcome, runName, saveHistory, type HistoryEntry } from "./history";
+import { loadHistory, muxFileLine, muxOutcome, runName, saveHistory, type HistoryEntry } from "./history";
 import { KeyboardShortcuts } from "./KeyboardShortcuts";
 import { PreferencesWindow, type PrefsTab } from "./Preferences";
+import { RecipesDialog, type RecipeSource } from "./RecipesDialog";
 import { isServiceLocked } from "./ServiceLock";
+import { SessionOpenDialog } from "./SessionOpenDialog";
 import { ShellContext, type CommandKey, type EnginePage, type PageCommands, type PageId, type Shell } from "./shell";
 import { UpdateProgress } from "./UpdateProgress";
+import { useRecipes } from "./useRecipes";
+import { useWatchFolders } from "./useWatchFolders";
+import { useWorkspaceSession } from "./useWorkspaceSession";
+import { WatchFoldersDialog } from "./WatchFoldersDialog";
 
 /** Injected from package.json at build time, so Preferences always reports
  *  the version CI tagged the release with. */
@@ -167,25 +184,37 @@ export default function Index() {
   const activeSubtitleTrack = useTabState((state) => state.activeSubtitleTrack);
   const audioTracks = useTabState((state) => state.audioTracks);
   const subtitleTracks = useTabState((state) => state.subtitleTracks);
+  // The rest of the slot state, for sessions and recipes.
+  const audioTrackConfigs = useTabState((state) => state.audioTrackConfigs);
+  const subtitleTrackConfigs = useTabState((state) => state.subtitleTrackConfigs);
+  const audioPresetApplied = useTabState((state) => state.audioPresetApplied);
+  const subtitlePresetApplied = useTabState((state) => state.subtitlePresetApplied);
+  const chapterTabState = useTabState((state) => state.chapterTabState);
+  const attachmentTabState = useTabState((state) => state.attachmentTabState);
+  /** The recipe last applied to this workspace (or opened with its session). */
+  const [activeRecipeId, setActiveRecipeId] = useState<string | null>(null);
+  const recipesState = useRecipes(desktop);
+  const activeRecipe = useMemo(() => recipesState.recipes.find((recipe) => recipe.id === activeRecipeId) ?? null, [recipesState.recipes, activeRecipeId]);
 
-  const audioFilesCount = useMemo(() => Object.values(audioFilesByTrack).reduce((sum, list) => sum + list.length, 0), [audioFilesByTrack]);
-  const subtitleFilesCount = useMemo(() => Object.values(subtitleFilesByTrack).reduce((sum, list) => sum + list.length, 0), [subtitleFilesByTrack]);
-  const unlinkedAudioFiles = useMemo(
-    () => Object.values(audioFilesByTrack).flatMap((files) => getUnlinkedExternalFiles(files, videoFiles)),
-    [audioFilesByTrack, videoFiles],
-  );
-  const unlinkedSubtitleFiles = useMemo(
-    () => Object.values(subtitleFilesByTrack).flatMap((files) => getUnlinkedExternalFiles(files, videoFiles)),
-    [subtitleFilesByTrack, videoFiles],
-  );
-  const externalLinkIssues = useMemo(() => {
-    const messages: string[] = [];
-    if (unlinkedAudioFiles.length > 0)
-      messages.push(`${unlinkedAudioFiles.length} audio file${unlinkedAudioFiles.length === 1 ? " has" : "s have"} no video to go into.`);
-    if (unlinkedSubtitleFiles.length > 0)
-      messages.push(`${unlinkedSubtitleFiles.length} subtitle file${unlinkedSubtitleFiles.length === 1 ? " has" : "s have"} no video to go into.`);
-    return messages;
-  }, [unlinkedAudioFiles.length, unlinkedSubtitleFiles.length]);
+  // Empty rows (placeholders) keep a video's place in a list; they are not files.
+  const audioFilesCount = useMemo(() => Object.values(audioFilesByTrack).reduce((sum, list) => sum + realFiles(list).length, 0), [audioFilesByTrack]);
+  const subtitleFilesCount = useMemo(() => Object.values(subtitleFilesByTrack).reduce((sum, list) => sum + realFiles(list).length, 0), [subtitleFilesByTrack]);
+  const chapterFilesCount = useMemo(() => realFiles(chapterFiles).length, [chapterFiles]);
+  /** What stops the mux, slot by slot and naming the rows: a file with no
+   *  video, a second file for an episode, a file beside a video its name says
+   *  is another episode. Read from the links the mux uses, so it holds however
+   *  each page pairs. */
+  const pairingIssues = useMemo(() => {
+    const bySlot = (byTrack: Record<string, ExternalFile[]>, label: string) =>
+      Object.entries(byTrack).flatMap(([slot, files]) => conflictMessages(describePairing(files, videoFiles), files, `${label} ${slot}`));
+    // A chapter file with no video was never a reason to stop (it is left
+    // out); a second one for an episode, or one beside another episode, is.
+    const chapterReport = describePairing(chapterFiles, videoFiles);
+    const chapters = conflictMessages({ ...chapterReport, conflicts: chapterReport.conflicts.filter((conflict) => conflict.kind !== "unmatched") }, chapterFiles, "Chapters");
+    const droppedSubtitles = conformedSubtitleIssues(audioFilesByTrack, videoFiles);
+    return { audio: [...bySlot(audioFilesByTrack, "Audio"), ...droppedSubtitles], subtitles: bySlot(subtitleFilesByTrack, "Subtitle"), chapters };
+  }, [audioFilesByTrack, subtitleFilesByTrack, chapterFiles, videoFiles]);
+  const externalLinkIssues = useMemo(() => [...pairingIssues.audio, ...pairingIssues.subtitles, ...pairingIssues.chapters], [pairingIssues]);
 
   useEffect(() => {
     setAudioFilesByTrack((prev) => (prev[activeAudioTrack] ? prev : { ...prev, [activeAudioTrack]: [] }));
@@ -228,6 +257,9 @@ export default function Index() {
     makeAudioDefaultLanguage: undefined,
     makeSubtitleDefaultLanguage: undefined,
     useMkvpropedit: false,
+    verifyOutput: true,
+    verifySync: true,
+    verifySyncToleranceMs: 40,
   });
   const updateMuxSettings = useCallback((updates: Partial<MuxSettings>) => setMuxSettings((prev) => ({ ...prev, ...updates })), []);
 
@@ -238,15 +270,28 @@ export default function Index() {
     document.documentElement.classList.toggle("light", !isDarkMode);
   }, [isDarkMode]);
 
+  // The preset's folders are applied at startup and when their value changes,
+  // not on every save: saving the theme must not take back a folder chosen
+  // since. Likewise the preset itself is only replaced when it differs, as
+  // the pages reset their own preset-driven choices when it is.
+  const appliedPresetFolders = useRef<{ video: string; destination: string } | null>(null);
   const applyOptions = useCallback((data: OptionsData, keepDirectory: boolean) => {
     const preset = data.Presets[data.FavoritePresetId] || data.Presets[0];
-    setActivePreset(preset);
+    setActivePreset((prev) => (prev && preset && JSON.stringify(prev) === JSON.stringify(preset) ? prev : preset));
     setIsDarkMode(Boolean(data.Dark_Mode));
-    setVideoSourceFolder(preset?.Default_Video_Directory || "");
-    setOutputSettings((prev) => ({ ...prev, directory: preset?.Default_Destination_Directory || (keepDirectory ? prev.directory : "") }));
-    setMuxSettings((prev) => ({ ...prev, destinationDir: preset?.Default_Destination_Directory || (keepDirectory ? prev.destinationDir : "") }));
+    const video = preset?.Default_Video_Directory || "";
+    const destination = preset?.Default_Destination_Directory || "";
+    const applied = appliedPresetFolders.current;
+    appliedPresetFolders.current = { video, destination };
+    if (applied?.video !== video) setVideoSourceFolder(video);
+    if (applied?.destination !== destination) {
+      setOutputSettings((prev) => ({ ...prev, directory: destination || (keepDirectory ? prev.directory : "") }));
+      setMuxSettings((prev) => ({ ...prev, destinationDir: destination || (keepDirectory ? prev.destinationDir : "") }));
+    }
   }, []);
 
+  /** The options have been read (or failed to be): saved settings may go over them now. */
+  const [optionsSettled, setOptionsSettled] = useState(false);
   useEffect(() => {
     let mounted = true;
     loadOptions()
@@ -255,7 +300,8 @@ export default function Index() {
         setOptions(data);
         applyOptions(data, false);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => mounted && setOptionsSettled(true));
     return () => {
       mounted = false;
     };
@@ -316,7 +362,8 @@ export default function Index() {
     setEnginePage(null);
   }, []);
   const refuseBusy = useCallback((what: string) => {
-    toast({ title: `Measuring is running`, description: `${what} once the delays are measured, or stop the measurement first.` });
+    if (engineRef.current === "watch") toast({ title: "A watch folder is working", description: `${what} once its new episodes are done; it takes a moment.` });
+    else toast({ title: `Measuring is running`, description: `${what} once the delays are measured, or stop the measurement first.` });
   }, []);
 
   // ---------------------------------------------------------------- mux
@@ -342,6 +389,10 @@ export default function Index() {
             etaSeconds = Math.max(0, Math.round((elapsed * (100 - payload.progress)) / payload.progress));
           }
           if (status === "completed") etaSeconds = 0;
+          // A late mkvmerge progress line must not take "Verifying" away once it shows.
+          const stage = status === "processing" ? (payload.stage ?? (payload.progress >= 100 ? job.stage : undefined)) : undefined;
+          // Only a finished job carries a verification; one starting again has none yet.
+          const verification = status === "processing" || status === "queued" ? undefined : (payload.verification ?? job.verification);
           return {
             ...job,
             status,
@@ -350,6 +401,8 @@ export default function Index() {
             errorMessage: payload.error_message ?? job.errorMessage,
             startedAt,
             etaSeconds,
+            stage,
+            verification,
           };
         });
       });
@@ -378,7 +431,7 @@ export default function Index() {
       if (payload.status === "error") {
         const description = payload.error_message || payload.message || "Muxing failed. Check the output for details.";
         log(`Error: ${description}`);
-        toast({ title: "A job failed", description, variant: "destructive" });
+        toast({ title: payload.verification ? "An output failed verification" : "A job failed", description, variant: "destructive" });
       }
     });
     return () => {
@@ -388,17 +441,23 @@ export default function Index() {
     };
   }, [log]);
 
-  const previewResetKey = useMemo(
-    () => [videoFiles.length, audioFilesCount, subtitleFilesCount, chapterFiles.length, attachmentFiles.length, Object.keys(perVideoExternal).length].join("|"),
-    [videoFiles.length, audioFilesCount, subtitleFilesCount, chapterFiles.length, attachmentFiles.length, perVideoExternal],
+  // Validation describes the queue as it was when it ran: its warnings, and
+  // the mkvmerge command the job details offer to copy. Any change to what
+  // goes into those commands (a delay, a language, a flag, an option, a file)
+  // makes them stale, so they are dropped rather than shown as current.
+  // Compared by content, not identity, so a state update that changes
+  // nothing does not throw a validation away; and only while there is one.
+  const previewInputs = useMemo(
+    () => ({ videoFiles, audioFilesByTrack, subtitleFilesByTrack, chapterFiles, attachmentFiles, perVideoExternal, muxSettings, outputSettings }),
+    [videoFiles, audioFilesByTrack, subtitleFilesByTrack, chapterFiles, attachmentFiles, perVideoExternal, muxSettings, outputSettings],
   );
-  const lastPreviewResetKey = useRef(previewResetKey);
+  const validatedInputs = useRef<string | null>(null);
   useEffect(() => {
-    if (lastPreviewResetKey.current === previewResetKey) return;
-    lastPreviewResetKey.current = previewResetKey;
-    if (!Object.keys(previewResults).length) return;
+    if (!Object.keys(previewResults).length || validatedInputs.current === null) return;
+    if (JSON.stringify(previewInputs) === validatedInputs.current) return;
+    validatedInputs.current = null;
     setPreviewResults({});
-  }, [previewResetKey, previewResults]);
+  }, [previewInputs, previewResults]);
 
   // The queue is every loaded video, kept in step with the Videos list.
   useEffect(() => {
@@ -542,7 +601,7 @@ export default function Index() {
 
   const fastMuxAvailable = useMemo(() => {
     const inPlaceOverwrite = outputSettings.directory.trim() === "" && outputSettings.overwriteExisting;
-    const hasExternal = audioFilesCount > 0 || subtitleFilesCount > 0 || chapterFiles.length > 0 || attachmentFiles.length > 0;
+    const hasExternal = audioFilesCount > 0 || subtitleFilesCount > 0 || chapterFilesCount > 0 || attachmentFiles.length > 0;
     const hasPerVideoExternal = Object.values(perVideoExternal).some((entry) => entry.audios.length > 0 || entry.subtitles.length > 0);
     const hasRemovedTracks = videoFiles.some((video) => (video.tracks || []).some((track) => track.action === "remove"));
     const hasLanguageFilters =
@@ -554,7 +613,7 @@ export default function Index() {
   }, [
     audioFilesCount,
     attachmentFiles.length,
-    chapterFiles.length,
+    chapterFilesCount,
     subtitleFilesCount,
     muxSettings.makeAudioDefaultLanguage,
     muxSettings.makeSubtitleDefaultLanguage,
@@ -588,6 +647,86 @@ export default function Index() {
 
   /** The batch being muxed: when it started, and whether it is pausing. */
   const [batch, setBatch] = useState<{ startedAt: number | null; finishedAt: number | null; paused: boolean }>({ startedAt: null, finishedAt: null, paused: false });
+  /** Read by validation once its reply lands, after the render it began in. */
+  const batchRunningRef = useRef(false);
+  batchRunningRef.current = batch.startedAt !== null && batch.finishedAt === null;
+  /** The jobs the running batch was started with, and who started it: a
+   *  watch folder waits for its own jobs, and records them itself. */
+  const batchRunRef = useRef<{ ids: Set<string>; origin: "user" | "watch"; resolve?: (jobs: MuxJob[]) => void } | null>(null);
+  /** Every output this session muxed: a watch folder must not take one for a new episode. */
+  const ownOutputs = useRef(new OutputRegistry());
+
+  /** The workspace as of the last render (and of a watch folder's last
+   *  change), for work that outlives the render it started in. */
+  const live = useRef({ videoFiles, audioFilesByTrack, subtitleFilesByTrack, chapterFiles, attachmentFiles, perVideoExternal, jobs, muxSettings, outputSettings });
+  live.current = { videoFiles, audioFilesByTrack, subtitleFilesByTrack, chapterFiles, attachmentFiles, perVideoExternal, jobs, muxSettings, outputSettings };
+
+  /** Send `run` to mkvmerge with these settings. Output names a pattern's
+   *  episode tokens need are resolved here, per job; two jobs that would
+   *  share a name stop the start. Returns why it didn't start, or null. */
+  const startBatch = useCallback(
+    (run: MuxJob[], { mux, output, show, origin, onFinished }: { mux: MuxSettings; output: OutputSettings; show?: string; origin: "user" | "watch"; onFinished?: (jobs: MuxJob[]) => void }): string | null => {
+      const state = live.current;
+      const built = buildMuxJobRequests({ videoFiles: state.videoFiles, jobs: run, audioFilesByTrack: state.audioFilesByTrack, subtitleFilesByTrack: state.subtitleFilesByTrack, chapterFiles: state.chapterFiles, attachmentFiles: state.attachmentFiles, perVideoExternal: state.perVideoExternal });
+      if (built.length === 0) return "The queue is empty. Load videos on the Videos page to mux them.";
+      const { requests: jobsRequest, collisions } = attachOutputNames(built, output.namingPattern, { show, destination: output.directory });
+      if (collisions.length > 0) {
+        const description = describeCollisions(collisions);
+        log(`Error: two or more episodes would get the same name: ${description}`);
+        return description;
+      }
+      if (origin === "user") {
+        if (!claimEngine("mux")) {
+          refuseBusy("Start muxing");
+          return "busy";
+        }
+      } else if (engineRef.current === "watch" || engineRef.current === null) {
+        // The watch folder's run hands its claim to the batch, in one step.
+        engineRef.current = "mux";
+        setEnginePage("mux");
+      } else {
+        return "Something else holds the engine.";
+      }
+      const runIds = new Set(run.map((job) => job.id));
+      batchRunRef.current = { ids: runIds, origin, resolve: onFinished };
+      setJobs((prev) => {
+        const fresh = { status: "queued" as const, progress: 0, errorMessage: undefined, sizeAfter: undefined, etaSeconds: undefined, startedAt: undefined, verification: undefined, stage: undefined };
+        const known = new Set(prev.map((job) => job.id));
+        // A watch folder's new videos may not have their jobs yet: they are added here, queued.
+        return [...prev.map((job) => (runIds.has(job.id) && job.status !== "queued" ? { ...job, ...fresh } : job)), ...run.filter((job) => !known.has(job.id)).map((job) => ({ ...job, ...fresh }))];
+      });
+      const settings: MuxSettings = {
+        ...mux,
+        maxParallelJobs: parallelJobs(mux.maxParallelJobs, jobsRequest.length, MAX_PARALLEL_JOBS),
+        destinationDir: output.directory,
+        outputNamingPattern: output.namingPattern,
+        overwriteSource: output.overwriteExisting,
+      };
+      for (const request of jobsRequest) {
+        const folder = settings.destinationDir.trim() || request.video.path.replace(/[\\/][^\\/]*$/, "");
+        ownOutputs.current.add(folder, request.outputName ?? resolveOutputName(output.namingPattern, request.video, { show }).stem);
+      }
+      muxStartPendingRef.current = true;
+      setBatch({ startedAt: Date.now(), finishedAt: null, paused: false });
+      log(`${origin === "watch" ? "Watch folder: muxing" : "Muxing"} ${jobsRequest.length} job${jobsRequest.length === 1 ? "" : "s"}, ${settings.maxParallelJobs} at a time${settings.destinationDir ? `, into ${settings.destinationDir}` : ", over the sources"}`);
+      startMuxing({ settings, jobs: jobsRequest })
+        .catch((error) => {
+          // A batch that is already running is not a failed start: leave its jobs
+          // alone rather than reporting the run the user is watching as broken.
+          if (String(error).toLowerCase().includes("already running")) {
+            toast({ title: "Already muxing", description: "A batch is already running." });
+            return;
+          }
+          log(`Error: could not start muxing: ${errorText(error, "unknown error")}`);
+          setJobs((prev) => prev.map((job) => ({ ...job, status: job.status === "queued" && runIds.has(job.id) ? "error" : job.status, errorMessage: runIds.has(job.id) ? "Failed to start muxing. See Output." : job.errorMessage })));
+        })
+        .finally(() => {
+          muxStartPendingRef.current = false;
+        });
+      return null;
+    },
+    [claimEngine, refuseBusy, log],
+  );
 
   const handleStartMuxing = useCallback(() => {
     // The button only disables once a job reports "processing", a round trip
@@ -597,46 +736,11 @@ export default function Index() {
       toast({ title: "Pair every file with a video first", description: externalLinkIssues[0], variant: "destructive" });
       return;
     }
-    if (!claimEngine("mux")) {
-      refuseBusy("Start muxing");
-      return;
-    }
-    const run = jobsToRun(jobs);
-    const jobsRequest = buildJobRequests(run);
-    if (jobsRequest.length === 0) {
-      toast({ title: "The queue is empty", description: "Load videos on the Videos page to mux them." });
-      releaseEngine("mux");
-      return;
-    }
-    const runIds = new Set(run.map((job) => job.id));
-    setJobs((prev) =>
-      prev.map((job) =>
-        runIds.has(job.id) && job.status !== "queued"
-          ? { ...job, status: "queued", progress: 0, errorMessage: undefined, sizeAfter: undefined, etaSeconds: undefined, startedAt: undefined }
-          : job,
-      ),
-    );
-    const settings = buildEffectiveMuxSettings(jobsRequest.length);
-    muxStartPendingRef.current = true;
-    setBatch({ startedAt: Date.now(), finishedAt: null, paused: false });
-    log(`Muxing ${jobsRequest.length} job${jobsRequest.length === 1 ? "" : "s"}, ${settings.maxParallelJobs} at a time${settings.destinationDir ? `, into ${settings.destinationDir}` : ", over the sources"}`);
-    startMuxing({ settings, jobs: jobsRequest })
-      .catch((error) => {
-        // A batch that is already running is not a failed start: leave its jobs
-        // alone rather than reporting the run the user is watching as broken.
-        if (String(error).toLowerCase().includes("already running")) {
-          toast({ title: "Already muxing", description: "A batch is already running." });
-          return;
-        }
-        log(`Error: could not start muxing: ${errorText(error, "unknown error")}`);
-        setJobs((prev) =>
-          prev.map((job) => ({ ...job, status: job.status === "queued" ? "error" : job.status, errorMessage: "Failed to start muxing. See Output." })),
-        );
-      })
-      .finally(() => {
-        muxStartPendingRef.current = false;
-      });
-  }, [buildEffectiveMuxSettings, buildJobRequests, externalLinkIssues, claimEngine, releaseEngine, refuseBusy, log, jobs]);
+    const failure = startBatch(jobsToRun(jobs), { mux: muxSettings, output: outputSettings, show: activeRecipe?.show, origin: "user" });
+    if (!failure || failure === "busy") return;
+    if (failure.startsWith("The queue is empty")) toast({ title: "The queue is empty", description: "Load videos on the Videos page to mux them." });
+    else toast({ title: "Two episodes would get the same name", description: failure, variant: "destructive" });
+  }, [externalLinkIssues, startBatch, jobs, muxSettings, outputSettings, activeRecipe]);
 
   /** Clear the queue: the queue is the loaded videos, so this empties the
    *  Videos list, ready for the next batch. */
@@ -656,9 +760,18 @@ export default function Index() {
       toast({ title: "Pair every file with a video first", description: externalLinkIssues[0], variant: "destructive" });
       return;
     }
-    const jobsRequest = buildJobRequests();
+    const named = attachOutputNames(buildJobRequests(), outputSettings.namingPattern, { show: activeRecipe?.show, destination: outputSettings.directory });
+    const jobsRequest = named.requests;
     if (!jobsRequest.length) {
       toast({ title: "The queue is empty", description: "Add videos to the queue to validate them." });
+      return;
+    }
+    if (named.collisions.length) toast({ title: "Two episodes would get the same name", description: describeCollisions(named.collisions), variant: "destructive" });
+    // A running batch holds the engine as "mux" too, so claiming it would
+    // succeed and the release below would hand the batch's lock away. The
+    // macOS menu reaches here even while its item would be disabled.
+    if (engineRef.current === "mux") {
+      toast({ title: "Muxing is running", description: "Validate once the batch finishes, or stop it first." });
       return;
     }
     if (!claimEngine("mux")) {
@@ -667,12 +780,16 @@ export default function Index() {
     }
     previewPendingRef.current = true;
     setPreviewLoading(true);
+    // What these results will describe: an edit made while they are on their
+    // way makes them stale as soon as they land.
+    const inputs = JSON.stringify(previewInputs);
     try {
       const results = await previewMux({ settings: buildEffectiveMuxSettings(jobsRequest.length), jobs: jobsRequest });
       const mapped: Record<string, MuxPreviewResult> = {};
       results.forEach((result) => {
         mapped[result.jobId] = result;
       });
+      validatedInputs.current = inputs;
       setPreviewResults(mapped);
       const totalWarnings = results.reduce((acc, result) => acc + result.warnings.length, 0);
       log(totalWarnings ? `Validated ${results.length} jobs: ${totalWarnings} warning${totalWarnings === 1 ? "" : "s"}` : `Validated ${results.length} jobs: no warnings`);
@@ -683,10 +800,11 @@ export default function Index() {
     } finally {
       previewPendingRef.current = false;
       setPreviewLoading(false);
-      // Muxing claims the engine again when it starts.
-      if (!muxStartPendingRef.current) releaseEngine("mux");
+      // Muxing claims the engine again when it starts: a batch started while
+      // this was on its way owns the lock now.
+      if (!muxStartPendingRef.current && !batchRunningRef.current) releaseEngine("mux");
     }
-  }, [buildEffectiveMuxSettings, buildJobRequests, externalLinkIssues, claimEngine, releaseEngine, refuseBusy, log]);
+  }, [buildEffectiveMuxSettings, buildJobRequests, externalLinkIssues, claimEngine, releaseEngine, refuseBusy, log, previewInputs, outputSettings.namingPattern, outputSettings.directory, activeRecipe]);
 
   /** Report a queue control that the backend refused, instead of dropping it. */
   const reportControlFailure = useCallback((action: string, error: unknown) => {
@@ -718,8 +836,9 @@ export default function Index() {
     // never claims a job stopped while mkvmerge is still running.
     stopMuxing()
       .then(() => {
+        const ids = batchRunRef.current?.ids;
         setJobs((prev) =>
-          prev.map((job) => (job.status === "processing" || job.status === "queued" ? { ...job, status: "stopped", errorMessage: "Stopped by user." } : job)),
+          prev.map((job) => ((job.status === "processing" || job.status === "queued") && (!ids || ids.has(job.id)) ? { ...job, status: "stopped", errorMessage: "Stopped by user." } : job)),
         );
         log("Stopped by the user");
       })
@@ -741,11 +860,19 @@ export default function Index() {
   // give the engine back.
   useEffect(() => {
     if (batch.startedAt === null || batch.finishedAt !== null || muxStartPendingRef.current) return;
-    const live = jobs.some((job) => job.status === "processing" || job.status === "queued");
-    if (live) return;
+    // Only the batch's own jobs: a video loaded since is queued too, and waits for the next Start.
+    const runInfo = batchRunRef.current;
+    const inRun = runInfo ? jobs.filter((job) => runInfo.ids.has(job.id)) : jobs;
+    if (inRun.some((job) => job.status === "processing" || job.status === "queued")) return;
     const finishedAt = Date.now();
     setBatch((prev) => ({ ...prev, finishedAt, paused: false }));
     releaseEngine("mux");
+    batchRunRef.current = null;
+    // A watch folder's batch is reported by the watch folder, with its episodes.
+    if (runInfo?.resolve) {
+      runInfo.resolve(inRun);
+      return;
+    }
     if (jobs.length === 0) return;
     const outcome = muxOutcome(jobs);
     log(`Finished: ${outcome.parts.join(", ")}`);
@@ -755,13 +882,270 @@ export default function Index() {
       name: runName(jobs.map((job) => job.videoFile.name)),
       outcome: { tone: outcome.tone, text: outcome.parts.join(", ") },
       date: new Date(finishedAt).toISOString(),
-      files: jobs.map((job) => ({
-        name: job.videoFile.name,
-        tone: job.status === "completed" ? "ok" : job.status === "error" ? "bad" : "warn",
-        text: job.status === "completed" ? "Muxed" : job.status === "error" ? (job.errorMessage ?? "Failed") : "Stopped",
-      })),
+      files: jobs.map((job) => ({ name: job.videoFile.name, ...muxFileLine(job) })),
     });
   }, [jobs, batch, releaseEngine, addHistory, log]);
+
+  // ------------------------------------------------- sessions and recipes
+
+  const busy = muxIsRunning || enginePage !== null;
+
+  const snapshot: WorkspaceSnapshot = useMemo(
+    () => ({
+      videoFiles,
+      audioFilesByTrack,
+      subtitleFilesByTrack,
+      chapterFiles,
+      attachmentFiles,
+      perVideoExternal,
+      tabState: {
+        audioTracks,
+        activeAudioTrack,
+        audioTrackConfigs,
+        audioPresetApplied,
+        subtitleTracks,
+        activeSubtitleTrack,
+        subtitleTrackConfigs,
+        subtitlePresetApplied,
+        chapterTabState,
+        attachmentTabState,
+      },
+      muxSettings,
+      outputSettings,
+      recipeId: activeRecipeId,
+    }),
+    [videoFiles, audioFilesByTrack, subtitleFilesByTrack, chapterFiles, attachmentFiles, perVideoExternal, audioTracks, activeAudioTrack, audioTrackConfigs, audioPresetApplied, subtitleTracks, activeSubtitleTrack, subtitleTrackConfigs, subtitlePresetApplied, chapterTabState, attachmentTabState, muxSettings, outputSettings, activeRecipeId],
+  );
+
+  /** Saved options over the current ones; where to mux and how to name are the output settings' to say. */
+  const applySavedSettings = useCallback((mux: Partial<MuxSettings>, output: Partial<OutputSettings>, keepFolder: boolean) => {
+    setMuxSettings((prev) => ({ ...prev, ...mux, destinationDir: prev.destinationDir, outputNamingPattern: prev.outputNamingPattern, overwriteSource: prev.overwriteSource }));
+    setOutputSettings((prev) => ({ ...prev, ...output, directory: keepFolder && !output.directory?.trim() ? prev.directory : (output.directory ?? prev.directory) }));
+  }, []);
+
+  const applySession = useCallback(
+    (session: LoadedSession) => {
+      useTabState.setState(session.tabState);
+      setVideoFiles(session.videoFiles);
+      setAudioFilesByTrack(session.audioFilesByTrack);
+      setSubtitleFilesByTrack(session.subtitleFilesByTrack);
+      setChapterFiles(session.chapterFiles);
+      setAttachmentFiles(session.attachmentFiles);
+      setPerVideoExternal(session.perVideoExternal);
+      setPreviewResults({});
+      setBatch({ startedAt: null, finishedAt: null, paused: false });
+      applySavedSettings(session.muxSettings, session.outputSettings, false);
+      setActiveRecipeId(session.recipeId ?? null);
+    },
+    [applySavedSettings],
+  );
+
+  const sessions = useWorkspaceSession({
+    snapshot,
+    apply: applySession,
+    // At launch a saved empty folder doesn't take back the preset's.
+    applySettings: useCallback((mux: Partial<MuxSettings>, output: Partial<OutputSettings>) => applySavedSettings(mux, output, true), [applySavedSettings]),
+    ready: optionsSettled,
+    busy,
+    log,
+    enabled: desktop,
+  });
+
+  const [recipesOpen, setRecipesOpen] = useState<{ id: string | null } | null>(null);
+  const [applyOpen, setApplyOpen] = useState<{ id: string | null } | null>(null);
+  const [watchOpen, setWatchOpen] = useState(false);
+
+  const recipeSource: RecipeSource = useMemo(
+    () => ({ videoFiles, audioTracks, audioTrackConfigs, subtitleTracks, subtitleTrackConfigs, muxSettings, outputSettings }),
+    [videoFiles, audioTracks, audioTrackConfigs, subtitleTracks, subtitleTrackConfigs, muxSettings, outputSettings],
+  );
+
+  const planFor = useCallback(
+    (recipe: Recipe) => {
+      const counts = (byTrack: Record<string, ExternalFile[]>) => Object.fromEntries(Object.entries(byTrack).map(([slot, files]) => [slot, realFiles(files).length]));
+      return planRecipe(recipe, { ...recipeSource, audioFileCounts: counts(audioFilesByTrack), subtitleFileCounts: counts(subtitleFilesByTrack) });
+    },
+    [recipeSource, audioFilesByTrack, subtitleFilesByTrack],
+  );
+
+  /** Commit a recipe's plan: tracks, options, slots; then load the files of slots it gave a folder. */
+  const applyRecipePlan = useCallback(
+    (plan: RecipePlan) => {
+      if (busy) {
+        toast({ title: "Can't apply a recipe now", description: "Wait for the batch, the measurement or the watch folder to finish." });
+        return;
+      }
+      const { recipe } = plan;
+      if (plan.ruleChanges.length) setVideoFiles(plan.videoFiles);
+      setMuxSettings(plan.muxSettings);
+      setOutputSettings(plan.outputSettings);
+      const tab = useTabState.getState();
+      const next = { audioTracks: [...tab.audioTracks], audioTrackConfigs: { ...tab.audioTrackConfigs }, subtitleTracks: [...tab.subtitleTracks], subtitleTrackConfigs: { ...tab.subtitleTrackConfigs } };
+      for (const slot of plan.slots) {
+        const tracks = slot.kind === "audio" ? next.audioTracks : next.subtitleTracks;
+        const configs = slot.kind === "audio" ? next.audioTrackConfigs : next.subtitleTrackConfigs;
+        if (!tracks.includes(slot.slot)) tracks.push(slot.slot);
+        configs[slot.slot] = { ...slot.config };
+      }
+      if (plan.slots.length) useTabState.setState(next);
+      setActiveRecipeId(recipe.id);
+      setApplyOpen(null);
+      log(`Applied the recipe ${recipe.name}`);
+      for (const section of plan.sections) for (const line of section.lines) log(`  ${section.title}: ${line}`);
+      toast({ title: `Applied ${recipe.name}`, description: plan.sections.map((section) => `${section.title}: ${section.lines.length}`).join(" · ") || undefined });
+
+      const videos = plan.videoFiles;
+      for (const slot of plan.slots.filter((item) => item.scan)) {
+        const label = `${slot.kind === "audio" ? "Audio" : "Subtitles"} ${slot.slot}`;
+        scanMedia({ folder: slot.config.sourceFolder, extensions: slot.config.extension === "all" ? [] : [slot.config.extension], recursive: false, type: slot.kind, include_tracks: true })
+          .then((results) => {
+            const files = (results as ExternalFile[]).map((file) => fromTemplate(file, slot.config, slot.kind));
+            const paired = defaultPairBy(files, videos) === "episode" ? pairByEpisode(files, videos).files : linkExternalFilesByOrder(files, videos);
+            const set = slot.kind === "audio" ? setAudioFilesByTrack : setSubtitleFilesByTrack;
+            // Only into a slot still empty: files added meanwhile by hand win.
+            set((prev) => (realFiles(prev[slot.slot] ?? []).length ? prev : { ...prev, [slot.slot]: paired }));
+            log(`${label}: ${files.length} file${files.length === 1 ? "" : "s"} from ${slot.config.sourceFolder}`);
+          })
+          .catch((error) => log(`Error: could not scan ${slot.config.sourceFolder} for ${label}: ${errorText(error, String(error))}`));
+      }
+    },
+    [busy, log],
+  );
+
+  // ------------------------------------------------------------ watch folders
+
+  const watchState = useWatchFolders(desktop);
+  const activeWatches = useMemo(() => watchState.folders.filter((folder) => folder.enabled), [watchState.folders]);
+
+  /** A watch folder's run changes the workspace through here: every list at once, seen at once by its next step. */
+  const readLists = useCallback((): WorkspaceLists => {
+    const tab = useTabState.getState();
+    const state = live.current;
+    return {
+      videoFiles: state.videoFiles,
+      audioFilesByTrack: state.audioFilesByTrack,
+      subtitleFilesByTrack: state.subtitleFilesByTrack,
+      chapterFiles: state.chapterFiles,
+      audioTracks: tab.audioTracks,
+      audioTrackConfigs: tab.audioTrackConfigs,
+      subtitleTracks: tab.subtitleTracks,
+      subtitleTrackConfigs: tab.subtitleTrackConfigs,
+    };
+  }, []);
+  const commitLists = useCallback(
+    (change: (lists: WorkspaceLists) => WorkspaceLists) => {
+      const before = readLists();
+      const next = change(before);
+      live.current = { ...live.current, videoFiles: next.videoFiles, audioFilesByTrack: next.audioFilesByTrack, subtitleFilesByTrack: next.subtitleFilesByTrack, chapterFiles: next.chapterFiles };
+      if (next.audioTracks !== before.audioTracks || next.audioTrackConfigs !== before.audioTrackConfigs || next.subtitleTracks !== before.subtitleTracks || next.subtitleTrackConfigs !== before.subtitleTrackConfigs) {
+        useTabState.setState({ audioTracks: next.audioTracks, audioTrackConfigs: next.audioTrackConfigs, subtitleTracks: next.subtitleTracks, subtitleTrackConfigs: next.subtitleTrackConfigs });
+      }
+      if (next.videoFiles !== before.videoFiles) setVideoFiles(next.videoFiles);
+      if (next.audioFilesByTrack !== before.audioFilesByTrack) setAudioFilesByTrack(next.audioFilesByTrack);
+      if (next.subtitleFilesByTrack !== before.subtitleFilesByTrack) setSubtitleFilesByTrack(next.subtitleFilesByTrack);
+      if (next.chapterFiles !== before.chapterFiles) setChapterFiles(next.chapterFiles);
+    },
+    [readLists],
+  );
+
+  const muxForWatch = useCallback(
+    (videoIds: string[], recipe: Recipe) =>
+      new Promise<MuxJob[]>((resolve, reject) => {
+        const state = live.current;
+        const { muxSettings: mux, outputSettings: output } = applyRecipeSettings(recipe, state.muxSettings, state.outputSettings);
+        const run = videoIds.flatMap((id) => {
+          const video = state.videoFiles.find((item) => item.id === id);
+          if (!video) return [];
+          return [state.jobs.find((job) => job.id === jobIdOf(video)) ?? { id: jobIdOf(video), videoFile: video, status: "queued" as const, progress: 0, sizeBefore: video.size }];
+        });
+        const failure = startBatch(run, { mux, output, show: recipe.show, origin: "watch", onFinished: resolve });
+        if (failure) reject(new Error(failure));
+      }),
+    [startBatch],
+  );
+
+  const reportWatchRun = useCallback(
+    (report: EpisodeReport, config: { videoFolder: string }) => {
+      const folder = config.videoFolder.replace(/[\\/]+$/, "").replace(/^.*[\\/]/, "");
+      for (const note of report.skipped) log(`Watch: ${note.name}: ${note.reason}`);
+      for (const note of report.review) log(`Watch: ${note.name} waits for you: ${note.reason}`);
+      for (const note of report.failed) log(`Error: watch: ${note.name}: ${note.reason}`);
+      const episodes = report.loaded.length + report.failed.length;
+      if (episodes === 0) return;
+      const outcome = report.muxed.length ? muxOutcome(report.muxed) : null;
+      const muxFailed = report.muxed.filter((job) => job.status !== "completed").length;
+      const parts = [
+        ...(outcome ? outcome.parts : []),
+        ...(report.review.length ? [`${report.review.length} waiting for you`] : []),
+        ...(report.failed.length ? [`${report.failed.length} couldn't be read`] : []),
+      ];
+      const tone = report.failed.length || muxFailed ? "bad" : report.review.length ? "warn" : (outcome?.tone ?? "ok");
+      addHistory({
+        id: createExternalId(),
+        page: "mux",
+        name: `Watch ${folder}: ${runName([...report.loaded.map((video) => video.name), ...report.failed.map((note) => note.name)])}`,
+        outcome: { tone, text: parts.join(", ") || "Nothing to mux" },
+        date: new Date().toISOString(),
+        files: [
+          ...report.muxed.map((job) => ({ name: job.videoFile.name, ...muxFileLine(job) })),
+          ...report.review.map((note) => ({ name: note.name, tone: "warn" as const, text: note.reason })),
+          ...report.failed.map((note) => ({ name: note.name, tone: "bad" as const, text: note.reason })),
+        ],
+      });
+      const done = report.muxed.filter((job) => job.status === "completed").length;
+      toast({
+        title: done ? `Watch folder: ${done} new episode${done === 1 ? "" : "s"} muxed` : `Watch folder: ${episodes} new episode${episodes === 1 ? "" : "s"}`,
+        description: parts.join(", ") || undefined,
+        variant: tone === "bad" ? "destructive" : undefined,
+        duration: 10000,
+        action: { label: "Show", onClick: () => setActive(report.review.length ? "audio" : "mux") },
+      });
+    },
+    [log, addHistory],
+  );
+
+  const watchIO = useMemo(
+    () => ({
+      ...engineIO(options?.Measurement),
+      read: readLists,
+      commit: commitLists,
+      mux: muxForWatch,
+      log,
+      settle: () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
+    }),
+    [options?.Measurement, readLists, commitLists, muxForWatch, log],
+  );
+
+  const isOwnOutput = useCallback((path: string) => ownOutputs.current.has(path), []);
+  const pipeline = useWatchPipeline({
+    watches: activeWatches,
+    recipes: recipesState.recipes,
+    // Nothing holds the engine, no batch is between its start and its end, no session waits to open.
+    idle: enginePage === null && !(batch.startedAt !== null && batch.finishedAt === null) && sessions.pending === null,
+    isOwnOutput,
+    claim: useCallback(() => claimEngine("watch"), [claimEngine]),
+    release: useCallback(() => releaseEngine("watch"), [releaseEngine]),
+    io: watchIO,
+    onReport: reportWatchRun,
+  });
+
+  /** A watch folder's run, as the toolbar's status while it holds the engine itself. */
+  const watchRunStatus = useMemo(
+    () => (enginePage === "watch" && pipeline.current ? { page: "videos" as PageId, status: { icon: "run" as const, text: pipeline.current.detail || "Watch folder: new episodes", pct: null } } : null),
+    [enginePage, pipeline],
+  );
+  /** The page bar's note while watch folders are on. */
+  const watchNote = useMemo(() => {
+    if (pipeline.current) return { tone: "acc", text: `Watch folder: ${pipeline.current.detail || "working"}` };
+    const on = activeWatches.filter((folder) => (watchState.status[folder.id]?.state ?? "off") !== "off");
+    if (on.length === 0) return null;
+    const unavailable = on.filter((folder) => watchState.status[folder.id]?.state === "unavailable").length;
+    const waiting = pipeline.queue.length;
+    if (unavailable) return { tone: "warn", text: `${unavailable === 1 ? "A watched folder is" : `${unavailable} watched folders are`} unavailable` };
+    if (waiting) return { tone: "made", text: `${waiting} new video${waiting === 1 ? "" : "s"} waiting for the app to be idle` };
+    const paused = on.every((folder) => watchState.status[folder.id]?.state === "paused");
+    return { tone: "made", text: paused ? "Watch folders paused" : `Watching ${on.length} folder${on.length === 1 ? "" : "s"}` };
+  }, [pipeline, activeWatches, watchState.status]);
 
   // ---------------------------------------------------------------- update
 
@@ -779,7 +1163,9 @@ export default function Index() {
   }, []);
 
   useAutoUpdate({
-    isBusy: jobs.some((job) => job.status === "processing" || job.status === "queued"),
+    // A batch actually running, not just loaded: every loaded video is a
+    // queued job until it is muxed.
+    isBusy: muxIsRunning,
     onUpdateAvailable: useCallback(
       (version: string, notes: string) => {
         setUpdate({ version, notes });
@@ -949,9 +1335,9 @@ export default function Index() {
       openPreferences,
       copy: (text: string) => void copy(text),
       publishStatus,
-      runStatus: enginePage && statuses[enginePage] ? { page: enginePage, status: statuses[enginePage]! } : null,
+      runStatus: watchRunStatus ?? (enginePage && enginePage !== "watch" && statuses[enginePage] ? { page: enginePage, status: statuses[enginePage]! } : null),
     }),
-    [active, desktop, enginePage, claimEngine, releaseEngine, log, openOutput, dock, addHistory, setCommands, openPreferences, copy, publishStatus, statuses],
+    [active, desktop, enginePage, claimEngine, releaseEngine, log, openOutput, dock, addHistory, setCommands, openPreferences, copy, publishStatus, statuses, watchRunStatus],
   );
 
   // The OS window's title follows the page, for the taskbar and Alt+Tab.
@@ -979,7 +1365,9 @@ export default function Index() {
           setDragging(null);
           if (isServiceLocked()) return;
           const drop = commandsRef.current[activeRef.current]?.drop;
-          if (drop) drop(event.payload ?? []);
+          // In Explorer's order, not the drag's (which starts with the file
+          // the drag started on): dropped files pair with videos by row.
+          if (drop) drop([...(event.payload ?? [])].sort(naturalCompare));
           else toast({ title: `${PAGE_LABEL[activeRef.current]} does not take files` });
         }),
       ]);
@@ -1052,8 +1440,9 @@ export default function Index() {
       } else if (event.key === "Enter" && !event.defaultPrevented && (event.target as HTMLElement)?.tagName !== "BUTTON") {
         event.preventDefault();
         command("start")?.();
-      } else if (event.key === "Escape" && !document.querySelector(".smoke")) {
-        // With a dialog open, Escape is the dialog's.
+      } else if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector(".smoke, .fly")) {
+        // With a dialog, a menu or a popover open, Escape closes that. This
+        // listener runs before a popover's, so it has to look for one.
         const stop = command("stop");
         if (stop) {
           event.preventDefault();
@@ -1080,6 +1469,13 @@ export default function Index() {
           { label: "Choose folder…", shortcut: "Ctrl+O", onSelect: run("chooseFolder"), disabled: off("chooseFolder") },
           { label: "Add files…", onSelect: run("addFiles"), disabled: off("addFiles") },
           { label: "Import from a video…", onSelect: run("importFromVideo"), disabled: off("importFromVideo") },
+          "separator",
+          { label: "Open session…", onSelect: () => void sessions.open(), disabled: !desktop || busy },
+          { label: "Save session…", onSelect: () => void sessions.save(), disabled: !desktop },
+          "separator",
+          { label: "Apply recipe…", onSelect: () => setApplyOpen({ id: activeRecipeId }), disabled: !desktop || busy },
+          { label: "Recipes…", onSelect: () => setRecipesOpen({ id: activeRecipeId }), disabled: !desktop },
+          { label: "Watch folders…", onSelect: () => setWatchOpen(true), disabled: !desktop },
           "separator",
           { label: "Open log file", onSelect: handleViewLog },
           "separator",
@@ -1149,6 +1545,11 @@ export default function Index() {
     "add-files": () => command("addFiles")?.(),
     "import-from-video": () => command("importFromVideo")?.(),
     "open-log": handleViewLog,
+    "open-session": () => void sessions.open(),
+    "save-session": () => void sessions.save(),
+    "apply-recipe": () => setApplyOpen({ id: activeRecipeId }),
+    recipes: () => setRecipesOpen({ id: activeRecipeId }),
+    "watch-folders": () => setWatchOpen(true),
     "select-all": () => command("selectAll")?.(),
     remove: () => command("removeSelected")?.(),
     clear: () => command("clear")?.(),
@@ -1193,6 +1594,8 @@ export default function Index() {
     <button type="button" className="acc" onClick={() => setPrefs("updates")}>Version {update.version} is ready — Update</button>
   ) : missingTool ? (
     <button type="button" className="warn" onClick={() => setPrefs("tools")}>{missingTool.name} is missing — Install</button>
+  ) : watchNote ? (
+    <button type="button" className={watchNote.tone} onClick={() => setWatchOpen(true)}>{watchNote.text}</button>
   ) : desktop ? (
     <span className="made">Made by Ionicboy</span>
   ) : (
@@ -1200,8 +1603,9 @@ export default function Index() {
   );
 
   const flags: PageId[] = [
-    ...(unlinkedSubtitleFiles.length > 0 ? (["subtitles"] as const) : []),
-    ...(unlinkedAudioFiles.length > 0 ? (["audio"] as const) : []),
+    ...(pairingIssues.subtitles.length > 0 ? (["subtitles"] as const) : []),
+    ...(pairingIssues.audio.length > 0 ? (["audio"] as const) : []),
+    ...(pairingIssues.chapters.length > 0 ? (["chapters"] as const) : []),
     ...(externalLinkIssues.length > 0 && jobs.length > 0 ? (["mux"] as const) : []),
   ];
 
@@ -1215,7 +1619,7 @@ export default function Index() {
             pages={PAGES}
             page={active}
             onPage={showPage}
-            busy={enginePage}
+            busy={enginePage === "watch" ? null : enginePage}
             flags={flags}
             note={note}
             history={dockTab === "history"}
@@ -1257,6 +1661,41 @@ export default function Index() {
             {installing && update && <UpdateProgress version={update.version} />}
             <KeyboardShortcuts open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
             <ModifyTracksDialog open={modifyOpen} onOpenChange={setModifyOpen} videoFiles={videoFiles} onFilesChange={handleVideoFilesChange} />
+            <SessionOpenDialog pending={sessions.pending} onOpen={() => sessions.pending && sessions.commit(sessions.pending)} onCancel={sessions.cancel} />
+            {watchOpen && (
+              <WatchFoldersDialog
+                watch={watchState}
+                recipes={recipesState.recipes}
+                pipeline={pipeline}
+                onManageRecipes={() => setRecipesOpen({ id: null })}
+                onClose={() => setWatchOpen(false)}
+              />
+            )}
+            {recipesOpen && (
+              <RecipesDialog
+                recipes={recipesState}
+                source={recipeSource}
+                initialId={recipesOpen.id}
+                onApply={(recipe) => {
+                  setRecipesOpen(null);
+                  setApplyOpen({ id: recipe.id });
+                }}
+                onClose={() => setRecipesOpen(null)}
+              />
+            )}
+            {applyOpen && (
+              <ApplyRecipeDialog
+                recipes={recipesState.recipes}
+                initialId={applyOpen.id}
+                plan={planFor}
+                onApply={applyRecipePlan}
+                onManage={() => {
+                  setApplyOpen(null);
+                  setRecipesOpen({ id: applyOpen.id });
+                }}
+                onClose={() => setApplyOpen(null)}
+              />
+            )}
           </>
         }
       >
@@ -1311,7 +1750,7 @@ export default function Index() {
           onSettingsChange={(updates) => setOutputSettings((prev) => ({ ...prev, ...updates }))}
           fastMuxAvailable={fastMuxAvailable}
           externalLinkIssues={externalLinkIssues}
-          unlinkedPage={unlinkedAudioFiles.length > 0 ? "audio" : unlinkedSubtitleFiles.length > 0 ? "subtitles" : null}
+          unlinkedPage={pairingIssues.audio.length > 0 ? "audio" : pairingIssues.subtitles.length > 0 ? "subtitles" : null}
           jobs={jobs}
           videoFiles={videoFiles}
           addsByJob={addsByJob}

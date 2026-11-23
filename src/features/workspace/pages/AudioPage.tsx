@@ -1,18 +1,24 @@
 /** Audio: external audio (dubs) for each video, in track slots (Audio 1,
  *  Audio 2…), with delay measurement. Row n of the list is video n and file
- *  n, which is how the mux pairs them. The logic is the old Audio tab's; a
- *  double-click opens a file's popup, its measurement above its settings. */
+ *  n, which is how the mux pairs them; pairing by episode arranges the list so
+ *  each file is in its episode's row, an empty row where one is missing
+ *  (smartPairing). The logic is the old Audio tab's; a double-click opens a
+ *  file's popup, its measurement above its settings. */
 
 import {
   ArrowImportRegular,
   ArrowSyncRegular,
+  ArrowUndoRegular,
   CheckmarkRegular,
   CopyRegular,
+  CutRegular,
+  DataBarVerticalRegular,
   DeleteRegular,
   DismissRegular,
   FolderOpenRegular,
   GaugeRegular,
   MusicNote2Regular,
+  SoundWaveCircleRegular,
   StopRegular,
   TimelineRegular,
 } from "@fluentui/react-icons";
@@ -22,15 +28,21 @@ import { PageDock } from "@/app/dock";
 import { runName, timeLeftText, tookText } from "@/app/history";
 import { useShell, usePageCommands, useStatus } from "@/app/shell";
 import { ImportTrackEditDialog, type ImportTrackOverride } from "@/features/workspace/components/ImportTrackEditDialog";
+import { useAudioMatch, type AudioMatchSummary } from "@/features/workspace/hooks/useAudioMatch";
+import { useConform, type ConformSummary } from "@/features/workspace/hooks/useConform";
 import { useMeasureDelays } from "@/features/workspace/hooks/useMeasureDelays";
+import { usePairing } from "@/features/workspace/hooks/usePairing";
 import { acceptWithheldMeasurement, applyAllPendingDelays, applyMeasuredDelay, hasPendingDelay, markDelayAsManual, pendingDelayCount } from "@/features/workspace/lib/applyMeasurement";
 import { audioFpsFor, formatAudioFps, needsRateChange } from "@/features/workspace/lib/audioFps";
-import { measureFindings, measureOutcome, measureStatus, measurementsOf } from "@/features/workspace/lib/measureVerdict";
+import { engineHolder } from "@/features/workspace/lib/engineHolder";
+import { canConform, conformBlocker, conformedFor, conformedHow, conformedStatus, conformRefusal, measuredAsDifferentCut, offersConform, undoConform } from "@/features/workspace/lib/conform";
+import { isMeasuredAgainstAnother, measureFindings, measureOutcome, measureStatus, measurementsOf } from "@/features/workspace/lib/measureVerdict";
 import { DEFAULT_REFERENCE_TRACK, measuresEachTrack, plannedReferenceTrack, referenceForEveryVideo, sharedReferenceIndex } from "@/features/workspace/lib/measurePairs";
 import { frameOffset } from "@/features/workspace/lib/delayConversion";
 import { runFraction } from "@/features/workspace/lib/measureProgress";
 import { applyTimelineDelay } from "@/features/workspace/lib/timelineScan";
 import { rowsWithFile, shareSettings, type EditScope } from "@/features/workspace/lib/editScope";
+import { audioMatchJobs } from "@/features/workspace/lib/smartPairing";
 import { referencePositions, trackDetails } from "@/features/workspace/lib/trackDetails";
 import { shownTrackDelay, trackDelays } from "@/features/workspace/lib/trackDelays";
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
@@ -40,15 +52,16 @@ import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/shared/data/languages-iso6393";
 import { inspectPaths, pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { delaySecondsOrZero } from "@/shared/lib/delayInput";
 import { AUDIO_EXTENSIONS } from "@/shared/lib/extensions";
-import { getUnlinkedExternalFiles, linkExternalFilesByOrder } from "@/shared/lib/matchUtils";
+import { getUnlinkedExternalFiles, isPlaceholder, placeholderFor, realFiles } from "@/shared/lib/matchUtils";
 import type { ExternalFile, MeasurementSettings, Preset, StretchSetting, VideoFile } from "@/shared/types";
 import { Dialog, PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
 import { Btn, Chk, Cmd, Combo, DL, Empty, Fld, Grip, LangCombo, Links, Meter, SheetField, Status, TBox, Table, Tr, cx, type St } from "@/ui/kit";
 import { toast } from "@/ui/toast";
 
 import { FILTER_OPTIONS, SearchBox, extensionOptions, formatDelay, formatFileSize, looksLikeFolder, matchesSearch, type FilterValue } from "./common";
-import { L, MeasureSection, TrackDelayList, trackLabel } from "./tracks/MeasurePane";
-import { DeleteSlotDialog, FileTrackRow, FileTracks, ImportStreamsDialog, TrackDelaysDialog, TrackSheet, TrackTabs, languageName } from "./tracks/parts";
+import { L, MeasureSection, ReportDetails, TrackDelayList, trackLabel } from "./tracks/MeasurePane";
+import { MatchCell, PairByCombo, PairingLinks, pairingLine } from "./tracks/pairing";
+import { DeleteSlotDialog, FileTrackRow, FileTracks, ImportStreamsDialog, TrackDelaysDialog, TrackSheet, TrackTabs, languageName, nextSlotId } from "./tracks/parts";
 
 export interface AudioPageProps {
   hidden: boolean;
@@ -109,20 +122,22 @@ const createExternalId = () =>
 
 const audioTracksOf = (video: VideoFile | undefined) => (video?.tracks ?? []).filter((track) => track.type === "audio");
 
-/** The worst status among a file's measurements, for its row. */
-function rowStatus(file: ExternalFile, currentReferenceTrack: number | undefined): { s: St; text: string } {
+/** The worst status among a file's measurements, for its row; a conformed
+ *  file's conform, which is what it is muxed as. */
+function rowStatus(file: ExternalFile, currentReferenceTrack: number | undefined, currentVideo?: VideoFile): { s: St; text: string } {
+  const conformed = conformedStatus(file, currentVideo);
+  if (conformed) return { s: conformed.s, text: conformed.text };
   const entries = [
     ...(file.measuredDelay ? [{ m: file.measuredDelay, pending: file.pendingDelay !== undefined }] : []),
     ...measuredTrackEntries(file).map(({ override }) => ({ m: override.measuredDelay!, pending: override.pendingDelay !== undefined })),
   ];
   if (entries.length === 0) return { s: "ready", text: "Ready" };
   const rank: Record<St, number> = { bad: 0, warn: 1, ok: 2, run: 3, writing: 3, wait: 4, ready: 5, written: 2 };
-  return entries.map(({ m, pending }) => measureStatus(m, { pending, currentReferenceTrack })).sort((a, b) => rank[a.s] - rank[b.s])[0];
+  return entries.map(({ m, pending }) => measureStatus(m, { pending, currentReferenceTrack, currentVideo })).sort((a, b) => rank[a.s] - rank[b.s])[0];
 }
 
 export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, preset, measurement }: AudioPageProps) {
   const shell = useShell();
-  const syncAudioLinks = useCallback((files: ExternalFile[]) => linkExternalFilesByOrder(files, videoFiles), [videoFiles]);
   const {
     audioTracks,
     activeAudioTrack,
@@ -148,6 +163,9 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
+  // Cleared when the search or the filter changes, as on Videos: a hidden row
+  // staying selected would let Remove or Duplicate act on a file out of sight.
+  useEffect(() => setSelectedRow(null), [search, filter]);
   /** Which audio track of each video to measure against, by video id. Empty
    *  means "the first audio track", as AudioSyncMaster does. */
   const [referenceTrackByVideoId, setReferenceTrackByVideoId] = useState<Record<string, number>>({});
@@ -164,6 +182,9 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     [videoFiles, referenceTrackByVideoId],
   );
 
+  /** The video a file is paired with now, as measuring and the mux resolve it. */
+  const videoOf = useCallback((file: ExternalFile | undefined): VideoFile | undefined => (file?.matchedVideoId ? videoFiles.find((video) => video.id === file.matchedVideoId) : undefined), [videoFiles]);
+
   const { engine: audiosyncEngine, isMeasuring, progress: measureProgress, start: startMeasuring, cancel: cancelMeasuring } = useMeasureDelays({
     videoFiles,
     audioFiles,
@@ -173,17 +194,117 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   });
   const measurementAvailable = Boolean(audiosyncEngine?.engineAvailable && audiosyncEngine.ffmpegAvailable);
 
+  // ------------------------------------------------------------- pairing
+  // Match by audio holds the engine like a measurement: one run at a time.
+  const onMatchFinished = useCallback(
+    (summary: AudioMatchSummary) => {
+      shell.releaseEngine("audio");
+      for (const result of summary.results)
+        shell.log(`Match by audio: ${result.fileName} in ${result.videoName}: ${result.error ? result.error : `${Math.round(result.confidence * 100)}% sure`}`);
+      if (summary.error) {
+        toast({ title: "Match by audio failed", description: summary.error, variant: "destructive" });
+        return;
+      }
+      const matched = summary.matched.length;
+      const left = summary.unmatched.length;
+      shell.log(`Match by audio: ${matched} paired${left ? `, ${left} left as ${left === 1 ? "it was" : "they were"}` : ""}${summary.cancelled ? " (stopped)" : ""}`);
+      toast({
+        title: matched ? `Paired ${matched} file${matched === 1 ? "" : "s"} by audio` : summary.cancelled ? "Match by audio stopped" : "No file matched by audio",
+        description: left ? `Not sure enough for ${summary.unmatched.slice(0, 3).join(", ")}${left > 3 ? ` and ${left - 3} more` : ""}: pair ${left === 1 ? "it" : "them"} by hand.` : "Each is in its video's row.",
+      });
+    },
+    [shell],
+  );
+  const { matching, progress: matchProgress, start: startMatching, cancel: cancelMatching } = useAudioMatch({
+    videoFiles,
+    files: audioFiles,
+    onFilesChange: onAudioFilesChange,
+    referenceTrackByVideoId,
+    measurement,
+    onFinished: onMatchFinished,
+  });
+  // ------------------------------------------------------------- conform
+  // Conforming holds the engine like a measurement. Its end gives it back,
+  // says what it made, and goes into History.
+  const onConformFinished = useCallback(
+    (summary: ConformSummary) => {
+      shell.releaseEngine("audio");
+      for (const skipped of summary.skipped) shell.log(`Conform: ${skipped.fileName}: not conformed: ${skipped.reason}`);
+      for (const outcome of summary.outcomes) {
+        shell.log(`Conform: ${outcome.fileName} onto ${outcome.videoName}: ${outcome.status === "failed" ? `failed: ${outcome.message}` : outcome.message}`);
+      }
+      const made = summary.outcomes.filter((outcome) => outcome.status !== "failed");
+      const failed = summary.outcomes.length - made.length;
+      const toCheck = made.filter((outcome) => outcome.status !== "verified").length;
+      if (summary.error && summary.outcomes.length === 0) {
+        toast({ title: summary.skipped.length ? "Nothing conformed" : "Could not conform", description: summary.error, variant: "destructive" });
+        return;
+      }
+      if (summary.outcomes.length === 0) {
+        toast({ title: "Nothing conformed", description: summary.skipped[0]?.reason ?? "There is nothing to conform." });
+        return;
+      }
+      const parts = [`${made.length} conformed`, toCheck ? `${toCheck} to check` : null, failed ? `${failed} failed` : null, summary.skipped.length ? `${summary.skipped.length} skipped` : null].filter(Boolean) as string[];
+      shell.log(`Conformed ${made.length} of ${summary.outcomes.length} dub${summary.outcomes.length === 1 ? "" : "s"} in ${tookText(Date.now() - summary.startedAt)}: ${parts.join(", ")}${summary.cancelled ? " (stopped)" : ""}`);
+      shell.addHistory({
+        id: createExternalId(),
+        page: "audio",
+        name: runName(summary.outcomes.map((outcome) => outcome.fileName)),
+        outcome: { tone: failed && !made.length ? "bad" : failed || toCheck ? "warn" : "ok", text: parts.join(", ") },
+        date: new Date().toISOString(),
+        files: summary.outcomes.map((outcome) => ({ name: outcome.fileName, tone: outcome.status === "failed" ? "bad" : outcome.status === "verified" ? "ok" : "warn", text: outcome.status === "failed" ? "Conform failed" : outcome.status === "verified" ? "Conformed" : "Conformed, check it" })),
+      });
+      toast({
+        title: summary.cancelled ? `Conform stopped: ${made.length} conformed` : summary.error ? "Conform ended early" : `Conformed ${made.length} dub${made.length === 1 ? "" : "s"}`,
+        description: summary.error ?? (failed ? `${failed} could not be conformed: see the rows marked Conform failed.` : toCheck ? `${toCheck} could not be confirmed against the video: check ${toCheck === 1 ? "it" : "them"} before muxing.` : "Each is laid onto its video's cut and checked. The mux takes the conformed track."),
+        variant: failed || summary.error ? "destructive" : undefined,
+      });
+    },
+    [shell],
+  );
+  const { conforming, progress: conformProgress, failures: conformFailures, start: startConform, cancel: cancelConform } = useConform({
+    videoFiles,
+    audioFiles,
+    onAudioFilesChange,
+    referenceTrackByVideoId,
+    measurement,
+    onFinished: onConformFinished,
+  });
+
+  /** A run is writing to the list: measuring delays, matching by audio, or conforming. */
+  const busy = isMeasuring || matching || conforming;
+  const pairing = usePairing({ files: audioFiles, videoFiles, onFilesChange: onAudioFilesChange, frozen: busy });
+  const syncAudioLinks = pairing.sync;
+  const pairByFor = pairing.pairByFor;
+  /** The files, without the empty rows that keep their places. */
+  const realAudioFiles = useMemo(() => realFiles(audioFiles), [audioFiles]);
+  const matchJobs = useMemo(() => audioMatchJobs(audioFiles, videoFiles, pairing.report), [audioFiles, videoFiles, pairing.report]);
+  const beginMatching = useCallback(async () => {
+    if (busy || matchJobs.length === 0) return;
+    if (!shell.claimEngine("audio")) {
+      toast({ title: engineHolder(shell.enginePage) ?? "The engine is busy", description: "Match once it is done, or stop it first." });
+      return;
+    }
+    const tries = matchJobs.reduce((sum, job) => sum + job.videos.length, 0);
+    shell.log(`Matching ${matchJobs.length} file${matchJobs.length === 1 ? "" : "s"} by audio: ${tries} quick listen${tries === 1 ? "" : "s"}`);
+    if (!(await startMatching(matchJobs))) shell.releaseEngine("audio");
+  }, [busy, matchJobs, shell, startMatching]);
+
   // ------------------------------------------------------------ the engine
   // One command at a time: measuring holds the engine, so Mux cannot start a
   // batch meanwhile, and the other way round.
   const isMeasuringRef = useRef(isMeasuring);
   isMeasuringRef.current = isMeasuring;
+  const matchingRef = useRef(matching);
+  matchingRef.current = matching;
   const run = useRef<{ ids: Set<string> | null; startedAt: number } | null>(null);
+  const conformingRef = useRef(conforming);
+  conformingRef.current = conforming;
   const beginMeasuring = useCallback(
     async (options: { onlyAudioFileIds?: string[]; force?: boolean } = {}) => {
-      if (isMeasuringRef.current) return;
+      if (isMeasuringRef.current || matchingRef.current || conformingRef.current) return;
       if (!shell.claimEngine("audio")) {
-        toast({ title: "Muxing is running", description: "Measure once the batch is done, or stop it first." });
+        toast({ title: engineHolder(shell.enginePage) ?? "The engine is busy", description: "Measure once it is done, or stop it first." });
         return;
       }
       run.current = { ids: options.onlyAudioFileIds ? new Set(options.onlyAudioFileIds) : null, startedAt: Date.now() };
@@ -198,6 +319,22 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       }, 50);
     },
     [shell, startMeasuring, activeAudioTrack, measurement?.windowCount, measurement?.windowSeconds],
+  );
+
+  /** Conform these dubs onto their videos' cuts (Preferences › Measurement
+   *  says how). */
+  const beginConform = useCallback(
+    async (fileIds: string[]) => {
+      if (fileIds.length === 0 || isMeasuringRef.current || matchingRef.current || conformingRef.current) return;
+      if (!shell.claimEngine("audio")) {
+        toast({ title: engineHolder(shell.enginePage) ?? "The engine is busy", description: "Conform once it is done, or stop it first." });
+        return;
+      }
+      const lossless = measurement?.conformMode === "lossless";
+      shell.log(`Conforming ${fileIds.length} dub${fileIds.length === 1 ? "" : "s"} to ${fileIds.length === 1 ? "its video's" : "their videos'"} cut, ${lossless ? "cut on their own frames" : `re-encoded to the sample${measurement?.conformCodec === "flac" ? " as FLAC" : ""}`}`);
+      await startConform(fileIds);
+    },
+    [shell, startConform, measurement?.conformMode, measurement?.conformCodec],
   );
 
   // A run that ends: release the engine, record it, and log what it found.
@@ -219,11 +356,11 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     if (files.length === 0) return;
     for (const file of files) {
       for (const m of measurementsOf(file)) {
-        const top = measureFindings(m, currentReferenceFor(file)).find((finding) => finding.tone !== "ok");
+        const top = measureFindings(m, currentReferenceFor(file), videoOf(file)).find((finding) => finding.tone !== "ok");
         if (top) shell.log(`${file.name}: ${top.word.toLowerCase()}: ${top.line}`);
       }
     }
-    const outcome = measureOutcome(files);
+    const outcome = measureOutcome(files, videoOf);
     shell.log(`Measured ${files.length} file${files.length === 1 ? "" : "s"} in ${tookText(Date.now() - current.startedAt)}: ${outcome.parts.join(", ")}`);
     shell.addHistory({
       id: createExternalId(),
@@ -232,11 +369,11 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       outcome: { tone: outcome.tone, text: outcome.parts.join(", ") },
       date: new Date().toISOString(),
       files: files.map((file) => {
-        const status = rowStatus(file, currentReferenceFor(file));
+        const status = rowStatus(file, currentReferenceFor(file), videoOf(file));
         return { name: file.name, tone: status.s, text: status.text };
       }),
     });
-  }, [isMeasuring, shell, currentReferenceFor]);
+  }, [isMeasuring, shell, currentReferenceFor, videoOf]);
 
   // ---------------------------------------------------------- measurement
 
@@ -259,15 +396,32 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   /** Re-measure one row, ignoring the skip rules for it alone. */
   const remeasureFile = useCallback((fileId: string) => void beginMeasuring({ onlyAudioFileIds: [fileId], force: true }), [beginMeasuring]);
 
+  /** A file whose pending delays Apply takes: not one measured against
+   *  another video than its own now, nor one muxed as its conformed track. */
+  const appliable = useCallback((file: ExternalFile) => !isMeasuredAgainstAnother(file, videoOf(file)) && !conformedFor(file, videoOf(file)), [videoOf]);
   // Drives the Apply button, counting each track of a multi-track file; measuredCount separately gates the re-measure offer.
-  const pendingCount = useMemo(() => audioFiles.reduce((count, file) => count + pendingDelayCount(file), 0), [audioFiles]);
+  const pendingCount = useMemo(() => audioFiles.reduce((count, file) => count + (appliable(file) ? pendingDelayCount(file) : 0), 0), [audioFiles, appliable]);
+  /** The rows "Conform N dubs" takes: different cuts, measured against their own video, one audio track each. */
+  const conformIds = useMemo(() => realFiles(audioFiles).filter((file) => offersConform(file, videoOf(file))).map((file) => file.id), [audioFiles, videoOf]);
+  /** Different cuts that can't be conformed as they are (several dubs, or
+   *  subtitles that would drop out of the mux), each with why. */
+  const conformHeld = useMemo(
+    () =>
+      new Map(
+        realFiles(audioFiles).flatMap((file) => {
+          const reason = measuredAsDifferentCut(file) ? conformRefusal(file, videoOf(file)) : null;
+          return reason ? [[file.id, reason] as const] : [];
+        }),
+      ),
+    [audioFiles, videoOf],
+  );
   const measuredCount = useMemo(() => audioFiles.filter((file) => file.measuredDelay || Object.values(file.trackOverrides ?? {}).some((o) => o.measuredDelay)).length, [audioFiles]);
 
   const applyAllMeasuredDelays = useCallback(() => {
-    onAudioFilesChange(audioFiles.map(applyAllPendingDelays));
+    onAudioFilesChange(audioFiles.map((file) => (appliable(file) ? applyAllPendingDelays(file) : file)));
     shell.log(`Applied ${pendingCount} measured ${pendingCount === 1 ? "delay" : "delays"}`);
     toast({ title: `Applied ${pendingCount} ${pendingCount === 1 ? "delay" : "delays"}`, description: "The measured values are now the files' delays." });
-  }, [audioFiles, onAudioFilesChange, pendingCount, shell]);
+  }, [audioFiles, onAudioFilesChange, pendingCount, shell, appliable]);
 
   /** Accept one file's measurement, leaving every other file alone. */
   const applyOneMeasuredDelay = useCallback(
@@ -376,10 +530,12 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
   const updateCurrentConfig = (updates: Partial<TrackConfig>) => updateAudioTrackConfig(activeAudioTrack, updates);
 
-  const lastAppliedConfig = useRef<TrackConfig | null>(null);
+  /** The settings last stamped on each slot's files, by slot: one shared by
+   *  every slot would count each switch of tab as a change of settings. */
+  const lastAppliedConfig = useRef<Record<string, TrackConfig>>({});
   useEffect(() => {
     if (audioFiles.length === 0) return;
-    const prev = lastAppliedConfig.current;
+    const prev = lastAppliedConfig.current[activeAudioTrack];
     const same =
       prev &&
       prev.sourceFolder === currentConfig.sourceFolder &&
@@ -391,10 +547,10 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       prev.isForced === currentConfig.isForced &&
       prev.muxAfter === currentConfig.muxAfter;
     if (same) return;
-    lastAppliedConfig.current = { ...currentConfig };
+    lastAppliedConfig.current[activeAudioTrack] = { ...currentConfig };
     const delayValue = delaySecondsOrZero(currentConfig.delay);
     onAudioFilesChange(
-      audioFiles.map((file) => ({
+      audioFiles.map((file) => file.placeholder ? file : ({
         ...file,
         // Global default/forced toggles must always apply from the slot's settings.
         isDefault: currentConfig.isDefault,
@@ -404,14 +560,15 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           : {
               language: currentConfig.language,
               trackName: currentConfig.trackName,
-              // An accepted measurement is the file's own delay, not a slot for
-              // the global default to keep overwriting.
-              delay: file.delayProvenance === "measured" ? file.delay : delayValue,
+              // An accepted measurement or a typed delay ("This delay to every
+              // row") is the file's own, not a slot for the global default to
+              // keep overwriting.
+              delay: file.delayProvenance === "measured" || file.delayProvenance === "manual" ? file.delay : delayValue,
               muxAfter: currentConfig.muxAfter,
             }),
       })),
     );
-  }, [audioFiles, currentConfig, onAudioFilesChange]);
+  }, [audioFiles, currentConfig, onAudioFilesChange, activeAudioTrack]);
 
   useEffect(() => {
     audioFilesCache.current[activeAudioTrack] = audioFiles;
@@ -424,7 +581,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   }, [activeAudioTrack, audioFiles, onAudioFilesChange]);
 
   const addNewTrack = useCallback(() => {
-    const newTrackNumber = (audioTracks.length + 1).toString();
+    const newTrackNumber = nextSlotId(audioTracks);
     setAudioTracks([...audioTracks, newTrackNumber]);
     updateAudioTrackConfig(newTrackNumber, { ...defaultTrackConfig });
     setActiveAudioTrack(newTrackNumber);
@@ -433,7 +590,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   }, [audioTracks, setActiveAudioTrack, setAudioTracks, updateAudioTrackConfig]);
 
   const duplicateTrack = () => {
-    const newTrackNumber = (audioTracks.length + 1).toString();
+    const newTrackNumber = nextSlotId(audioTracks);
     const currentSettings = audioTrackConfigs[activeAudioTrack] || defaultTrackConfig;
     setAudioTracks([...audioTracks, newTrackNumber]);
     updateAudioTrackConfig(newTrackNumber, { ...currentSettings });
@@ -441,12 +598,12 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     toast({ title: `Audio ${newTrackNumber} added`, description: `With the settings of Audio ${activeAudioTrack}.` });
   };
 
+  /** By order the rows between shift; by episode the two files trade videos,
+   *  each kept where it was put (smartPairing.moveByHand). */
   const reorderAudioFile = (fromIndex: number, toIndex: number) => {
-    if (toIndex < 0 || toIndex >= audioFiles.length) return;
-    const updated = [...audioFiles];
-    const [moved] = updated.splice(fromIndex, 1);
-    updated.splice(toIndex, 0, moved);
-    onAudioFilesChange(syncAudioLinks(updated));
+    const last = (pairing.pairBy === "episode" ? videoFiles.length : audioFiles.length) - 1;
+    if (toIndex < 0 || toIndex > last || isPlaceholder(audioFiles[fromIndex])) return;
+    pairing.move(fromIndex, toIndex);
     setSelectedRow(toIndex);
   };
 
@@ -457,21 +614,34 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
   const duplicateAudioFile = (index: number) => {
     const original = audioFiles[index];
-    if (!original) return;
+    if (!original || original.placeholder) return;
     if (videoFiles.length === 0) {
       toast({ title: "Nothing to duplicate into", description: "Add video files before duplicating audio.", variant: "destructive" });
       return;
     }
-    if (audioFiles.length >= videoFiles.length) {
+    if (realAudioFiles.length >= videoFiles.length) {
       toast({ title: "Nothing to duplicate into", description: "There cannot be more audio files than videos.", variant: "destructive" });
       return;
     }
-    const newFile: ExternalFile = { ...original, id: `audio-dup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
+    // The copy is kept with its video by hand: the same name twice would
+    // otherwise read as a second file for one episode.
+    const copy = (row: number): ExternalFile => ({ ...original, id: `audio-dup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, matchedVideoId: videoFiles[row]?.id, isManuallyLinked: true, audioMatch: undefined });
     const updated = [...audioFiles];
-    updated.splice(index + 1, 0, newFile);
-    onAudioFilesChange(linkExternalFilesByOrder(updated, videoFiles));
-    setSelectedRow(index + 1);
-    toast({ title: "Audio duplicated", description: `${original.name}, paired by row.` });
+    let row = index + 1;
+    if (pairing.pairBy === "episode") {
+      // Into the next empty row: every row with a file is that file's episode.
+      row = videoFiles.findIndex((_, r) => r > index && (!audioFiles[r] || isPlaceholder(audioFiles[r])));
+      if (row < 0) {
+        toast({ title: "Nothing to duplicate into", description: "Every video after this one has its file.", variant: "destructive" });
+        return;
+      }
+      while (updated.length < row) updated.push(placeholderFor(videoFiles[updated.length], "audio"));
+      updated[row] = copy(row);
+    } else if (isPlaceholder(updated[row])) updated[row] = copy(row);
+    else updated.splice(row, 0, copy(row));
+    onAudioFilesChange(syncAudioLinks(updated));
+    setSelectedRow(row);
+    toast({ title: "Audio duplicated", description: pairing.pairBy === "episode" ? `${original.name}, beside ${videoFiles[row].name}.` : `${original.name}, paired by row.` });
   };
 
   /** The form as the popup opened, so a Save that changed nothing only closes:
@@ -533,6 +703,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       const selAudioIdx = new Set(srcAudioTracks.map((t, i) => ({ i, id: Number(t.id) })).filter(({ id }) => editForm.includedTrackIds.includes(id)).map(({ i }) => i));
       const selSubIdx = new Set(srcSubTracks.map((t, i) => ({ i, id: Number(t.id) })).filter(({ id }) => editForm.includedSubtitleTrackIds.includes(id)).map(({ i }) => i));
       const updated = audioFiles.map((file) => {
+        if (file.placeholder) return file;
         const fileAudioTracks = (file.tracks || []).filter((t) => t.type === "audio");
         const fileSubTracks = (file.tracks || []).filter((t) => t.type === "subtitle");
         const newAudioIds = fileAudioTracks.map((t, i) => ({ i, id: Number(t.id) })).filter(({ i }) => selAudioIdx.has(i)).map(({ id }) => id).filter((id) => Number.isFinite(id));
@@ -557,7 +728,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       });
       onAudioFilesChange(updated);
       closeEdit();
-      toast({ title: "Applied to every file", description: `${audioFiles.length} audio file${audioFiles.length === 1 ? "" : "s"}.` });
+      toast({ title: "Applied to every file", description: `${realAudioFiles.length} audio file${realAudioFiles.length === 1 ? "" : "s"}.` });
       return;
     }
     let updated = audioFiles.map((file) => {
@@ -583,7 +754,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           isManuallyEdited: true,
         };
       }
-      if (editForm.applyDelayToAll) return file.delay !== delayValue ? { ...markDelayAsManual(file, null), delay: delayValue } : file;
+      if (editForm.applyDelayToAll && !file.placeholder) return file.delay !== delayValue ? { ...markDelayAsManual(file, null), delay: delayValue } : file;
       return file;
     });
     // Paired: the other rows of this file take its settings, each keeping its own delays.
@@ -601,7 +772,9 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     const track = file.tracks?.find((t) => Number(t.id) === trackId);
     const overrides = file.trackOverrides?.[trackId] || {};
     setTrackEditTarget({ fileId, trackId, trackType });
-    setTrackEditForm({ language: overrides.language || track?.language || "und", delay: (overrides.delay ?? 0).toFixed(3), trackName: overrides.trackName || track?.name || "" });
+    // The delay the track is muxed with: its own, or else the file's (main.rs).
+    // Opening on 0 for a track without one would save 0 over the file's delay.
+    setTrackEditForm({ language: overrides.language || track?.language || "und", delay: (overrides.delay ?? file.delay ?? 0).toFixed(3), trackName: overrides.trackName || track?.name || "" });
     setTrackEditOpen(true);
   };
 
@@ -628,13 +801,18 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     if (!trackEditTarget) return;
     const { fileId, trackId } = trackEditTarget;
     const nextDelay = delaySecondsOrZero(next.delay ?? 0);
+    const openedDelay = delaySecondsOrZero(trackEditForm.delay);
     updateOneFile(fileId, (file) => {
       const previous = file.trackOverrides?.[trackId];
       // A changed delay is hand-typed, and clears the measurement it replaces;
       // an unchanged one leaves the existing provenance and metadata intact.
-      const source = previous?.delay !== nextDelay ? markDelayAsManual(file, trackId) : file;
+      // Unchanged means as the dialog opened, on the file's delay when the
+      // track has none of its own: the track then keeps following the file's,
+      // rather than a copy of it that a later change to the file's would miss.
+      const changed = nextDelay !== openedDelay;
+      const source = changed ? markDelayAsManual(file, trackId) : file;
       const nextOverrides = { ...(source.trackOverrides || {}) };
-      nextOverrides[trackId] = { ...nextOverrides[trackId], language: next.language || undefined, delay: nextDelay, trackName: next.trackName || undefined };
+      nextOverrides[trackId] = { ...nextOverrides[trackId], language: next.language || undefined, delay: changed ? nextDelay : previous?.delay, trackName: next.trackName || undefined };
       return { ...source, trackOverrides: nextOverrides, isManuallyEdited: true };
     });
     setTrackEditOpen(false);
@@ -690,6 +868,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           trackName: prior?.trackName ?? currentConfig.trackName,
           delay: keepsOwnDelay ? prior.delay : delaySecondsOrZero(currentConfig.delay),
           ...(keepsOwnDelay ? { delayProvenance: prior.delayProvenance, measuredDelay: prior.measuredDelay, stretch: prior.stretch } : {}),
+          // A conformed track is made from this very file: a rescan keeps it.
+          ...(prior?.conformed ? { conformed: prior.conformed } : {}),
           isDefault: currentConfig.isDefault,
           isForced: currentConfig.isForced,
           muxAfter: currentConfig.muxAfter,
@@ -697,6 +877,9 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           includedSubtitleTrackIds: file.includedSubtitleTrackIds?.length ? file.includedSubtitleTrackIds : getSubtitleTrackIds(file),
           // Per-track measurements live here, so they survive a rescan too.
           trackOverrides: prior?.trackOverrides ?? file.trackOverrides ?? {},
+          // Kept with the language and name it guards: dropped, the next change
+          // of the slot's settings would overwrite what was set by hand.
+          isManuallyEdited: prior?.isManuallyEdited,
           includedTrackIds: file.tracks && file.tracks.length > 0 ? getAudioTrackIds(file) : file.includedTrackIds,
         };
       });
@@ -713,22 +896,17 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       const extensions = currentConfig.extension === "all" ? audioExtensions : [currentConfig.extension];
       try {
         const results = await scanMedia({ folder: folderPath, extensions, recursive: false, type: "audio", include_tracks: true });
-        onAudioFilesChange(syncAudioLinks(normalize(results as ExternalFile[])));
-        shell.log(`Audio ${activeAudioTrack}: ${results.length} file${results.length === 1 ? "" : "s"} from ${folderPath}, paired by row`);
+        const paired = syncAudioLinks(normalize(results as ExternalFile[]));
+        onAudioFilesChange(paired);
+        const gaps = paired.filter(isPlaceholder).length;
+        shell.log(`Audio ${activeAudioTrack}: ${results.length} file${results.length === 1 ? "" : "s"} from ${folderPath}, paired by ${pairByFor(paired) === "episode" ? `episode${gaps ? `, ${gaps} episode${gaps === 1 ? "" : "s"} without one` : ""}` : "row"}`);
       } catch (error) {
         shell.log(`Error: could not scan ${folderPath}: ${String(error)}`);
         toast({ title: "Could not scan the folder", description: String(error), variant: "destructive" });
       }
     },
-    [currentConfig.extension, normalize, onAudioFilesChange, syncAudioLinks, shell, activeAudioTrack],
+    [currentConfig.extension, normalize, onAudioFilesChange, syncAudioLinks, shell, activeAudioTrack, pairByFor],
   );
-
-  useEffect(() => {
-    if (audioFiles.length === 0) return;
-    // Only compare rows that have a video to pair with; past the end, keep the existing link.
-    const needsRowMatch = audioFiles.slice(0, videoFiles.length).some((file, index) => file.matchedVideoId !== videoFiles[index]?.id);
-    if (needsRowMatch) onAudioFilesChange(linkExternalFilesByOrder(audioFiles, videoFiles));
-  }, [audioFiles, onAudioFilesChange, videoFiles]);
 
   const confirmDeleteTrack = (trackId: string) => {
     if (audioTracks.length <= 1) return;
@@ -747,6 +925,12 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     toast({ title: `Audio ${deletedNumber} deleted` });
   };
 
+  /** The row an import lands in: the selected one, or the first without a
+   *  file when that is further down. Row n is file n, so a file cannot sit
+   *  past an empty row: pushed onto the end it would pair with the next video,
+   *  not the one the dialog named. */
+  const importRow = Math.min(selectedRow ?? 0, audioFiles.length);
+
   const handleImportAudios = () => {
     if (videoFiles.length === 0) {
       toast({ title: "No videos loaded", description: "Load the videos first, then import audio streams from them.", variant: "destructive" });
@@ -759,7 +943,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   };
 
   const handleConfirmImportAudios = () => {
-    const targetIndex = selectedRow ?? 0;
+    const targetIndex = importRow;
     const targetVideo = videoFiles[targetIndex];
     if (!targetVideo || !selectedImportSource || importSelectedTrackKeys.length === 0) return;
     const selectedTrackKeySet = new Set(importSelectedTrackKeys);
@@ -783,6 +967,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       isForced: currentConfig.isForced,
       muxAfter: currentConfig.muxAfter,
       matchedVideoId: targetVideo.id,
+      // Put in this row on purpose: pairing by episode leaves it here.
+      isManuallyLinked: true,
       tracks: mergedTracks,
       includedTrackIds: mergedTracks.map((track) => Number(track.id)).filter((id) => Number.isFinite(id)),
       includeSubtitles: false,
@@ -836,7 +1022,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
   const rowCount = Math.max(videoFiles.length, audioFiles.length);
   const rows = useMemo(() => {
-    const all = Array.from({ length: rowCount }, (_, index) => ({ index, video: videoFiles[index], file: audioFiles[index] }));
+    // An empty row (placeholder) shows as a row without a file.
+    const all = Array.from({ length: rowCount }, (_, index) => ({ index, video: videoFiles[index], entry: audioFiles[index], file: isPlaceholder(audioFiles[index]) ? undefined : audioFiles[index] }));
     return all.filter(({ video, file }) => {
       const hit = (video && matchesSearch(video, search)) || (file && matchesSearch(file, search));
       if (!hit) return false;
@@ -851,20 +1038,28 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
   const drag = useRowReorder({
     bodyRef,
     rowCount,
-    disabled: !ordered || isMeasuring,
-    onMove: (from, to) => from < audioFiles.length && reorderAudioFile(from, Math.min(to, audioFiles.length - 1)),
+    disabled: !ordered || busy,
+    onMove: (from, to) => from < audioFiles.length && reorderAudioFile(from, Math.min(to, (pairing.pairBy === "episode" ? videoFiles.length : audioFiles.length) - 1)),
   });
 
-  const selectedFile = selectedRow !== null ? audioFiles[selectedRow] : undefined;
-  const canMoveUp = ordered && !isMeasuring && selectedRow !== null && selectedRow > 0 && selectedRow < audioFiles.length;
-  const canMoveDown = ordered && !isMeasuring && selectedRow !== null && selectedRow < audioFiles.length - 1;
-  const muxHoldsEngine = shell.enginePage === "mux";
+  const selectedEntry = selectedRow !== null ? audioFiles[selectedRow] : undefined;
+  const selectedFile = isPlaceholder(selectedEntry) ? undefined : selectedEntry;
+  // An empty row can go while pairing by order (the files below move up); by
+  // episode it would only come back.
+  const canRemove = !busy && selectedRow !== null && Boolean(selectedFile || (selectedEntry && pairing.pairBy === "order"));
+  const lastMovable = (pairing.pairBy === "episode" ? videoFiles.length : audioFiles.length) - 1;
+  const canMoveUp = ordered && !busy && Boolean(selectedFile) && selectedRow !== null && selectedRow > 0 && selectedRow <= lastMovable;
+  const canMoveDown = ordered && !busy && Boolean(selectedFile) && selectedRow !== null && selectedRow < lastMovable;
+  /** What holds the engine when it is not this page: muxing, Subtitles'
+   *  sync, or a watch folder. Null when it is free or this page's own. */
+  const heldBy = shell.enginePage !== null && shell.enginePage !== "audio" ? engineHolder(shell.enginePage) : null;
+  const engineBusy = heldBy !== null;
 
   usePageCommands("audio", {
     chooseFolder: () => void chooseFolder(),
     importFromVideo: handleImportAudios,
-    removeSelected: selectedFile && selectedRow !== null && !isMeasuring ? () => removeAudioFile(selectedRow) : undefined,
-    clear: audioFiles.length && !isMeasuring
+    removeSelected: canRemove ? () => removeAudioFile(selectedRow!) : undefined,
+    clear: audioFiles.length && !busy
       ? () => {
           updateCurrentConfig({ sourceFolder: "" });
           onAudioFilesChange([]);
@@ -872,12 +1067,15 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       : undefined,
     moveUp: canMoveUp ? () => reorderAudioFile(selectedRow!, selectedRow! - 1) : undefined,
     moveDown: canMoveDown ? () => reorderAudioFile(selectedRow!, selectedRow! + 1) : undefined,
-    newTrack: isMeasuring ? undefined : addNewTrack,
-    duplicateTrack: isMeasuring ? undefined : duplicateTrack,
-    start: measurementAvailable && audioFiles.length > 0 && !isMeasuring && !muxHoldsEngine ? () => void beginMeasuring() : undefined,
-    stop: isMeasuring ? () => void cancelMeasuring() : undefined,
+    newTrack: busy ? undefined : addNewTrack,
+    duplicateTrack: busy ? undefined : duplicateTrack,
+    start: measurementAvailable && realAudioFiles.length > 0 && !busy && !engineBusy ? () => void beginMeasuring() : undefined,
+    stop: isMeasuring ? () => void cancelMeasuring() : matching ? () => void cancelMatching() : conforming ? () => void cancelConform() : undefined,
+    // Ctrl+O and File › Import from a video would replace the list under a
+    // run, as the toolbar's own buttons, disabled meanwhile, cannot.
+    disabled: { chooseFolder: busy, importFromVideo: busy },
     drop: (paths) => {
-      if (isMeasuring) return;
+      if (busy) return;
       const folder = paths.find(looksLikeFolder);
       if (folder) {
         updateCurrentConfig({ sourceFolder: folder });
@@ -888,10 +1086,26 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
   // --------------------------------------------------------------- display
 
-  const summary = useMemo(() => measureOutcome(audioFiles), [audioFiles]);
+  const summary = useMemo(() => measureOutcome(realFiles(audioFiles), videoOf), [audioFiles, videoOf]);
   const slotLine = `Audio ${activeAudioTrack} · ${languageName(currentConfig.language)}${currentConfig.isDefault ? " · default" : ""} · after ${(muxAfterOptions.find((o) => o.value === currentConfig.muxAfter)?.label ?? "the video").toLowerCase()}`;
   const phaseWord = measureProgress ? { measure: "Measuring", wide: "Searching wider", scan: "Scanning for cuts" }[measureProgress.phase] : "Measuring";
-  const lcd: LcdProps = isMeasuring
+  const conflicts = pairing.report.conflicts;
+  const conformStage = conformProgress ? Object.values(conformProgress.active)[0]?.stage : null;
+  const lcd: LcdProps = conforming
+    ? {
+        icon: "run",
+        l1: conformProgress ? `Conforming · ${conformProgress.processed} of ${conformProgress.total} done` : "Conforming",
+        l2: conformStage ?? (measurement?.conformMode === "lossless" ? "Cutting each dub on its own frames" : "Laying each dub onto its video's cut"),
+        pct: conformProgress && conformProgress.total > 0 ? ((conformProgress.processed + Object.values(conformProgress.active).reduce((sum, entry) => sum + entry.percent / 100, 0)) / conformProgress.total) * 100 : null,
+      }
+    : matching
+    ? {
+        icon: "run",
+        l1: matchProgress ? `Matching by audio · ${matchProgress.processed} of ${matchProgress.total} done` : "Matching by audio",
+        l2: "Quick listens to place the files the names could not",
+        pct: matchProgress && matchProgress.total > 0 ? (matchProgress.processed / matchProgress.total) * 100 : null,
+      }
+    : isMeasuring
     ? {
         icon: "run",
         // Several pairs run at once, so the count is of those done, and the
@@ -901,19 +1115,23 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
         pct: measureProgress && measureProgress.total > 0 ? runFraction(measureProgress) * 100 : null,
         time: run.current && measureProgress ? (timeLeftText(Date.now() - run.current.startedAt, runFraction(measureProgress)) ?? undefined) : undefined,
       }
-    : audioFiles.length === 0
+    : realAudioFiles.length === 0
       ? { l1: `Drop a folder of audio files for Audio ${activeAudioTrack}` }
       : audiosyncEngine && !measurementAvailable
         ? { icon: "warn", l1: "The audio analysis engine is missing", l2: audiosyncEngine.message ?? "Measuring needs it · Preferences › Tools" }
-        : unlinkedCount > 0
-          ? { icon: "warn", l1: `${unlinkedCount} audio file${unlinkedCount === 1 ? " has" : "s have"} no video`, l2: `Rows past ${videoFiles.length} have nothing to go into` }
+        : conflicts.length > 0
+          ? {
+              icon: "warn",
+              l1: unlinkedCount === conflicts.length ? `${unlinkedCount} audio file${unlinkedCount === 1 ? " has" : "s have"} no video` : `${conflicts.length} audio file${conflicts.length === 1 ? "" : "s"} to pair`,
+              l2: `Row ${conflicts[0].row + 1}: ${audioFiles[conflicts[0].row]?.name} ${conflicts[0].message.replace(/\.$/, "")}`,
+            }
           : measuredCount > 0 && pendingCount > 0
-            ? { icon: summary.problems ? "warn" : "ok", l1: summary.problems ? `${summary.parts[0]} · ${summary.problems} to check` : summary.parts[0], l2: summary.problems ? summary.parts.slice(1).join(" · ") : slotLine, time: `${pendingCount} to apply` }
+            ? { icon: summary.problems ? "warn" : "ok", l1: summary.problems ? `${summary.parts[0]} · ${summary.problems} to check` : summary.parts[0], l2: summary.problems ? summary.parts.slice(1).join(" · ") : slotLine, time: `${pendingCount} to apply${conformIds.length ? ` · ${conformIds.length} to conform` : ""}` }
             : measuredCount > 0
-              ? { icon: summary.problems ? "warn" : "ok", l1: summary.problems ? `${summary.parts[0]} · ${summary.problems} to check` : `${measuredCount} delays in`, l2: summary.problems ? summary.parts.slice(1).join(" · ") : slotLine }
-              : { l1: `${audioFiles.length} audio file${audioFiles.length === 1 ? "" : "s"} · ${audioFiles.length - unlinkedCount} paired`, l2: slotLine };
+              ? { icon: summary.problems ? "warn" : "ok", l1: summary.problems ? `${summary.parts[0]} · ${summary.problems} to check` : `${measuredCount} delays in`, l2: summary.problems ? summary.parts.slice(1).join(" · ") : slotLine, time: conformIds.length ? `${conformIds.length} to conform` : undefined }
+              : { l1: `${realAudioFiles.length} audio file${realAudioFiles.length === 1 ? "" : "s"} · ${realAudioFiles.length - unlinkedCount} paired by ${pairing.pairBy === "episode" ? "episode" : "row"}`, l2: slotLine };
 
-  const measureTitle = audiosyncEngine === null ? "Checking for the audio analysis engine…" : (audiosyncEngine.message ?? (muxHoldsEngine ? "Muxing is running" : audioFiles.length === 0 ? "Add audio files to measure their delays." : "Measure each file's delay against the video it will be muxed into."));
+  const measureTitle = audiosyncEngine === null ? "Checking for the audio analysis engine…" : (audiosyncEngine.message ?? (engineBusy ? heldBy : realAudioFiles.length === 0 ? "Add audio files to measure their delays." : "Measure each file's delay against the video it will be muxed into."));
   const folder = currentConfig.sourceFolder;
 
   /** The reference track picker for a video: which of its audio tracks the
@@ -958,8 +1176,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
 
   const fileLinks = (index: number) => (
     <>
-      <L icon={<CopyRegular />} onClick={() => duplicateAudioFile(index)} disabled={isMeasuring}>Duplicate</L>
-      <L icon={<DeleteRegular />} onClick={() => removeAudioFile(index)} disabled={isMeasuring}>Remove</L>
+      <L icon={<CopyRegular />} onClick={() => duplicateAudioFile(index)} disabled={busy}>Duplicate</L>
+      <L icon={<DeleteRegular />} onClick={() => removeAudioFile(index)} disabled={busy}>Remove</L>
     </>
   );
 
@@ -971,7 +1189,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     const video = videoFiles[index];
     const fps = audioFpsFor(file, videoFiles.find((v) => v.id === file.matchedVideoId));
     const currentRef = currentReferenceFor(file);
-    const canMeasure = measurementAvailable && !muxHoldsEngine;
+    const canMeasure = measurementAvailable && !engineBusy;
     const format = (() => {
       const track = file.tracks?.find((t) => t.type === "audio");
       return [track?.codec, track?.name, track?.bitrate ? `${Math.round(track.bitrate / 1000)} kb/s` : null].filter(Boolean).join(" · ") || file.name.split(".").pop()?.toUpperCase() || "—";
@@ -992,7 +1210,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       return (
         <>
           <Links>
-            {pending > 0 && <L icon={<CheckmarkRegular />} onClick={() => applyOneMeasuredDelay(file.id)} disabled={isMeasuring}>Apply {pending} {pending === 1 ? "delay" : "delays"}</L>}
+            {pending > 0 && appliable(file) && <L icon={<CheckmarkRegular />} onClick={() => applyOneMeasuredDelay(file.id)} disabled={isMeasuring}>Apply {pending} {pending === 1 ? "delay" : "delays"}</L>}
             {canMeasure && (
               <L icon={<GaugeRegular />} onClick={() => remeasureFile(file.id)} disabled={isMeasuring}>
                 {tracks.some((entry) => entry.measured) ? "Measure every track again" : "Measure every track"}
@@ -1007,7 +1225,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
               ...(against ? ([["Against", against]] as [string, JSX.Element][]) : []),
             ]}
           />
-          <TrackDelayList entries={tracks} fps={video.fps} currentReferenceTrack={currentRef} />
+          <TrackDelayList entries={tracks} fps={video.fps} currentReferenceTrack={currentRef} currentVideo={videoOf(file)} />
           {tracks
             .filter((entry) => entry.measured)
             .map((entry) => (
@@ -1018,6 +1236,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                   measured={entry.measured!}
                   pending={entry.pending !== undefined}
                   currentReferenceTrack={currentRef}
+                  currentVideo={videoOf(file)}
+                  replaced={conformedFor(file, videoOf(file))}
                   stretch={file.trackOverrides?.[entry.trackId]?.stretch}
                   onStretch={(next) => setStretchForTrack(file.id, entry.trackId, next)}
                   busy={isMeasuring}
@@ -1036,6 +1256,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           measured={file.measuredDelay}
           pending={file.pendingDelay !== undefined}
           currentReferenceTrack={currentRef}
+          currentVideo={videoOf(file)}
+          replaced={conformedFor(file, videoOf(file))}
           against={against}
           stretch={file.stretch}
           onStretch={(next) => setStretchForFile(file.id, next)}
@@ -1068,6 +1290,70 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
     );
   };
 
+  /** The engine's check of a conformed track, in full, when asked for. */
+  const [checkText, setCheckText] = useState<string | null>(null);
+  /** The popup's Conform part: the conformed track and its check, with
+   *  Undo; or the offer to conform, or why this file cannot be. */
+  const conformPart = (file: ExternalFile) => {
+    const video = videoOf(file);
+    const failure = conformFailures[file.id];
+    const inFlight = conforming ? conformProgress?.active[file.id] : undefined;
+    const canRun = measurementAvailable && !engineBusy && !busy;
+    if (file.conformed) {
+      const state = conformedStatus(file, video)!;
+      const c = file.conformed;
+      return (
+        <>
+          <div className="hr" />
+          <span className="sec">Conform</span>
+          <div>
+            <div className={state.s === "ok" ? "ok" : "warn"}>{state.text}</div>
+            <div className="t2">{state.detail}</div>
+          </div>
+          <DL
+            rows={[
+              ["How", conformedHow(c)],
+              ["File", <span key="p" className="truncate" title={c.path}>{c.path.replace(/^.*[\\/]/, "")}</span>],
+              ...(c.fallbackReason ? ([["Re-encoded", c.fallbackReason]] as [string, string][]) : []),
+              ["Muxed", conformedFor(file, video) ? "This track, at delay 0, instead of the file" : "The original file: this was made for another video"],
+            ]}
+          />
+          <Links>
+            <L icon={<ArrowUndoRegular />} onClick={() => updateOneFile(file.id, undoConform)} disabled={busy}>Undo: mux the original</L>
+            {c.verificationText && c.verificationText.includes("\n") && <L icon={<DataBarVerticalRegular />} onClick={() => setCheckText(c.verificationText)}>Check details</L>}
+            {canConform(file, video) && <L icon={<CutRegular />} onClick={() => void beginConform([file.id])} disabled={!canRun}>Conform again</L>}
+          </Links>
+        </>
+      );
+    }
+    const blocker = conformBlocker(file, video);
+    const cut = measuredAsDifferentCut(file);
+    if (!cut && !canConform(file, video) && !failure) return null;
+    return (
+      <>
+        <div className="hr" />
+        <span className="sec">Conform</span>
+        {inFlight ? (
+          <Status s="run" pct={inFlight.percent} text={inFlight.stage ?? undefined} />
+        ) : failure ? (
+          <div className="bad">Conform failed: {failure}</div>
+        ) : null}
+        <div className="t2">
+          {blocker && cut
+            ? blocker
+            : isMeasuredAgainstAnother(file, video)
+              ? "Measure this row again against its video before conforming it."
+              : `Lays the dub onto ${video?.name ?? "the video"}'s cut from the engine's plan, as a new file beside it: ${measurement?.conformMode === "lossless" ? "cut on its own frames, not re-encoded" : "re-encoded to the sample"}. The original stays as it is, and Undo goes back to it.`}
+        </div>
+        {canConform(file, video) && (
+          <Links>
+            <L icon={<CutRegular />} onClick={() => void beginConform([file.id])} disabled={!canRun}>{cut ? "Conform to this cut" : "Conform anyway"}</L>
+          </Links>
+        )}
+      </>
+    );
+  };
+
   const status = useStatus("audio", lcdStatus(lcd));
 
   // Reference: which audio track of each video its dub is measured against,
@@ -1085,26 +1371,80 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
       dock={<PageDock common={shell.dock} />}
       tools={
         <>
-          <Cmd icon={<ArrowImportRegular />} disabled={isMeasuring} onClick={handleImportAudios}>Import from a video</Cmd>
-          <Cmd icon={<ArrowSyncRegular />} title="Rescan" disabled={!folder || isMeasuring} onClick={() => void scanAudios(folder)} />
-          <Cmd icon={<CopyRegular />} title="Duplicate the file" disabled={!selectedFile || isMeasuring} onClick={() => selectedRow !== null && duplicateAudioFile(selectedRow)} />
-          <Cmd icon={<DeleteRegular />} title="Remove (Del)" disabled={!selectedFile || isMeasuring} onClick={() => selectedRow !== null && removeAudioFile(selectedRow)} />
+          <Cmd icon={<ArrowImportRegular />} disabled={busy} onClick={handleImportAudios}>Import from a video</Cmd>
+          <Cmd icon={<ArrowSyncRegular />} title="Rescan" disabled={!folder || busy} onClick={() => void scanAudios(folder)} />
+          <Cmd icon={<CopyRegular />} title="Duplicate the file" disabled={!selectedFile || busy} onClick={() => selectedRow !== null && duplicateAudioFile(selectedRow)} />
+          <Cmd icon={<DeleteRegular />} title="Remove (Del)" disabled={!canRemove} onClick={() => selectedRow !== null && removeAudioFile(selectedRow)} />
+          {selectedFile && (selectedFile.conformed || canConform(selectedFile, videoOf(selectedFile))) && (
+            selectedFile.conformed ? (
+              <Cmd icon={<ArrowUndoRegular />} title="Mux the original file instead of its conformed track" disabled={busy} onClick={() => updateOneFile(selectedFile.id, undoConform)}>
+                Undo conform
+              </Cmd>
+            ) : (
+              <Cmd
+                icon={<CutRegular />}
+                title={engineBusy ? heldBy : "Lay this dub onto its video's cut, as a new file beside it"}
+                disabled={busy || !measurementAvailable || engineBusy}
+                onClick={() => void beginConform([selectedFile.id])}
+              >
+                Conform
+              </Cmd>
+            )
+          )}
+          {(matching || matchJobs.length > 0) && (
+            <Cmd
+              icon={<SoundWaveCircleRegular />}
+              title={engineBusy ? heldBy : !measurementAvailable ? (audiosyncEngine?.message ?? "Matching needs the audio analysis engine") : "Listen to the files the names could not place, against the videos without a file"}
+              disabled={busy || !measurementAvailable || engineBusy}
+              onClick={() => void beginMatching()}
+            >
+              Match by audio
+            </Cmd>
+          )}
         </>
       }
       primary={
-        isMeasuring ? (
+        matching ? (
+          <Btn icon={<StopRegular />} kbd="Esc" onClick={() => void cancelMatching()}>Stop</Btn>
+        ) : isMeasuring ? (
           <Btn icon={<StopRegular />} kbd="Esc" onClick={() => void cancelMeasuring()}>Stop</Btn>
-        ) : pendingCount > 0 ? (
+        ) : conforming ? (
+          <Btn icon={<StopRegular />} kbd="Esc" onClick={() => void cancelConform()}>Stop</Btn>
+        ) : pendingCount > 0 || conformIds.length > 0 || conformHeld.size > 0 ? (
           <>
-            <Btn icon={<ArrowSyncRegular />} title="Measure every file again, including ones already measured" aria-label="Measure every file again" disabled={!measurementAvailable || muxHoldsEngine} onClick={() => void beginMeasuring({ force: true })} />
-            <Btn accent icon={<CheckmarkRegular />} onClick={applyAllMeasuredDelays}>Apply {pendingCount} {pendingCount === 1 ? "delay" : "delays"}</Btn>
+            <Btn icon={<ArrowSyncRegular />} title="Measure every file again, including ones already measured" aria-label="Measure every file again" disabled={!measurementAvailable || engineBusy} onClick={() => void beginMeasuring({ force: true })} />
+            {(conformIds.length > 0 || conformHeld.size > 0) && (
+              <Btn
+                accent={pendingCount === 0 && conformIds.length > 0}
+                icon={<CutRegular />}
+                title={
+                  engineBusy
+                    ? heldBy
+                    : [
+                        conformIds.length > 0 ? "Lay each dub measured as a different cut onto its video's cut, as a new file beside it." : null,
+                        conformHeld.size > 0
+                          ? `${conformHeld.size} ${conformHeld.size === 1 ? "different cut can't" : "different cuts can't"} be conformed as ${conformHeld.size === 1 ? "it is" : "they are"}: ${[...conformHeld.values()][0]}`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" ")
+                }
+                disabled={!measurementAvailable || engineBusy || conformIds.length === 0}
+                onClick={() => void beginConform(conformIds)}
+              >
+                {conformIds.length > 0
+                  ? `Conform ${conformIds.length} ${conformIds.length === 1 ? "dub" : "dubs"}`
+                  : `Can't conform ${conformHeld.size} ${conformHeld.size === 1 ? "dub" : "dubs"}`}
+              </Btn>
+            )}
+            {pendingCount > 0 && <Btn accent icon={<CheckmarkRegular />} onClick={applyAllMeasuredDelays}>Apply {pendingCount} {pendingCount === 1 ? "delay" : "delays"}</Btn>}
           </>
         ) : measuredCount > 0 ? (
-          <Btn icon={<ArrowSyncRegular />} title="Measure every file again, including ones already measured" disabled={!measurementAvailable || muxHoldsEngine} onClick={() => void beginMeasuring({ force: true })}>
+          <Btn icon={<ArrowSyncRegular />} title="Measure every file again, including ones already measured" disabled={!measurementAvailable || engineBusy} onClick={() => void beginMeasuring({ force: true })}>
             Measure again
           </Btn>
         ) : (
-          <Btn accent icon={<GaugeRegular />} kbd="Enter" title={measureTitle} disabled={!measurementAvailable || audioFiles.length === 0 || muxHoldsEngine} onClick={() => void beginMeasuring()}>
+          <Btn accent icon={<GaugeRegular />} kbd="Enter" title={measureTitle} disabled={!measurementAvailable || realAudioFiles.length === 0 || engineBusy} onClick={() => void beginMeasuring()}>
             Measure delays
           </Btn>
         )
@@ -1118,7 +1458,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
             slots={audioTracks}
             active={activeAudioTrack}
             configs={audioTrackConfigs}
-            disabled={isMeasuring}
+            disabled={busy}
             onPick={(slot) => {
               setActiveAudioTrack(slot);
               setSelectedRow(null);
@@ -1129,8 +1469,9 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           />
         }
         end={
-          audioFiles.length > 0 && (
+          realAudioFiles.length > 0 && (
             <>
+              <PairByCombo value={pairing.pairBy} chosen={pairing.chosen} disabled={busy} onChange={pairing.choose} />
               <Combo<FilterValue> ghost sm w={96} label="Rows" value={filter} options={FILTER_OPTIONS} onChange={setFilter} />
               <SearchBox value={search} onChange={setSearch} label="Search audio" w={150} />
             </>
@@ -1142,7 +1483,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
             config={currentConfig}
             onChange={updateCurrentConfig}
             muxAfterOptions={muxAfterOptions}
-            disabled={isMeasuring}
+            disabled={busy}
             folder={folder}
             onBrowse={() => void chooseFolder()}
             formats={{ value: currentConfig.extension, options: extensionOptions(AUDIO_EXTENSIONS), onChange: (extension) => updateCurrentConfig({ extension }) }}
@@ -1168,18 +1509,24 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           />
         }
       >
-        {audioFiles.length > 0 ? (
+        {realAudioFiles.length > 0 ? (
           <Table
-            cols="24px minmax(0,1fr) minmax(0,1fr) minmax(0,1.25fr) 72px 56px 104px 148px"
-            head={["#", "Video", "Audio file", "Against", " Delay", " Frames", "Confidence", "Status"]}
+            cols="24px minmax(0,1fr) minmax(0,1fr) 104px minmax(0,1.25fr) 72px 56px 104px 196px"
+            head={["#", "Video", "Audio file", "Match", "Against", " Delay", " Frames", "Confidence", "Status"]}
             label={`Audio ${activeAudioTrack}`}
             bodyRef={bodyRef}
           >
-            {rows.map(({ index, video, file }) => {
+            {rows.map(({ index, video, entry, file }) => {
               const dragProps = drag.rowProps(index);
               const inRun = Boolean(isMeasuring && file && (!run.current?.ids || run.current.ids.has(file.id)));
               const fps = file && video ? audioFpsFor(file, video) : null;
-              const measuredStatus = file && video ? rowStatus(file, currentReferenceFor(file)) : null;
+              const pairedVideo = file ? (videoOf(file) ?? video) : undefined;
+              const measuredStatus = file && video ? rowStatus(file, currentReferenceFor(file), pairedVideo) : null;
+              const conformedInUse = Boolean(file && conformedFor(file, pairedVideo));
+              const conformRun = file && conforming ? conformProgress?.active[file.id] : undefined;
+              const conformFailure = file ? conformFailures[file.id] : undefined;
+              const conformOffer = Boolean(file && !busy && conformIds.includes(file.id));
+              const conformHeldReason = file && !busy ? conformHeld.get(file.id) : undefined;
               const rowState = !file
                 ? null
                 : !video
@@ -1196,8 +1543,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
               const trackValues = perTrack?.map(shownTrackDelay) ?? [];
               const tracksAgree = trackValues.every((value) => value === trackValues[0]);
               const shownDelay = perTrack ? trackValues[0] : file ? (file.pendingDelay ?? file.delay) : undefined;
-              const delayText = !file ? "" : perTrack && !tracksAgree ? `${perTrack.length} delays` : formatDelay(shownDelay);
-              const delayTitle = perTrack ? perTrack.map((entry) => `${entry.index + 1} · ${trackLabel(entry)}: ${formatDelay(shownTrackDelay(entry))} s`).join("\n") : undefined;
+              const delayText = !file ? "" : conformedInUse ? formatDelay(0) : perTrack && !tracksAgree ? `${perTrack.length} delays` : formatDelay(shownDelay);
+              const delayTitle = conformedInUse ? "The conformed track is laid on the video's timeline, so it is muxed at 0" : perTrack ? perTrack.map((entry) => `${entry.index + 1} · ${trackLabel(entry)}: ${formatDelay(shownTrackDelay(entry))} s`).join("\n") : undefined;
               const trackMeasurements = (perTrack ?? []).map((entry) => entry.measured).filter((m): m is NonNullable<typeof m> => Boolean(m && !m.error));
               const measured = perTrack
                 ? ([...trackMeasurements].sort((a, b) => (a.confidence ?? 1) - (b.confidence ?? 1))[0] ?? null)
@@ -1207,10 +1554,10 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
               const delayIsMeasured = perTrack
                 ? tracksAgree && perTrack.every((entry) => entry.measured && !entry.measured.error && (entry.pending !== undefined || entry.provenance === "measured"))
                 : Boolean(measured && (pending || file?.delayProvenance === "measured"));
-              const frames = delayIsMeasured && shownDelay !== undefined ? frameOffset(shownDelay * 1000, video?.fps ?? measured?.primaryFps) : null;
+              const frames = !conformedInUse && delayIsMeasured && shownDelay !== undefined ? frameOffset(shownDelay * 1000, video?.fps ?? measured?.primaryFps) : null;
               return (
                 <Tr
-                  key={file?.id ?? `video-${video?.id}`}
+                  key={entry?.id ?? `video-${video?.id}`}
                   on={selectedRow === index}
                   className={dragProps.className}
                   onPointerDown={file ? dragProps.onPointerDown : undefined}
@@ -1227,12 +1574,14 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                   {file ? (
                     <span className="cell">
                       <Grip />
-                      <span className="truncate" title={file.name}>{file.name}</span>
+                      <span className="truncate" title={conformedInUse ? `${file.name}\nMuxed as ${file.conformed!.path}` : file.name}>{file.name}</span>
                       {perTrack && <span className="t3" style={{ flexShrink: 0 }} title={delayTitle}>{perTrack.length} tracks</span>}
+                      {conformedInUse && <span className="t3" style={{ flexShrink: 0 }} title={file.conformed!.path}>conformed</span>}
                     </span>
                   ) : (
-                    <span className="nil">—</span>
+                    <span className="nil" title={entry ? "No file for this video: the files after it stay with their own" : undefined}>—</span>
                   )}
+                  <MatchCell file={file} info={file ? pairing.infoOf(file.id) : undefined} conflict={file ? pairing.conflictOf(file.id) : undefined} />
                   {video && audioTracksOf(video).length > 1 ? (
                     // This video's own tracks, in full: three "Chinese" differ in codec, channels or name.
                     <span style={{ minWidth: 0 }} title={trackDetails(audioTracksOf(video)[plannedReferenceTrack(video, referenceTrackByVideoId)], plannedReferenceTrack(video, referenceTrackByVideoId))}>
@@ -1243,12 +1592,13 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                         label={`Measure ${file?.name ?? video.name} against`}
                         value={plannedReferenceTrack(video, referenceTrackByVideoId)}
                         options={audioTracksOf(video).map((track, i) => ({ value: i, label: trackDetails(track, i) }))}
-                        disabled={isMeasuring}
+                        disabled={busy}
                         onChange={(i) => setReferenceTrackByVideoId((prev) => ({ ...prev, [video.id]: i }))}
                       />
                     </span>
                   ) : (
-                    <span className="t3 truncate" title={video && audioTracksOf(video)[0] ? trackDetails(audioTracksOf(video)[0], 0) : undefined}>
+                    // Inset as far as the picker's text in the rows that have one (its padding and border), so the column lines up.
+                    <span className="t3 truncate" style={{ paddingLeft: 12 }} title={video && audioTracksOf(video)[0] ? trackDetails(audioTracksOf(video)[0], 0) : undefined}>
                       {video && audioTracksOf(video)[0] ? trackDetails(audioTracksOf(video)[0], 0) : "—"}
                     </span>
                   )}
@@ -1259,7 +1609,46 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
                   ) : (
                     <span className="t3">{file ? "—" : ""}</span>
                   )}
-                  {!file ? <span /> : runningPct !== undefined ? <Status s="run" pct={runningPct} /> : inRun && rowState?.s === "ready" ? <Status s="wait" /> : <Status s={rowState!.s} text={rowState!.text} />}
+                  {!file ? (
+                    <span />
+                  ) : runningPct !== undefined ? (
+                    <Status s="run" pct={runningPct} />
+                  ) : inRun && rowState?.s === "ready" ? (
+                    <Status s="wait" />
+                  ) : conformRun ? (
+                    <Status s="run" pct={conformRun.percent} text={conformRun.stage ?? undefined} />
+                  ) : conformFailure ? (
+                    <span className="cell" title={conformFailure} style={{ minWidth: 0 }}><Status s="bad" text="Conform failed" /></span>
+                  ) : conformOffer ? (
+                    <span className="cell" style={{ minWidth: 0, gap: 6 }} title={rowState!.text}>
+                      <Status s={rowState!.s} text={rowState!.text} />
+                      <button
+                        type="button"
+                        className="acc sm"
+                        style={{ flexShrink: 0 }}
+                        title={engineBusy ? heldBy : "Lay this dub onto its video's cut, as a new file beside it"}
+                        disabled={!measurementAvailable || engineBusy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void beginConform([file.id]);
+                        }}
+                        onDoubleClick={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                      >
+                        Conform
+                      </button>
+                    </span>
+                  ) : conformHeldReason ? (
+                    // Disabled, so the cell carries the reason on hover.
+                    <span className="cell" style={{ minWidth: 0, gap: 6 }} title={conformHeldReason}>
+                      <Status s={rowState!.s} text={rowState!.text} />
+                      <button type="button" className="t3 sm" style={{ flexShrink: 0 }} disabled aria-label={`Can't conform: ${conformHeldReason}`}>
+                        Conform
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="cell" style={{ minWidth: 0 }} title={file.conformed ? conformedStatus(file, pairedVideo)?.detail : rowState!.text}><Status s={rowState!.s} text={rowState!.text} /></span>
+                  )}
                 </Tr>
               );
             })}
@@ -1288,7 +1677,7 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           overrides={importOverrides}
           onOverride={(key, value) => setImportOverrides((prev) => ({ ...prev, [key]: value }))}
           keyOf={getImportTrackKey}
-          targetLabel={`Into row ${(selectedRow ?? 0) + 1}${videoFiles[selectedRow ?? 0] ? `, beside ${videoFiles[selectedRow ?? 0].name}` : ""}`}
+          targetLabel={`Into row ${importRow + 1}${videoFiles[importRow] ? `, beside ${videoFiles[importRow].name}` : ""}${importRow < (selectedRow ?? 0) ? ", the first without a file" : ""}`}
           onCancel={() => {
             setImportStreamsOpen(false);
             setImportOverrides({});
@@ -1341,6 +1730,19 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
         >
           <div className="box-b">
           {details(editingFile)}
+          {conformPart(editingFile)}
+          {(() => {
+            const info = pairing.infoOf(editingFile.id);
+            const conflict = pairing.conflictOf(editingFile.id);
+            return (
+              <>
+                <DL rows={[["Paired", pairingLine(info, conflict, editingFile)]]} />
+                <Links>
+                  <PairingLinks info={info} conflict={conflict} disabled={busy} onKeep={() => pairing.keep(editingFile.id)} onRelease={() => pairing.release(editingFile.id)} />
+                </Links>
+              </>
+            );
+          })()}
           <div className="hr" />
           <span className="sec">Settings</span>
           <div className="egrid">
@@ -1499,6 +1901,8 @@ export function AudioPage({ hidden, audioFiles, videoFiles, onAudioFilesChange, 
           </div>
         </Dialog>
       )}
+
+      {checkText && <ReportDetails title="Conformed track check" sub="The engine's check of the conformed track against the video" text={checkText} onClose={() => setCheckText(null)} />}
 
       {multiDelayOpen && multiDelayFile && (
         <TrackDelaysDialog

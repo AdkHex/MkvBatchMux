@@ -19,6 +19,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { installDependency, pickDirectory, type DependencyStatus } from "@/shared/lib/backend";
 import type { MeasurementSettings, OptionsData } from "@/shared/types";
 import { ENGINE_DEFAULTS, ENGINE_LIMITS } from "@/shared/types/audiosync";
+import { CONFORMED_FOLDER } from "@/shared/types/engineFeatures";
 import { Modal } from "@/ui/frame";
 import { Btn, Cmd, Combo, InfoBar, LangCombo, Seg, Slider, TBox, Toggle, cx } from "@/ui/kit";
 import { toast } from "@/ui/toast";
@@ -143,7 +144,13 @@ export function PreferencesWindow(props: PreferencesProps) {
       FavoritePresetId: presetIndex,
       Choose_Preset_On_Startup: askForPreset,
       Dark_Mode: darkMode,
-      Measurement: clampMeasurement(measurement),
+      // The conform settings ride along: clampMeasurement only knows the engine's.
+      Measurement: {
+        ...clampMeasurement(measurement),
+        conformMode: measurement.conformMode,
+        conformCodec: measurement.conformCodec,
+        conformOutputDir: measurement.conformOutputDir?.trim() || null,
+      },
     });
     onClose();
   };
@@ -230,7 +237,7 @@ export function PreferencesWindow(props: PreferencesProps) {
           {tab === "updates" && <UpdatesTab {...props} />}
         </div>
         <div className="pfoot">
-          {tab === "measure" && <Btn onClick={() => setMeasurement({ ...ENGINE_DEFAULTS, fullTimeline: measurement.fullTimeline })}>Reset to AudioSyncMaster's</Btn>}
+          {tab === "measure" && <Btn onClick={() => setMeasurement({ ...measurement, ...ENGINE_DEFAULTS })}>Reset to AudioSyncMaster's</Btn>}
           <span style={{ flex: 1 }} />
           <Btn style={{ minWidth: 96 }} onClick={onClose}>Cancel</Btn>
           <Btn accent style={{ minWidth: 96 }} onClick={saveAll}>Save</Btn>
@@ -352,6 +359,41 @@ function MeasurementTab({ measurement, onChange }: { measurement: MeasurementSet
       <div className="group">
         <Row h="Whole-timeline scan" d="Finds every cut and frame-rate change. Reads both files end to end: minutes per film.">
           <Toggle name="Whole-timeline scan" on={measurement.fullTimeline ?? false} onChange={(fullTimeline) => set({ fullTimeline })} />
+        </Row>
+      </div>
+      <div className="group-h">Conforming a dub to another cut</div>
+      <div className="group">
+        <Row
+          h="How"
+          d={
+            (measurement.conformMode ?? "render") === "render"
+              ? "Re-encoded, laid onto the video's cut to the sample, and checked by the engine."
+              : "The dub's own frames, cut and joined without re-encoding: each edit within half a frame (16 ms for AC-3). Dubs that cannot be cut this way are re-encoded instead."
+          }
+        >
+          <Seg<"render" | "lossless">
+            label="How to conform"
+            value={measurement.conformMode ?? "render"}
+            items={[
+              { value: "render", label: "To the sample" },
+              { value: "lossless", label: "Lossless" },
+            ]}
+            onChange={(conformMode) => set({ conformMode })}
+          />
+        </Row>
+        <Row h="Codec" d="For a re-encoded dub. Same as the dub keeps its codec and bitrate; FLAC loses nothing more.">
+          <Seg<"same" | "flac">
+            label="Codec of a conformed dub"
+            value={measurement.conformCodec ?? "same"}
+            items={[
+              { value: "same", label: "Same as the dub" },
+              { value: "flac", label: "FLAC" },
+            ]}
+            onChange={(conformCodec) => set({ conformCodec })}
+          />
+        </Row>
+        <Row h="Save to" d={measurement.conformOutputDir ? "Every conformed dub goes in this folder." : `Not set: a "${CONFORMED_FOLDER}" folder beside each dub.`}>
+          <Folder label="Conformed dubs" value={measurement.conformOutputDir ?? ""} onChange={(conformOutputDir) => set({ conformOutputDir })} />
         </Row>
       </div>
     </>

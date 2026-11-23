@@ -7,7 +7,7 @@
  *  explanation and advice; the inspector shows them when it is opened. */
 
 import type { St } from "@/ui/kit";
-import type { ExternalFile, MeasuredDelay } from "@/shared/types";
+import type { ExternalFile, MeasuredDelay, VideoFile } from "@/shared/types";
 import { MAX_PLAUSIBLE_OFFSET_MS } from "@/shared/types/audiosync";
 import type { TimelineEdit } from "@/shared/types/audiosync";
 import {
@@ -58,11 +58,46 @@ function editsWord(edits: TimelineEdit[]): string {
   return parts.join(" · ");
 }
 
+const comparable = (path: string) => path.replace(/\\/g, "/").toLowerCase();
+const baseOf = (path: string) => comparable(path).replace(/^.*\//, "");
+
+/** The video a measurement was taken against is not the one its file is
+ *  paired with now (the rows were moved, or pairing by episode put the file
+ *  elsewhere): its delay answers for another video. Records from before the
+ *  video was stored, and files with no video, are taken as current. */
+export function measuredAgainstAnother(
+  m: Pick<MeasuredDelay, "videoPath" | "videoFile">,
+  video: Pick<VideoFile, "path" | "name"> | undefined,
+): boolean {
+  if (!video) return false;
+  if (m.videoPath && video.path) return comparable(m.videoPath) !== comparable(video.path);
+  if (m.videoFile && (video.name || video.path)) return baseOf(m.videoFile) !== baseOf(video.name || video.path);
+  return false;
+}
+
+/** Any of a file's measurements answers for another video. */
+export function isMeasuredAgainstAnother(file: ExternalFile, video: Pick<VideoFile, "path" | "name"> | undefined): boolean {
+  return measurementsOf(file).some((m) => measuredAgainstAnother(m, video));
+}
+
+export const ANOTHER_VIDEO = "Measured against another video";
+
 /** Everything the measurement says, most serious first; for a clean result
  *  only what the timeline scan confirmed, if one ran. The rules and the words
- *  of cause and fix are the old badges'. */
-export function measureFindings(m: MeasuredDelay, currentReferenceTrack?: number): Finding[] {
+ *  of cause and fix are the old badges'. `currentVideo` is the video the file
+ *  is paired with now, to flag a measurement taken against another. */
+export function measureFindings(m: MeasuredDelay, currentReferenceTrack?: number, currentVideo?: Pick<VideoFile, "path" | "name">): Finding[] {
   const out: Finding[] = [];
+  if (currentVideo && measuredAgainstAnother(m, currentVideo)) {
+    const then = m.videoFile ?? (m.videoPath ? m.videoPath.replace(/^.*[\\/]/, "") : "another video");
+    out.push({
+      tone: "warn",
+      word: ANOTHER_VIDEO,
+      line: `Measured against ${then}; this row's video is ${currentVideo.name}. Not used.`,
+      cause: `This delay was measured against ${then}, but the file is now paired with ${currentVideo.name}: the rows were moved, or pairing put the file beside another episode. A delay answers for one pair only, so it is left out of Apply and Conform.`,
+      fix: "Measure this row again against the video it is paired with now, or move the file back beside the video it was measured against.",
+    });
+  }
   if (m.error) {
     out.push({
       tone: "bad",
@@ -268,10 +303,10 @@ export function isWithheld(m: MeasuredDelay): boolean {
 /** The Status column for one measured file or track. */
 export function measureStatus(
   m: MeasuredDelay | undefined,
-  { pending, currentReferenceTrack }: { pending: boolean; currentReferenceTrack?: number },
+  { pending, currentReferenceTrack, currentVideo }: { pending: boolean; currentReferenceTrack?: number; currentVideo?: Pick<VideoFile, "path" | "name"> },
 ): { s: St; text: string } {
   if (!m) return { s: "ready", text: "Ready" };
-  const top = measureFindings(m, currentReferenceTrack).find((finding) => finding.tone !== "ok");
+  const top = measureFindings(m, currentReferenceTrack, currentVideo).find((finding) => finding.tone !== "ok");
   if (top) return { s: top.tone, text: top.word };
   return pending ? { s: "ok", text: "Measured" } : { s: "ok", text: "Applied" };
 }
@@ -286,13 +321,28 @@ export function measurementsOf(file: ExternalFile): MeasuredDelay[] {
 }
 
 /** A measuring run's result, as the status display and History say it:
- *  "12 measured · 1 different cut · 1 failed". */
-export function measureOutcome(files: ExternalFile[]): { tone: St; parts: string[]; problems: number } {
+ *  "12 measured · 1 different cut · 1 failed". A conformed file counts as
+ *  conformed, not by the cut it was measured with; with `videoOf`, a file
+ *  measured against another video than its own counts as that. */
+export function measureOutcome(
+  files: ExternalFile[],
+  videoOf?: (file: ExternalFile) => Pick<VideoFile, "path" | "name"> | undefined,
+): { tone: St; parts: string[]; problems: number } {
   const counts = new Map<string, number>();
   let clean = 0;
   let failed = 0;
-  for (const m of files.flatMap(measurementsOf)) {
-    const top = measureFindings(m).find((finding) => finding.tone !== "ok");
+  let conformed = 0;
+  const measured: Array<{ m: MeasuredDelay; video?: Pick<VideoFile, "path" | "name"> }> = [];
+  for (const file of files) {
+    const video = videoOf?.(file);
+    if (file.conformed && !(video && file.conformed.videoPath && measuredAgainstAnother({ videoPath: file.conformed.videoPath }, video))) {
+      conformed += 1;
+      continue;
+    }
+    for (const m of measurementsOf(file)) measured.push({ m, video });
+  }
+  for (const { m, video } of measured) {
+    const top = measureFindings(m, undefined, video).find((finding) => finding.tone !== "ok");
     if (!top) clean += 1;
     else if (top.tone === "bad") failed += 1;
     else {
@@ -301,6 +351,7 @@ export function measureOutcome(files: ExternalFile[]): { tone: St; parts: string
     }
   }
   const parts = [`${clean} measured`];
+  if (conformed) parts.push(`${conformed} conformed`);
   for (const [word, n] of counts) parts.push(`${n} ${word}`);
   if (failed) parts.push(`${failed} failed`);
   const problems = failed + [...counts.values()].reduce((a, b) => a + b, 0);

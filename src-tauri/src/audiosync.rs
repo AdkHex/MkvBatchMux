@@ -313,7 +313,7 @@ pub struct Engine {
     handshake_done: bool,
     /// What that handshake reported about ffmpeg -- a second confirmation
     /// alongside this app's own PATH probe.
-    ffmpeg_ready: bool,
+    pub(crate) ffmpeg_ready: bool,
 }
 
 impl Engine {
@@ -468,12 +468,12 @@ pub struct EngineHandle {
     /// The live engine's process, for `interrupt`.
     child: Arc<Mutex<Option<Arc<Mutex<Child>>>>>,
     /// Measure and timeline runs started and not yet finished.
-    runs: Arc<AtomicUsize>,
+    pub(crate) runs: Arc<AtomicUsize>,
     /// Set when `interrupt` ended the engine under a run.
-    interrupted: Arc<AtomicBool>,
+    pub(crate) interrupted: Arc<AtomicBool>,
     /// The user cancelled the run in flight: if the lock ends it before the
     /// engine reads the cancel, it is finished as cancelled, not paused.
-    cancel_requested: Arc<AtomicBool>,
+    pub(crate) cancel_requested: Arc<AtomicBool>,
     /// What the remote lock stopped, to run again when it lifts.
     paused: Arc<Mutex<Vec<PausedRun>>>,
 }
@@ -604,11 +604,11 @@ impl PausedRun {
     }
 }
 
-fn locked(app: &AppHandle) -> bool {
+pub(crate) fn locked(app: &AppHandle) -> bool {
     app.try_state::<Arc<Service>>().is_some_and(|service| service.is_locked())
 }
 
-fn ensure_unlocked(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn ensure_unlocked(app: &AppHandle) -> Result<(), String> {
     match app.try_state::<Arc<Service>>() {
         Some(service) => service.ensure_unlocked(),
         None => Ok(()),
@@ -949,7 +949,7 @@ pub fn list_reference_tracks(
 
 /// Consume the engine's startup `ready` event before it interleaves with a
 /// command's response. `handshake_done` tracks this since an empty channel can't tell "done" from "starting".
-fn drain_ready(engine: &mut Engine) -> Result<(), String> {
+pub(crate) fn drain_ready(engine: &mut Engine) -> Result<(), String> {
     use std::time::Duration;
 
     if engine.handshake_done {

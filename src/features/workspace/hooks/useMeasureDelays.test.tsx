@@ -50,6 +50,15 @@ describe("useMeasureDelays", () => {
     measureDelaysStart.mockClear();
   });
 
+  it("never sends an empty row (a placeholder) to the engine", async () => {
+    const gap: ExternalFile = { id: "gap-v1", name: "", path: "", type: "audio", placeholder: true, matchedVideoId: "v1" };
+    const { hook } = setup([video("v1", "H:\\Shows\\E01.mkv"), video("v2", "H:\\Shows\\E02.mkv")], [gap, dub("a2", "H:\\Dubs\\E02.hin.mka", "v2")]);
+    await waitFor(() => expect(hook.result.current.engine?.engineAvailable).toBe(true));
+    await act(() => hook.result.current.start({ force: true }));
+    const request = measureDelaysStart.mock.calls[0][0] as { pairs: { key: string; secondaryPath: string }[] };
+    expect(request.pairs.map((pair) => [pair.key, pair.secondaryPath])).toEqual([["a2", "H:\\Dubs\\E02.hin.mka"]]);
+  });
+
   it("answers an audio file that is the video itself without asking the engine", async () => {
     const remux = "H:\\Films\\Some.Like.It.Hot.2160p.mkv";
     const { hook, files } = setup([video("v1", remux)], [dub("a1", remux, "v1")]);

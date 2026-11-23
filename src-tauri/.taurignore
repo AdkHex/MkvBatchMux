@@ -1,0 +1,5 @@
+# Bundled tools written by `npm run fetch-engine` / `npm run fetch-ffmpeg`:
+# a running engine touches its own files, which `tauri dev` would otherwise
+# take for a code change and rebuild and restart the app mid-run.
+resources/engine/
+resources/ffmpeg/

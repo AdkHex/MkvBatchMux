@@ -1,23 +1,47 @@
 /** Subtitles: external subtitle files for each video, in track slots
  *  (Subtitle 1, Subtitle 2…). Row n of the list is video n and file n, which
- *  is how the mux pairs them. The logic is the old Subtitles tab's. */
+ *  is how the mux pairs them; pairing by episode arranges the list so each
+ *  file is in its episode's row, an empty row where one is missing
+ *  (smartPairing). The logic is the old Subtitles tab's. */
 
 import {
   ArrowImportRegular,
   ArrowSyncRegular,
+  ArrowUndoRegular,
   CheckmarkRegular,
   ClosedCaptionRegular,
   CopyRegular,
   DeleteRegular,
   DismissRegular,
   FolderOpenRegular,
+  StopRegular,
+  TextAlignJustifyRegular,
   TimelineRegular,
 } from "@fluentui/react-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { PageDock } from "@/app/dock";
+import { tookText } from "@/app/history";
 import { useShell, usePageCommands, useStatus } from "@/app/shell";
 import { ImportTrackEditDialog, type ImportTrackOverride } from "@/features/workspace/components/ImportTrackEditDialog";
+import { usePairing } from "@/features/workspace/hooks/usePairing";
+import { useSubsync, type SubsyncSummary } from "@/features/workspace/hooks/useSubsync";
+import { engineHolder } from "@/features/workspace/lib/engineHolder";
+import { applyAllPendingDelays, markDelayAsManual } from "@/features/workspace/lib/applyMeasurement";
+import {
+  AUDIO_MIN_SCORE,
+  PICTURE_MESSAGE,
+  applySyncAnyway,
+  chooseReference,
+  describeSync,
+  isPictureSubtitle,
+  canUndoSync,
+  pendingSyncDelay,
+  syncStatus,
+  syncTarget,
+  syncedAgainstAnother,
+  undoSync,
+} from "@/features/workspace/lib/subsync";
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
 import { useTabState, type TrackConfig } from "@/features/workspace/store/useTabState";
 import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
@@ -25,14 +49,16 @@ import { CODE_TO_LABEL, LABEL_TO_CODE } from "@/shared/data/languages-iso6393";
 import { inspectPaths, pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { delaySecondsOrZero } from "@/shared/lib/delayInput";
 import { SUBTITLE_EXTENSIONS } from "@/shared/lib/extensions";
-import { getUnlinkedExternalFiles, linkExternalFilesByOrder } from "@/shared/lib/matchUtils";
+import { getUnlinkedExternalFiles, isPlaceholder, placeholderFor, realFiles } from "@/shared/lib/matchUtils";
 import type { ExternalFile, Preset, VideoFile } from "@/shared/types";
 import { Dialog, PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
-import { Btn, Chk, Cmd, Combo, Empty, Fld, Grip, LangCombo, TBox, Table, Tr } from "@/ui/kit";
+import { Btn, Chk, Cmd, Combo, DL, Empty, Fld, Grip, LangCombo, Links, Meter, Status, TBox, Table, Tr, cx, type St } from "@/ui/kit";
 import { toast } from "@/ui/toast";
 
 import { FILTER_OPTIONS, SearchBox, extensionOptions, formatDelay, looksLikeFolder, matchesSearch, type FilterValue } from "./common";
-import { DeleteSlotDialog, FileTrackRow, FileTracks, ImportStreamsDialog, TrackDelaysDialog, TrackSheet, TrackTabs, languageName } from "./tracks/parts";
+import { L } from "./tracks/MeasurePane";
+import { MatchCell, PairByCombo, PairingLinks, pairingLine } from "./tracks/pairing";
+import { DeleteSlotDialog, FileTrackRow, FileTracks, ImportStreamsDialog, TrackDelaysDialog, TrackSheet, TrackTabs, languageName, nextSlotId } from "./tracks/parts";
 
 export interface SubtitlesPageProps {
   hidden: boolean;
@@ -67,9 +93,73 @@ const createExternalId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 
+/** "+2.500 s" for a measured delay, as the Delay column shows it. */
+
 export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFilesChange, preset }: SubtitlesPageProps) {
   const shell = useShell();
-  const syncSubtitleLinks = useCallback((files: ExternalFile[]) => linkExternalFilesByOrder(files, videoFiles), [videoFiles]);
+
+  // ------------------------------------------------------- sync subtitles
+  // Syncing holds the engine like measuring audio: one run at a time, and
+  // never under a mux batch. Its end gives it back and says what it found.
+  const onSyncFinished = useCallback(
+    (summary: SubsyncSummary) => {
+      shell.releaseEngine("subtitles");
+      for (const skipped of summary.skipped) shell.log(`Sync subtitles: ${skipped.fileName}: not synced: ${skipped.reason}`);
+      for (const { fileName, videoName, record } of summary.results) {
+        const what =
+          record.outcome === "delay" || record.outcome === "retimed"
+            ? `${describeSync(record)}${record.held ? " (not sure, not filled in)" : record.outcome === "retimed" ? " (re-timed copy)" : ""}`
+            : (record.description ?? record.outcome);
+        shell.log(`Sync subtitles: ${fileName} against ${videoName} (${record.engine === "subtitle" ? "its subtitle track" : "its speech"}): ${what}`);
+      }
+      const count = (test: (record: SubsyncSummary["results"][number]["record"]) => boolean) => summary.results.filter(({ record }) => test(record)).length;
+      const delays = count((r) => r.outcome === "delay" && !r.held);
+      const retimed = count((r) => r.outcome === "retimed" && !r.held);
+      const held = count((r) => r.held);
+      const failed = count((r) => r.outcome === "error" || r.outcome === "picture" || r.outcome === "noMatch");
+      const parts = [delays ? `${delays} measured` : null, retimed ? `${retimed} re-timed` : null, held ? `${held} not sure` : null, failed ? `${failed} not synced` : null, summary.skipped.length ? `${summary.skipped.length} skipped` : null].filter(Boolean) as string[];
+      if (summary.results.length === 0) {
+        toast({ title: summary.error ? "Could not sync subtitles" : "Nothing synced", description: summary.error ?? summary.skipped[0]?.reason ?? "There is nothing to sync.", variant: summary.error ? "destructive" : undefined });
+        return;
+      }
+      shell.log(`Synced ${summary.results.length} subtitle${summary.results.length === 1 ? "" : "s"} in ${tookText(Date.now() - summary.startedAt)}: ${parts.join(", ")}${summary.cancelled ? " (stopped)" : ""}`);
+      toast({
+        title: summary.cancelled ? "Sync stopped" : summary.error ? "Sync ended early" : "Subtitles synced",
+        description: summary.error ?? `${parts.join(", ")}. ${delays ? "Review the delays, then Apply." : retimed ? "The re-timed copies are muxed instead of the originals." : ""}`.trim(),
+        variant: summary.error ? "destructive" : undefined,
+      });
+    },
+    [shell],
+  );
+  const { engine: syncEngine, syncing, progress: syncProgress, start: startSync, cancel: cancelSync } = useSubsync({
+    videoFiles,
+    subtitleFiles,
+    onSubtitleFilesChange,
+    onFinished: onSyncFinished,
+  });
+  const syncAvailable = Boolean(syncEngine?.engineAvailable && syncEngine.ffmpegAvailable);
+  const engineBusy = shell.enginePage !== null && shell.enginePage !== "subtitles";
+  /** The run going: which rows (null: every row), and since when. */
+  const [syncRun, setSyncRun] = useState<{ ids: Set<string> | null; startedAt: number }>({ ids: null, startedAt: 0 });
+  const beginSync = useCallback(
+    async (fileIds?: string[]) => {
+      if (syncing) return;
+      setSyncRun({ ids: fileIds ? new Set(fileIds) : null, startedAt: Date.now() });
+      if (!shell.claimEngine("subtitles")) {
+        toast({ title: engineHolder(shell.enginePage) ?? "The engine is busy", description: "Sync once it is done, or stop it first." });
+        return;
+      }
+      shell.log(`Syncing ${fileIds ? `${fileIds.length} subtitle${fileIds.length === 1 ? "" : "s"}` : "the subtitles"} against their videos`);
+      await startSync(fileIds);
+    },
+    [shell, startSync, syncing],
+  );
+
+  const pairing = usePairing({ files: subtitleFiles, videoFiles, onFilesChange: onSubtitleFilesChange, frozen: syncing });
+  const syncSubtitleLinks = pairing.sync;
+  const pairByFor = pairing.pairByFor;
+  /** The files, without the empty rows that keep their places. */
+  const realSubtitleFiles = useMemo(() => realFiles(subtitleFiles), [subtitleFiles]);
   const {
     subtitleTracks,
     activeSubtitleTrack,
@@ -95,6 +185,9 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
+  // Cleared when the search or the filter changes, as on Videos: a hidden row
+  // staying selected would let Remove or Duplicate act on a file out of sight.
+  useEffect(() => setSelectedRow(null), [search, filter]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [trackToDelete, setTrackToDelete] = useState<string | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -154,10 +247,12 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
 
   const updateCurrentConfig = (updates: Partial<TrackConfig>) => updateSubtitleTrackConfig(activeSubtitleTrack, updates);
 
-  const lastAppliedConfig = useRef<TrackConfig | null>(null);
+  /** The settings last stamped on each slot's files, by slot: one shared by
+   *  every slot would count each switch of tab as a change of settings. */
+  const lastAppliedConfig = useRef<Record<string, TrackConfig>>({});
   useEffect(() => {
     if (subtitleFiles.length === 0) return;
-    const prev = lastAppliedConfig.current;
+    const prev = lastAppliedConfig.current[activeSubtitleTrack];
     const same =
       prev &&
       prev.sourceFolder === currentConfig.sourceFolder &&
@@ -169,18 +264,28 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
       prev.isForced === currentConfig.isForced &&
       prev.muxAfter === currentConfig.muxAfter;
     if (same) return;
-    lastAppliedConfig.current = { ...currentConfig };
+    lastAppliedConfig.current[activeSubtitleTrack] = { ...currentConfig };
     const delayValue = delaySecondsOrZero(currentConfig.delay);
     onSubtitleFilesChange(
-      subtitleFiles.map((file) => ({
+      subtitleFiles.map((file) => file.placeholder ? file : ({
         ...file,
         // Global default/forced toggles must always apply from the slot's settings.
         isDefault: currentConfig.isDefault,
         isForced: currentConfig.isForced,
-        ...(file.isManuallyEdited ? {} : { language: currentConfig.language, trackName: currentConfig.trackName, delay: delayValue, muxAfter: currentConfig.muxAfter }),
+        ...(file.isManuallyEdited
+          ? {}
+          : {
+              language: currentConfig.language,
+              trackName: currentConfig.trackName,
+              // A delay typed for the file ("This delay" for every file) or a
+              // synced one is its own, not a slot for the global default to
+              // keep overwriting.
+              delay: file.delayProvenance === "manual" || file.delayProvenance === "measured" ? file.delay : delayValue,
+              muxAfter: currentConfig.muxAfter,
+            }),
       })),
     );
-  }, [subtitleFiles, currentConfig, onSubtitleFilesChange]);
+  }, [subtitleFiles, currentConfig, onSubtitleFilesChange, activeSubtitleTrack]);
 
   useEffect(() => {
     subtitleFilesCache.current[activeSubtitleTrack] = subtitleFiles;
@@ -193,7 +298,7 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
   }, [activeSubtitleTrack, subtitleFiles, onSubtitleFilesChange]);
 
   const addNewTrack = useCallback(() => {
-    const newTrackNumber = (subtitleTracks.length + 1).toString();
+    const newTrackNumber = nextSlotId(subtitleTracks);
     setSubtitleTracks([...subtitleTracks, newTrackNumber]);
     updateSubtitleTrackConfig(newTrackNumber, { ...defaultTrackConfig });
     setActiveSubtitleTrack(newTrackNumber);
@@ -202,7 +307,7 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
   }, [setActiveSubtitleTrack, setSubtitleTracks, subtitleTracks, updateSubtitleTrackConfig]);
 
   const duplicateTrack = () => {
-    const newTrackNumber = (subtitleTracks.length + 1).toString();
+    const newTrackNumber = nextSlotId(subtitleTracks);
     const currentSettings = subtitleTrackConfigs[activeSubtitleTrack] || defaultTrackConfig;
     setSubtitleTracks([...subtitleTracks, newTrackNumber]);
     updateSubtitleTrackConfig(newTrackNumber, { ...currentSettings });
@@ -243,10 +348,15 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
           trackName: prior?.trackName ?? currentConfig.trackName,
           delay: keepsOwnDelay ? prior.delay : delaySecondsOrZero(currentConfig.delay),
           ...(keepsOwnDelay ? { delayProvenance: prior.delayProvenance } : {}),
+          // What Sync subtitles found for this very file, and its re-timed copy.
+          ...(prior?.subsync ? { subsync: prior.subsync, retimed: prior.retimed, pendingDelay: prior.pendingDelay } : {}),
           isDefault: currentConfig.isDefault,
           isForced: currentConfig.isForced,
           muxAfter: currentConfig.muxAfter,
           trackOverrides: prior?.trackOverrides ?? file.trackOverrides ?? {},
+          // Kept with the language and name it guards: dropped, the next change
+          // of the slot's settings would overwrite what was set by hand.
+          isManuallyEdited: prior?.isManuallyEdited,
           includedTrackIds:
             file.tracks && file.tracks.length > 0 ? file.tracks.map((track) => Number(track.id)).filter((id) => !Number.isNaN(id)) : file.includedTrackIds,
         };
@@ -264,51 +374,57 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
       const extensions = currentConfig.extension === "all" ? subtitleExtensions : [currentConfig.extension];
       try {
         const results = await scanMedia({ folder: folderPath, extensions, recursive: false, type: "subtitle", include_tracks: true });
-        onSubtitleFilesChange(syncSubtitleLinks(normalize(results as ExternalFile[])));
-        shell.log(`Subtitle ${activeSubtitleTrack}: ${results.length} file${results.length === 1 ? "" : "s"} from ${folderPath}, paired by row`);
+        const paired = syncSubtitleLinks(normalize(results as ExternalFile[]));
+        onSubtitleFilesChange(paired);
+        const gaps = paired.filter(isPlaceholder).length;
+        shell.log(`Subtitle ${activeSubtitleTrack}: ${results.length} file${results.length === 1 ? "" : "s"} from ${folderPath}, paired by ${pairByFor(paired) === "episode" ? `episode${gaps ? `, ${gaps} episode${gaps === 1 ? "" : "s"} without one` : ""}` : "row"}`);
       } catch (error) {
         shell.log(`Error: could not scan ${folderPath}: ${String(error)}`);
         toast({ title: "Could not scan the folder", description: String(error), variant: "destructive" });
       }
     },
-    [currentConfig.extension, normalize, onSubtitleFilesChange, syncSubtitleLinks, shell, activeSubtitleTrack],
+    [currentConfig.extension, normalize, onSubtitleFilesChange, syncSubtitleLinks, shell, activeSubtitleTrack, pairByFor],
   );
 
-  useEffect(() => {
-    if (subtitleFiles.length === 0) return;
-    // Only the files that have a video to pair with: rows past the end keep
-    // their existing link, so comparing them against undefined would report a
-    // mismatch that relinking can never resolve.
-    const needsRowMatch = subtitleFiles.slice(0, videoFiles.length).some((file, index) => file.matchedVideoId !== videoFiles[index]?.id);
-    if (needsRowMatch) onSubtitleFilesChange(linkExternalFilesByOrder(subtitleFiles, videoFiles));
-  }, [onSubtitleFilesChange, subtitleFiles, videoFiles]);
-
+  /** By order the rows between shift; by episode the two files trade videos,
+   *  each kept where it was put (smartPairing.moveByHand). */
   const reorderSubtitleFile = (fromIndex: number, toIndex: number) => {
-    if (toIndex < 0 || toIndex >= subtitleFiles.length) return;
-    const updated = [...subtitleFiles];
-    const [moved] = updated.splice(fromIndex, 1);
-    updated.splice(toIndex, 0, moved);
-    onSubtitleFilesChange(syncSubtitleLinks(updated));
+    const last = (pairing.pairBy === "episode" ? videoFiles.length : subtitleFiles.length) - 1;
+    if (toIndex < 0 || toIndex > last || isPlaceholder(subtitleFiles[fromIndex])) return;
+    pairing.move(fromIndex, toIndex);
     setSelectedRow(toIndex);
   };
 
   const duplicateSubtitleFile = (index: number) => {
     const original = subtitleFiles[index];
-    if (!original) return;
+    if (!original || original.placeholder) return;
     if (videoFiles.length === 0) {
       toast({ title: "Nothing to duplicate into", description: "Add video files before duplicating subtitles.", variant: "destructive" });
       return;
     }
-    if (subtitleFiles.length >= videoFiles.length) {
+    if (realSubtitleFiles.length >= videoFiles.length) {
       toast({ title: "Nothing to duplicate into", description: "There cannot be more subtitle files than videos.", variant: "destructive" });
       return;
     }
-    const newFile: ExternalFile = { ...original, id: `subtitle-dup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
+    // The copy is kept with its video by hand: the same name twice would
+    // otherwise read as a second file for one episode.
+    const copy = (row: number): ExternalFile => ({ ...original, id: `subtitle-dup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, matchedVideoId: videoFiles[row]?.id, isManuallyLinked: true, audioMatch: undefined });
     const updated = [...subtitleFiles];
-    updated.splice(index + 1, 0, newFile);
-    onSubtitleFilesChange(linkExternalFilesByOrder(updated, videoFiles));
-    setSelectedRow(index + 1);
-    toast({ title: "Subtitle duplicated", description: `${original.name}, paired by row.` });
+    let row = index + 1;
+    if (pairing.pairBy === "episode") {
+      // Into the next empty row: every row with a file is that file's episode.
+      row = videoFiles.findIndex((_, r) => r > index && (!subtitleFiles[r] || isPlaceholder(subtitleFiles[r])));
+      if (row < 0) {
+        toast({ title: "Nothing to duplicate into", description: "Every video after this one has its file.", variant: "destructive" });
+        return;
+      }
+      while (updated.length < row) updated.push(placeholderFor(videoFiles[updated.length], "subtitle"));
+      updated[row] = copy(row);
+    } else if (isPlaceholder(updated[row])) updated[row] = copy(row);
+    else updated.splice(row, 0, copy(row));
+    onSubtitleFilesChange(syncSubtitleLinks(updated));
+    setSelectedRow(row);
+    toast({ title: "Subtitle duplicated", description: pairing.pairBy === "episode" ? `${original.name}, beside ${videoFiles[row].name}.` : `${original.name}, paired by row.` });
   };
 
   const openEditDialog = (fileId: string) => {
@@ -358,14 +474,18 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
           .map(({ i }) => i),
       );
       const updated = subtitleFiles.map((file) => {
+        if (file.placeholder) return file;
         const fileTracks = (file.tracks || []).filter((t) => t.type === "subtitle");
         const newIds = fileTracks
           .map((t, i) => ({ i, id: Number(t.id) }))
           .filter(({ i }) => selIdx.has(i))
           .map(({ id }) => id)
           .filter((id) => Number.isFinite(id));
+        // A changed delay is typed by hand, so a rescan or the slot's Delay
+        // leaves it alone; an unchanged one keeps where it came from.
+        const base = file.delay !== delayValue ? markDelayAsManual(file, null) : file;
         return {
-          ...file,
+          ...base,
           language: editForm.language,
           trackName: editForm.trackName,
           delay: delayValue,
@@ -378,13 +498,14 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
       });
       onSubtitleFilesChange(updated);
       closeEdit();
-      toast({ title: "Applied to every file", description: `${subtitleFiles.length} subtitle file${subtitleFiles.length === 1 ? "" : "s"}.` });
+      toast({ title: "Applied to every file", description: `${realSubtitleFiles.length} subtitle file${realSubtitleFiles.length === 1 ? "" : "s"}.` });
       return;
     }
     let updated = subtitleFiles.map((file) => {
       if (file.id === editingFileId) {
+        const base = file.delay !== delayValue ? markDelayAsManual(file, null) : file;
         return {
-          ...file,
+          ...base,
           trackName: editForm.trackName,
           language: editForm.language,
           delay: delayValue,
@@ -392,11 +513,11 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
           isForced: editForm.isForced,
           muxAfter: editForm.muxAfter,
           includedTrackIds: editForm.includedTrackIds,
-          trackOverrides: file.trackOverrides,
+          trackOverrides: base.trackOverrides,
           isManuallyEdited: true,
         };
       }
-      if (editForm.applyDelayToAll) return { ...file, delay: delayValue };
+      if (editForm.applyDelayToAll && !file.placeholder) return file.delay !== delayValue ? { ...markDelayAsManual(file, null), delay: delayValue } : file;
       return file;
     });
     const editedTarget = updated.find((file) => file.id === editingFileId);
@@ -418,7 +539,9 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
     setTrackEditTarget({ fileId, trackId });
     setTrackEditForm({
       language: overrides.language || track?.language || "und",
-      delay: (overrides.delay ?? 0).toFixed(3),
+      // The delay the track is muxed with: its own, or else the file's
+      // (main.rs). Opening on 0 for a track without one would save 0 over it.
+      delay: (overrides.delay ?? file.delay ?? 0).toFixed(3),
       trackName: overrides.trackName || track?.name || "",
     });
     setTrackEditOpen(true);
@@ -446,9 +569,12 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
     if (!trackEditTarget) return;
     const { fileId, trackId } = trackEditTarget;
     const nextDelay = delaySecondsOrZero(next.delay ?? 0);
+    // Only a delay changed in the dialog becomes the track's own; left as it
+    // opened, the track keeps following its file's delay.
+    const changed = nextDelay !== delaySecondsOrZero(trackEditForm.delay);
     applyTrackChangesToDuplicateFiles(fileId, (file) => {
       const nextOverrides = { ...(file.trackOverrides || {}) };
-      nextOverrides[trackId] = { language: next.language || undefined, delay: nextDelay, trackName: next.trackName || undefined };
+      nextOverrides[trackId] = { language: next.language || undefined, delay: changed ? nextDelay : file.trackOverrides?.[trackId]?.delay, trackName: next.trackName || undefined };
       return { ...file, trackOverrides: nextOverrides, isManuallyEdited: true };
     });
     setTrackEditOpen(false);
@@ -494,6 +620,12 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
     toast({ title: `Subtitle ${deletedNumber} deleted` });
   };
 
+  /** The row an import lands in: the selected one, or the first without a
+   *  file when that is further down. Row n is file n, so a file cannot sit
+   *  past an empty row: pushed onto the end it would pair with the next video,
+   *  not the one the dialog named. */
+  const importRow = Math.min(selectedRow ?? 0, subtitleFiles.length);
+
   const handleImportSubtitles = () => {
     if (videoFiles.length === 0) {
       toast({ title: "No videos loaded", description: "Load the videos first, then import subtitle streams from them.", variant: "destructive" });
@@ -506,7 +638,7 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
   };
 
   const handleConfirmImportSubtitles = () => {
-    const targetIndex = selectedRow ?? 0;
+    const targetIndex = importRow;
     const targetVideo = videoFiles[targetIndex];
     if (!targetVideo || !selectedImportSource || importSelectedTrackKeys.length === 0) {
       toast({ title: "Nothing to import", description: "Choose at least one subtitle stream and a video to import into.", variant: "destructive" });
@@ -533,6 +665,8 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
       isForced: currentConfig.isForced,
       muxAfter: currentConfig.muxAfter,
       matchedVideoId: targetVideo.id,
+      // Put in this row on purpose: pairing by episode leaves it here.
+      isManuallyLinked: true,
       tracks: mergedTracks,
       includedTrackIds: mergedTracks.map((track) => Number(track.id)).filter((id) => Number.isFinite(id)),
       // Carry per-stream edits through as track overrides, keyed by track id,
@@ -586,7 +720,8 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
 
   const rowCount = Math.max(videoFiles.length, subtitleFiles.length);
   const rows = useMemo(() => {
-    const all = Array.from({ length: rowCount }, (_, index) => ({ index, video: videoFiles[index], file: subtitleFiles[index] }));
+    // An empty row (placeholder) shows as a row without a file.
+    const all = Array.from({ length: rowCount }, (_, index) => ({ index, video: videoFiles[index], entry: subtitleFiles[index], file: isPlaceholder(subtitleFiles[index]) ? undefined : subtitleFiles[index] }));
     return all.filter(({ video, file }) => {
       const hit = (video && matchesSearch(video, search)) || (file && matchesSearch(file, search));
       if (!hit) return false;
@@ -598,17 +733,47 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
   // Moving rows only makes sense while the list shows every row in mux order.
   const ordered = !search.trim() && filter === "all";
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  const drag = useRowReorder({ bodyRef, rowCount, disabled: !ordered, onMove: (from, to) => from < subtitleFiles.length && reorderSubtitleFile(from, Math.min(to, subtitleFiles.length - 1)) });
+  const lastMovable = (pairing.pairBy === "episode" ? videoFiles.length : subtitleFiles.length) - 1;
+  const drag = useRowReorder({ bodyRef, rowCount, disabled: !ordered || syncing, onMove: (from, to) => from < subtitleFiles.length && reorderSubtitleFile(from, Math.min(to, lastMovable)) });
 
-  const selectedFile = selectedRow !== null ? subtitleFiles[selectedRow] : undefined;
-  const canMoveUp = ordered && selectedRow !== null && selectedRow > 0 && selectedRow < subtitleFiles.length;
-  const canMoveDown = ordered && selectedRow !== null && selectedRow < subtitleFiles.length - 1;
+  const selectedEntry = selectedRow !== null ? subtitleFiles[selectedRow] : undefined;
+  const selectedFile = isPlaceholder(selectedEntry) ? undefined : selectedEntry;
+  // An empty row can go while pairing by order (the files below move up); by
+  // episode it would only come back.
+  const canRemove = !syncing && selectedRow !== null && Boolean(selectedFile || (selectedEntry && pairing.pairBy === "order"));
+  const canMoveUp = !syncing && ordered && Boolean(selectedFile) && selectedRow !== null && selectedRow > 0 && selectedRow <= lastMovable;
+  const canMoveDown = !syncing && ordered && Boolean(selectedFile) && selectedRow !== null && selectedRow < lastMovable;
+
+  // ------------------------------------------------------ sync results
+
+  /** The video a file is paired with now, as the mux resolves it. */
+  const videoOf = (file: ExternalFile | undefined) => (file?.matchedVideoId ? videoFiles.find((video) => video.id === file.matchedVideoId) : undefined);
+  /** Pending sync delays Apply takes: not one measured against another video. */
+  const pendingFiles = realSubtitleFiles.filter((file) => pendingSyncDelay(file) && !syncedAgainstAnother(file, videoOf(file)));
+  const pendingCount = pendingFiles.length;
+  const syncedCount = realSubtitleFiles.filter((file) => file.subsync).length;
+  const applyPending = () => {
+    const ids = new Set(pendingFiles.map((file) => file.id));
+    onSubtitleFilesChange(subtitleFiles.map((file) => (ids.has(file.id) ? applyAllPendingDelays(file) : file)));
+    shell.log(`Applied ${pendingCount} synced subtitle ${pendingCount === 1 ? "delay" : "delays"}`);
+    toast({ title: `Applied ${pendingCount} ${pendingCount === 1 ? "delay" : "delays"}`, description: "The measured values are now the subtitles' delays." });
+  };
+  const updateFile = (fileId: string, update: (file: ExternalFile) => ExternalFile) => onSubtitleFilesChange(subtitleFiles.map((file) => (file.id === fileId ? update(file) : file)));
+  const applyAnyway = (file: ExternalFile) => {
+    updateFile(file.id, (current) => applySyncAnyway(current, syncTarget(current)));
+    toast({ title: file.subsync?.outcome === "retimed" ? "Re-timed copy in use" : "Delay applied", description: "The synced timing is in despite the low confidence. Check a line or two before muxing." });
+  };
+  const applyOne = (file: ExternalFile) => updateFile(file.id, applyAllPendingDelays);
+  const canSync = syncAvailable && !engineBusy && !syncing && realSubtitleFiles.length > 0;
 
   usePageCommands("subtitles", {
     chooseFolder: () => void chooseFolder(),
     importFromVideo: handleImportSubtitles,
-    removeSelected: selectedFile && selectedRow !== null ? () => removeSubtitleFile(selectedRow) : undefined,
-    clear: subtitleFiles.length
+    removeSelected: canRemove ? () => removeSubtitleFile(selectedRow!) : undefined,
+    start: canSync ? () => void beginSync() : undefined,
+    stop: syncing ? () => void cancelSync() : undefined,
+    disabled: { chooseFolder: syncing, importFromVideo: syncing },
+    clear: subtitleFiles.length && !syncing
       ? () => {
           updateCurrentConfig({ sourceFolder: "" });
           onSubtitleFilesChange([]);
@@ -616,9 +781,10 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
       : undefined,
     moveUp: canMoveUp ? () => reorderSubtitleFile(selectedRow!, selectedRow! - 1) : undefined,
     moveDown: canMoveDown ? () => reorderSubtitleFile(selectedRow!, selectedRow! + 1) : undefined,
-    newTrack: addNewTrack,
-    duplicateTrack,
+    newTrack: syncing ? undefined : addNewTrack,
+    duplicateTrack: syncing ? undefined : duplicateTrack,
     drop: (paths) => {
+      if (syncing) return;
       const folder = paths.find(looksLikeFolder);
       if (folder) {
         updateCurrentConfig({ sourceFolder: folder });
@@ -627,18 +793,136 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
     },
   });
 
-  const lcd: LcdProps =
-    subtitleFiles.length === 0
+  const conflicts = pairing.report.conflicts;
+  const rowStates = realSubtitleFiles.map((file) => syncStatus(file, videoOf(file)));
+  const toCheck = rowStates.filter((state) => state.s === "warn" || state.s === "bad").length;
+  const syncedOk = rowStates.filter((state) => state.s === "ok").length;
+  const syncLine = [
+    syncedOk ? `${syncedOk} synced` : null,
+    rowStates.filter((state) => state.text === "Re-timed copy").length ? `${rowStates.filter((state) => state.text === "Re-timed copy").length} re-timed` : null,
+    rowStates.filter((state) => state.text === "Low confidence").length ? `${rowStates.filter((state) => state.text === "Low confidence").length} low confidence` : null,
+    rowStates.filter((state) => state.text === "Measured against another video").length ? `${rowStates.filter((state) => state.text === "Measured against another video").length} measured against another video` : null,
+    rowStates.filter((state) => state.s === "bad" || state.text === "No clear match" || state.text === "Can't be synced automatically").length
+      ? `${rowStates.filter((state) => state.s === "bad" || state.text === "No clear match" || state.text === "Can't be synced automatically").length} not synced`
+      : null,
+  ].filter(Boolean) as string[];
+  const syncStage = syncProgress ? Object.values(syncProgress.active)[0]?.stage : null;
+  const lcd: LcdProps = syncing
+    ? {
+        icon: "run",
+        l1: syncProgress
+          ? `Syncing against ${syncProgress.engine === "subtitle" ? "the videos' subtitle tracks" : "the videos' speech"} · ${syncProgress.processed} of ${syncProgress.total} done`
+          : "Syncing subtitles",
+        l2: syncStage ?? undefined,
+        pct: syncProgress && syncProgress.total > 0 ? ((syncProgress.processed + Object.values(syncProgress.active).reduce((sum, entry) => sum + entry.percent / 100, 0)) / syncProgress.total) * 100 : null,
+      }
+    : realSubtitleFiles.length === 0
       ? { l1: `Drop a folder of subtitles for Subtitle ${activeSubtitleTrack}` }
-      : unlinkedCount > 0
-        ? { icon: "warn", l1: `${unlinkedCount} subtitle file${unlinkedCount === 1 ? " has" : "s have"} no video`, l2: `Rows past ${videoFiles.length} have nothing to go into` }
+      : syncedCount > 0 && conflicts.length === 0
+        ? {
+            icon: toCheck ? "warn" : "ok",
+            l1: toCheck ? `${syncedOk} synced · ${toCheck} to check` : `${syncedOk} synced`,
+            l2: syncLine.join(" · "),
+            time: pendingCount ? `${pendingCount} to apply` : undefined,
+          }
+      : conflicts.length > 0
+        ? {
+            icon: "warn",
+            l1: unlinkedCount === conflicts.length ? `${unlinkedCount} subtitle file${unlinkedCount === 1 ? " has" : "s have"} no video` : `${conflicts.length} subtitle file${conflicts.length === 1 ? "" : "s"} to pair`,
+            l2: `Row ${conflicts[0].row + 1}: ${subtitleFiles[conflicts[0].row]?.name} ${conflicts[0].message.replace(/\.$/, "")}`,
+          }
         : {
-            l1: `${subtitleFiles.length} subtitle file${subtitleFiles.length === 1 ? "" : "s"} · ${subtitleFiles.length - unlinkedCount} paired`,
+            l1: `${realSubtitleFiles.length} subtitle file${realSubtitleFiles.length === 1 ? "" : "s"} · ${realSubtitleFiles.length - unlinkedCount} paired by ${pairing.pairBy === "episode" ? "episode" : "row"}`,
             l2: `Subtitle ${activeSubtitleTrack} · ${languageName(currentConfig.language)}${currentConfig.isDefault ? " · default" : ""}${currentConfig.isForced ? " · forced" : ""} · ${(muxAfterOptions.find((o) => o.value === currentConfig.muxAfter)?.label ?? "").toLowerCase()}`,
           };
 
   const folder = currentConfig.sourceFolder;
   const status = useStatus("subtitles", lcdStatus(lcd));
+  const syncTitle =
+    syncEngine === null
+      ? "Checking for the audio analysis engine…"
+      : (syncEngine.message ??
+        (engineBusy
+          ? (engineHolder(shell.enginePage) ?? "The engine is busy")
+          : "Measure each subtitle's delay against its video: against a subtitle track inside the video when it has one, else against its speech"));
+
+  /** The popup's Sync part: what the engine found and what was done with it. */
+  const syncPart = (file: ExternalFile) => {
+    const video = videoOf(file);
+    const record = file.subsync;
+    const reference = video ? chooseReference(file, video) : null;
+    const against = !video ? "No video" : isPictureSubtitle(file) ? PICTURE_MESSAGE : reference && "label" in reference ? reference.label : (reference as { reason: string } | null)?.reason ?? "—";
+    const canRun = syncAvailable && !engineBusy && !syncing && Boolean(video);
+    if (!record)
+      return (
+        <>
+          <DL rows={[["Sync against", against]]} />
+          <Links>
+            <L icon={<TextAlignJustifyRegular />} onClick={() => void beginSync([file.id])} disabled={!canRun || isPictureSubtitle(file)}>Sync this subtitle</L>
+          </Links>
+          <div className="hr" />
+        </>
+      );
+    const state = syncStatus(file, video);
+    const stale = syncedAgainstAnother(file, video);
+    const pending = pendingSyncDelay(file);
+    const measured = record.outcome === "delay" || record.outcome === "retimed";
+    return (
+      <>
+        <div>
+          <div className="t3">{record.outcome === "retimed" ? "Re-timed" : "Delay"}</div>
+          <div className="big">{measured ? describeSync(record) : "—"}</div>
+          <div className={state.s === "ok" ? "t2" : state.s}>{state.text}{record.held ? `: the engine was not sure enough to fill it in` : ""}</div>
+        </div>
+        <Links>
+          {pending && !stale && !record.held && (
+            <L
+              icon={<CheckmarkRegular />}
+              onClick={() => {
+                applyOne(file);
+                // The form below shows the delay Save writes: the one just applied.
+                setEditForm((prev) => ({ ...prev, delay: pending.seconds.toFixed(3) }));
+              }}
+              disabled={syncing}
+            >
+              Apply
+            </L>
+          )}
+          {record.held && !stale && (
+            <L
+              icon={<CheckmarkRegular />}
+              onClick={() => {
+                applyAnyway(file);
+                if (record.outcome === "delay" && record.offsetS !== null && syncTarget(file) === null) setEditForm((prev) => ({ ...prev, delay: record.offsetS!.toFixed(3) }));
+              }}
+              disabled={syncing}
+              title="Use this timing despite the low confidence"
+            >
+              Apply anyway
+            </L>
+          )}
+          {canUndoSync(file) && <L icon={<ArrowUndoRegular />} onClick={() => updateFile(file.id, undoSync)} disabled={syncing}>{file.retimed ? "Undo: mux the original" : "Discard"}</L>}
+          <L icon={<TextAlignJustifyRegular />} onClick={() => void beginSync([file.id])} disabled={!canRun}>Sync again</L>
+        </Links>
+        <DL
+          rows={[
+            ["Against", `${record.engine === "subtitle" ? `The video's subtitle track ${record.referenceTrack + 1}` : `The video's speech (audio ${record.referenceTrack + 1})`} · ${record.videoName}`],
+            ...(record.score !== null
+              ? ([["Score", <span key="s" className="cell num"><Meter pct={record.score * 100} />{Math.round(record.score * 100)}%{record.confidence ? ` · ${record.confidence} confidence` : ""}</span>]] as [string, JSX.Element][])
+              : []),
+            ...(record.description ? ([["Engine", record.description]] as [string, string][]) : []),
+            ...(file.retimed ? ([["Muxed", <span key="r" className="truncate" title={file.retimed.path}>The re-timed copy, at delay 0: {file.retimed.path.replace(/^.*[\\/]/, "")}</span>]] as [string, JSX.Element][]) : []),
+            ...(record.engine === "audio" && measured
+              ? ([["Note", `Measured from speech, which can sit a few hundred ms off the cues: filled in only at high confidence and a score of ${Math.round(AUDIO_MIN_SCORE * 100)}% or more. Check a line or two before muxing.`]] as [string, string][])
+              : []),
+            ...(record.warnings.length ? ([["Warnings", record.warnings.join(" ")]] as [string, string][]) : []),
+            ...(stale ? ([["Pairing", `Measured against ${record.videoName}; this row's video is ${video?.name}. Sync it again.`]] as [string, string][]) : []),
+          ]}
+        />
+        <div className="hr" />
+      </>
+    );
+  };
 
   return (
     <PageView
@@ -647,11 +931,32 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
       dock={<PageDock common={shell.dock} />}
       tools={
         <>
-          <Cmd icon={<ArrowImportRegular />} onClick={handleImportSubtitles}>Import from a video</Cmd>
-          <Cmd icon={<ArrowSyncRegular />} title="Rescan" disabled={!folder} onClick={() => void scanSubtitles(folder)} />
-          <Cmd icon={<CopyRegular />} title="Duplicate the file" disabled={!selectedFile} onClick={() => selectedRow !== null && duplicateSubtitleFile(selectedRow)} />
-          <Cmd icon={<DeleteRegular />} title="Remove (Del)" disabled={!selectedFile} onClick={() => selectedRow !== null && removeSubtitleFile(selectedRow)} />
+          <Cmd icon={<ArrowImportRegular />} disabled={syncing} onClick={handleImportSubtitles}>Import from a video</Cmd>
+          <Cmd icon={<ArrowSyncRegular />} title="Rescan" disabled={!folder || syncing} onClick={() => void scanSubtitles(folder)} />
+          <Cmd icon={<CopyRegular />} title="Duplicate the file" disabled={!selectedFile || syncing} onClick={() => selectedRow !== null && duplicateSubtitleFile(selectedRow)} />
+          <Cmd icon={<DeleteRegular />} title="Remove (Del)" disabled={!canRemove} onClick={() => selectedRow !== null && removeSubtitleFile(selectedRow)} />
+          {selectedFile && canUndoSync(selectedFile) && (
+            <Cmd icon={<ArrowUndoRegular />} title="Back to the original file and its delay as it was before syncing" disabled={syncing} onClick={() => updateFile(selectedFile.id, undoSync)}>
+              Undo sync
+            </Cmd>
+          )}
         </>
+      }
+      primary={
+        syncing ? (
+          <Btn icon={<StopRegular />} kbd="Esc" onClick={() => void cancelSync()}>Stop</Btn>
+        ) : pendingCount > 0 ? (
+          <>
+            <Btn icon={<ArrowSyncRegular />} title="Sync every subtitle again" aria-label="Sync every subtitle again" disabled={!canSync} onClick={() => void beginSync()} />
+            <Btn accent icon={<CheckmarkRegular />} onClick={applyPending}>Apply {pendingCount} {pendingCount === 1 ? "delay" : "delays"}</Btn>
+          </>
+        ) : syncedCount > 0 ? (
+          <Btn icon={<ArrowSyncRegular />} title="Sync every subtitle again" disabled={!canSync} onClick={() => void beginSync()}>Sync again</Btn>
+        ) : (
+          <Btn accent icon={<TextAlignJustifyRegular />} kbd="Enter" title={syncTitle} disabled={!canSync} onClick={() => void beginSync()}>
+            Sync subtitles
+          </Btn>
+        )
       }
     >
       <Panel
@@ -662,6 +967,7 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
             slots={subtitleTracks}
             active={activeSubtitleTrack}
             configs={subtitleTrackConfigs}
+            disabled={syncing}
             onPick={(slot) => {
               setActiveSubtitleTrack(slot);
               setSelectedRow(null);
@@ -672,8 +978,9 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
           />
         }
         end={
-          subtitleFiles.length > 0 && (
+          realSubtitleFiles.length > 0 && (
             <>
+              <PairByCombo value={pairing.pairBy} chosen={pairing.chosen} disabled={syncing} onChange={pairing.choose} />
               <Combo<FilterValue> ghost sm w={96} label="Rows" value={filter} options={FILTER_OPTIONS} onChange={setFilter} />
               <SearchBox value={search} onChange={setSearch} label="Search subtitles" w={150} />
             </>
@@ -691,13 +998,25 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
           />
         }
       >
-        {subtitleFiles.length > 0 ? (
-          <Table cols="24px minmax(0,1fr) minmax(0,1fr) 72px" head={["#", "Video", "Subtitle file", " Delay"]} label={`Subtitle ${activeSubtitleTrack}`} bodyRef={bodyRef}>
-            {rows.map(({ index, video, file }) => {
+        {realSubtitleFiles.length > 0 ? (
+          <Table
+            cols="24px minmax(0,1fr) minmax(0,1fr) 104px minmax(0,1fr) 80px 96px 196px"
+            head={["#", "Video", "Subtitle file", "Match", "Against", " Delay", "Score", "Status"]}
+            label={`Subtitle ${activeSubtitleTrack}`}
+            bodyRef={bodyRef}
+          >
+            {rows.map(({ index, video, entry, file }) => {
               const dragProps = drag.rowProps(index);
+              const paired = file ? (videoOf(file) ?? video) : undefined;
+              const reference = file && paired ? (isPictureSubtitle(file) ? null : chooseReference(file, paired)) : null;
+              const record = file?.subsync;
+              const pending = file ? pendingSyncDelay(file) : null;
+              const running = file && syncing ? syncProgress?.active[file.id] : undefined;
+              const state: { s: St; text: string } | null = file ? syncStatus(file, paired) : null;
+              const delayText = !file ? "" : file.retimed ? "copy" : pending ? formatDelay(pending.seconds) : formatDelay(file.delay);
               return (
                 <Tr
-                  key={file?.id ?? `video-${video?.id}`}
+                  key={entry?.id ?? `video-${video?.id}`}
                   on={selectedRow === index}
                   className={dragProps.className}
                   onPointerDown={file ? dragProps.onPointerDown : undefined}
@@ -710,9 +1029,33 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
                   {file ? (
                     <span className="cell"><Grip /><span className="truncate" title={file.name}>{file.name}</span></span>
                   ) : (
-                    <span className="nil">—</span>
+                    <span className="nil" title={entry ? "No file for this video: the files after it stay with their own" : undefined}>—</span>
                   )}
-                  <span className="r num t2" style={{ display: "flex" }}>{file ? formatDelay(file.delay) : ""}</span>
+                  <MatchCell file={file} info={file ? pairing.infoOf(file.id) : undefined} conflict={file ? pairing.conflictOf(file.id) : undefined} />
+                  <span className="t3 truncate" title={reference && "label" in reference ? reference.label : undefined}>
+                    {!file || !paired ? "" : isPictureSubtitle(file) ? "Pictures" : reference && "label" in reference ? reference.label : "—"}
+                  </span>
+                  <span
+                    className={cx("r num", pending && !record?.held ? "acc" : "t2")}
+                    style={{ display: "flex" }}
+                    title={file?.retimed ? `Muxed as the re-timed copy, at delay 0: ${file.retimed.path}` : pending ? "Measured, not applied yet" : undefined}
+                  >
+                    {delayText}
+                  </span>
+                  {record?.score != null ? (
+                    <span className="cell num t2" title={record.confidence ? `${record.confidence} confidence` : undefined}><Meter pct={record.score * 100} />{Math.round(record.score * 100)}%</span>
+                  ) : (
+                    <span className="t3">{file ? "—" : ""}</span>
+                  )}
+                  {!file ? (
+                    <span />
+                  ) : running ? (
+                    <Status s="run" pct={running.percent} text={running.stage ?? undefined} />
+                  ) : syncing && (!syncRun.ids || syncRun.ids.has(file.id)) && !(record && Date.parse(record.measuredAt) >= syncRun.startedAt) ? (
+                    <Status s="wait" />
+                  ) : (
+                    <span className="cell" style={{ minWidth: 0 }} title={record?.description ?? state!.text}><Status s={state!.s} text={state!.text} /></span>
+                  )}
                 </Tr>
               );
             })}
@@ -741,7 +1084,7 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
           overrides={importOverrides}
           onOverride={(key, value) => setImportOverrides((prev) => ({ ...prev, [key]: value }))}
           keyOf={getImportTrackKey}
-          targetLabel={`Into row ${(selectedRow ?? 0) + 1}${videoFiles[selectedRow ?? 0] ? `, beside ${videoFiles[selectedRow ?? 0].name}` : ""}`}
+          targetLabel={`Into row ${importRow + 1}${videoFiles[importRow] ? `, beside ${videoFiles[importRow].name}` : ""}${importRow < (selectedRow ?? 0) ? ", the first without a file" : ""}`}
           onCancel={() => {
             setImportStreamsOpen(false);
             setImportOverrides({});
@@ -772,6 +1115,19 @@ export function SubtitlesPage({ hidden, subtitleFiles, videoFiles, onSubtitleFil
             </>
           }
         >
+          {syncPart(editingFile)}
+          {(() => {
+            const info = pairing.infoOf(editingFile.id);
+            const conflict = pairing.conflictOf(editingFile.id);
+            return (
+              <>
+                <DL rows={[["Paired", pairingLine(info, conflict, editingFile)]]} />
+                <Links>
+                  <PairingLinks info={info} conflict={conflict} disabled={syncing} onKeep={() => pairing.keep(editingFile.id)} onRelease={() => pairing.release(editingFile.id)} />
+                </Links>
+              </>
+            );
+          })()}
           <div className="egrid">
             <Fld label="Language"><LangCombo value={editForm.language} onChange={(language) => setEditForm((prev) => ({ ...prev, language }))} w="100%" /></Fld>
             <Fld label="Track name"><TBox label="Track name" value={editForm.trackName} placeholder="Keep the file's name" onChange={(trackName) => setEditForm((prev) => ({ ...prev, trackName }))} /></Fld>

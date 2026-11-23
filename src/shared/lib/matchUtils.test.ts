@@ -4,8 +4,11 @@ import {
   assignExternalFileToVideo,
   extractEpisodeNumber,
   getUnlinkedExternalFiles,
+  isPlaceholder,
   linkExternalFilesByOrder,
   matchExternalToVideos,
+  placeholderFor,
+  realFiles,
 } from "./matchUtils";
 
 const makeVideo = (id: string, name: string): VideoFile => ({
@@ -190,19 +193,46 @@ describe("linkExternalFilesByOrder", () => {
     expect(linked.map((file) => file.matchedVideoId)).toEqual(["v1", "v2"]);
   });
 
-  it("leaves files past the end of the video list alone", () => {
-    // Regression: these were overwritten with `undefined`, so a batch with
-    // more audio than video silently dropped the extras from the mux -- and
-    // the relink ran again on every render, never converging.
+  it("unlinks files past the end of the video list, without touching the rest", () => {
+    // These once kept whatever link they had, which after a video was removed
+    // could be a video another row already pairs with: two dubs muxed into
+    // one video while the row showed "No video". Unlinked, they are reported.
+    // Files already in step come back as the same objects, so relinking
+    // converges instead of running on every render.
     const videos = [makeVideo("v1", "Episode01.mkv")];
-    const audios = [
-      makeAudio("a1", "Episode01.eac3"),
-      { ...makeAudio("a2", "Episode02.eac3"), matchedVideoId: "v9" },
-    ];
+    const first = { ...makeAudio("a1", "Episode01.eac3"), matchedVideoId: "v1" };
+    const audios = [first, { ...makeAudio("a2", "Episode02.eac3"), matchedVideoId: "v9" }];
 
     const linked = linkExternalFilesByOrder(audios, videos);
 
-    expect(linked[0].matchedVideoId).toBe("v1");
-    expect(linked[1].matchedVideoId).toBe("v9");
+    expect(linked[0]).toBe(first);
+    expect(linked[1].matchedVideoId).toBeUndefined();
+    expect(getUnlinkedExternalFiles(linked, videos).map((file) => file.id)).toEqual(["a2"]);
+    expect(linkExternalFilesByOrder(linked, videos)).toBe(linked);
+  });
+
+  it("drops a hand pick or an audio match when the row moves to another video", () => {
+    const videos = [makeVideo("v2", "Episode02.mkv"), makeVideo("v1", "Episode01.mkv")];
+    const audios = [
+      { ...makeAudio("a1", "Episode01.eac3"), matchedVideoId: "v1", isManuallyLinked: true, audioMatch: { videoId: "v1", confidence: 0.9 } },
+      { ...makeAudio("a2", "Episode02.eac3"), matchedVideoId: "v1", audioMatch: { videoId: "v1", confidence: 0.8 } },
+    ];
+    const linked = linkExternalFilesByOrder(audios, videos);
+    expect(linked[0]).toMatchObject({ matchedVideoId: "v2", isManuallyLinked: false });
+    expect(linked[0].audioMatch).toBeUndefined();
+    // Still beside the video it was heard in.
+    expect(linked[1]).toBe(audios[1]);
+  });
+});
+
+describe("placeholders", () => {
+  it("are never reported as unlinked, and are left out of the real files", () => {
+    const videos = [makeVideo("v1", "Episode01.mkv"), makeVideo("v2", "Episode02.mkv")];
+    const gap = placeholderFor(videos[0], "audio");
+    const files = [gap, { ...makeAudio("a2", "Episode02.eac3"), matchedVideoId: "v2" }];
+    expect(isPlaceholder(gap)).toBe(true);
+    expect(gap.path).toBe("");
+    expect(realFiles(files).map((file) => file.id)).toEqual(["a2"]);
+    expect(getUnlinkedExternalFiles([{ ...gap, matchedVideoId: undefined }], videos)).toEqual([]);
   });
 });

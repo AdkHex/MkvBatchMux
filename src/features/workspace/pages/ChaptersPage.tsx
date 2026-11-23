@@ -1,7 +1,9 @@
-/** Chapters: chapter files for the videos, paired by position unless linked
- *  to a video by hand. The logic is the old Chapters tab's; linking moved
- *  from a Link button between two lists into the row's Video column, and the
- *  delay dialog into the inspector. */
+/** Chapters: chapter files for the videos, paired by position, or by episode
+ *  when the names allow it (smartPairing: each file in its episode's row, an
+ *  empty row where one is missing), unless linked to a video by hand. The
+ *  logic is the old Chapters tab's; linking moved from a Link button between
+ *  two lists into the row's Video column, and the delay dialog into the
+ *  inspector. */
 
 import {
   ArrowSyncRegular,
@@ -14,22 +16,25 @@ import {
   FolderOpenRegular,
   LinkDismissRegular,
 } from "@fluentui/react-icons";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { PageDock } from "@/app/dock";
 import { useShell, usePageCommands, useStatus } from "@/app/shell";
+import { usePairing } from "@/features/workspace/hooks/usePairing";
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
 import { pickDirectory, scanMedia } from "@/shared/lib/backend";
 import { delaySecondsOrZero, parseDelayInput } from "@/shared/lib/delayInput";
 import { CHAPTER_EXTENSIONS } from "@/shared/lib/extensions";
+import { isPlaceholder, realFiles } from "@/shared/lib/matchUtils";
 import type { ExternalFile, MuxSettings, Preset, VideoFile } from "@/shared/types";
 import { Dialog, PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
 import { Btn, Chk, Cmd, Combo, DL, Empty, Links, SheetField, TBox, Table, Toggle, Tr, cx } from "@/ui/kit";
 
 import { SearchBox, extensionOptions, formatDelay, formatFileSize, looksLikeFolder, matchesSearch } from "./common";
 import { L } from "./tracks/MeasurePane";
+import { MatchCell, PairByCombo, pairingLine } from "./tracks/pairing";
 
 export interface ChaptersPageProps {
   hidden: boolean;
@@ -99,8 +104,9 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
       const normalized = (results as ExternalFile[])
         .filter((file): file is ExternalFile => !!(file && typeof file === "object" && file.id && file.name && file.path))
         .map((file, index) => ({ ...file, type: "chapter" as const, matchedVideoId: videoFiles[index]?.id }));
-      onChapterFilesChange(normalized);
-      shell.log(`Chapters: ${normalized.length} file${normalized.length === 1 ? "" : "s"} from ${folderPath}`);
+      const paired = pairing.sync(normalized);
+      onChapterFilesChange(paired);
+      shell.log(`Chapters: ${normalized.length} file${normalized.length === 1 ? "" : "s"} from ${folderPath}, paired by ${pairing.pairByFor(paired) === "episode" ? "episode" : "row"}`);
     } catch (error) {
       if (requestId !== scanRequestRef.current) return;
       onChapterFilesChange([]);
@@ -109,23 +115,43 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
   };
 
   // Positional pairing is the default; a hand-linked file keeps its link unless
-  // that video disappears, in which case it falls back to positional.
+  // that video disappears, in which case it falls back to positional. A video
+  // linked by hand is that file's alone: the file paired with it by order
+  // gives it up rather than give the video a second set of chapters.
   const resolveChapterLink = useCallback(
-    (file: ExternalFile, index: number): ExternalFile => {
+    (file: ExternalFile, index: number, linkedByHand: Set<string>): ExternalFile => {
       if (file.isManuallyLinked && videoFiles.some((video) => video.id === file.matchedVideoId)) return file;
-      const positional = videoFiles[index]?.id;
+      const byOrder = videoFiles[index]?.id;
+      const positional = byOrder !== undefined && linkedByHand.has(byOrder) ? undefined : byOrder;
       if (file.matchedVideoId === positional && !file.isManuallyLinked) return file;
       return { ...file, matchedVideoId: positional, isManuallyLinked: false };
     },
     [videoFiles],
   );
-  const syncChapterLinks = useCallback((files: ExternalFile[]) => files.map(resolveChapterLink), [resolveChapterLink]);
+  /** The videos hand-linked files hold, among those still loaded. */
+  const videosLinkedByHand = useCallback(
+    (files: ExternalFile[]) => new Set(files.flatMap((file) => (file.isManuallyLinked && file.matchedVideoId && videoFiles.some((video) => video.id === file.matchedVideoId) ? [file.matchedVideoId] : []))),
+    [videoFiles],
+  );
+  const syncChapterLinks = useCallback(
+    (files: ExternalFile[]) => {
+      const linkedByHand = videosLinkedByHand(files);
+      return files.map((file, index) => resolveChapterLink(file, index, linkedByHand));
+    },
+    [resolveChapterLink, videosLinkedByHand],
+  );
+
+  const pairing = usePairing({ files: chapterFiles, videoFiles, onFilesChange: onChapterFilesChange, linkByOrder: syncChapterLinks });
+  /** The files, without the empty rows that keep their places. */
+  const realChapterFiles = realFiles(chapterFiles);
 
   useEffect(() => {
-    if (chapterFiles.length === 0) return;
-    const isSynced = chapterFiles.every((file, index) => resolveChapterLink(file, index) === file);
+    // By episode the list is arranged (usePairing), hand links in their videos' rows.
+    if (chapterFiles.length === 0 || pairing.pairBy === "episode") return;
+    const linkedByHand = videosLinkedByHand(chapterFiles);
+    const isSynced = chapterFiles.every((file, index) => resolveChapterLink(file, index, linkedByHand) === file);
     if (!isSynced) onChapterFilesChange(syncChapterLinks(chapterFiles));
-  }, [chapterFiles, onChapterFilesChange, resolveChapterLink, syncChapterLinks, videoFiles]);
+  }, [chapterFiles, onChapterFilesChange, resolveChapterLink, syncChapterLinks, videoFiles, videosLinkedByHand, pairing.pairBy]);
 
   useEffect(() => {
     const selectedId = selectedChapterIdRef.current;
@@ -135,27 +161,41 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
     setSelectedChapterIndex(nextIndex >= 0 ? nextIndex : null);
   }, [chapterFiles]);
 
+  /** By order the rows between shift; by episode the two files trade videos,
+   *  each kept where it was put. */
+  const lastMovable = (pairing.pairBy === "episode" ? videoFiles.length : chapterFiles.length) - 1;
   const reorderChapterFile = (fromIndex: number, toIndex: number) => {
-    if (toIndex < 0 || toIndex >= chapterFiles.length) return;
-    const updated = [...chapterFiles];
-    const [moved] = updated.splice(fromIndex, 1);
-    updated.splice(toIndex, 0, moved);
-    onChapterFilesChange(updated);
+    if (toIndex < 0 || toIndex > lastMovable || isPlaceholder(chapterFiles[fromIndex])) return;
+    pairing.move(fromIndex, toIndex);
     selectChapterIndex(toIndex);
   };
 
+  /** Pair a chapter file with a video, by hand or by order. The file that had
+   *  that video takes this one's old video in exchange, as
+   *  assignExternalFileToVideo does, so no video is left with two chapter
+   *  files (two --chapters) and another with none. */
+  const relinkChapter = (chapterIndex: number, videoId: string | undefined, byHand: boolean) => {
+    const previousVideoId = chapterFiles[chapterIndex]?.matchedVideoId;
+    onChapterFilesChange(
+      chapterFiles.map((file, index) => {
+        if (index === chapterIndex) return { ...file, matchedVideoId: videoId, isManuallyLinked: byHand };
+        // An empty row has nothing to exchange: pairing fills or drops it.
+        if (file.placeholder || !videoId || file.matchedVideoId !== videoId) return file;
+        // Nothing to exchange (this file was past the last video): the other
+        // one goes without, which the sync above keeps.
+        if (!previousVideoId || previousVideoId === videoId) return { ...file, matchedVideoId: undefined, isManuallyLinked: false };
+        return { ...file, matchedVideoId: previousVideoId, isManuallyLinked: previousVideoId !== videoFiles[index]?.id };
+      }),
+    );
+  };
   /** Link a chapter file to a video by hand; it keeps that link from then on. */
-  const linkChapterToVideo = (chapterIndex: number, videoId: string) => {
-    onChapterFilesChange(chapterFiles.map((file, index) => (index === chapterIndex ? { ...file, matchedVideoId: videoId, isManuallyLinked: true } : file)));
-  };
+  const linkChapterToVideo = (chapterIndex: number, videoId: string) => relinkChapter(chapterIndex, videoId, true);
   /** Back to pairing by position. */
-  const unlinkChapter = (chapterIndex: number) => {
-    onChapterFilesChange(chapterFiles.map((file, index) => (index === chapterIndex ? { ...file, matchedVideoId: videoFiles[index]?.id, isManuallyLinked: false } : file)));
-  };
+  const unlinkChapter = (chapterIndex: number) => relinkChapter(chapterIndex, videoFiles[chapterIndex]?.id, false);
 
   const applyDelayToAll = () => {
     const delayValue = delaySecondsOrZero(chapterDelay);
-    onChapterFilesChange(chapterFiles.map((file) => ({ ...file, delay: delayValue })));
+    onChapterFilesChange(chapterFiles.map((file) => (file.placeholder ? file : { ...file, delay: delayValue })));
   };
 
   const setEnabled = (enabled: boolean) => {
@@ -172,12 +212,12 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
   };
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  const drag = useRowReorder({ bodyRef, rowCount: chapterFiles.length, disabled: !ordered || !chaptersEnabled, onMove: reorderChapterFile });
+  const drag = useRowReorder({ bodyRef, rowCount: chapterFiles.length, disabled: !ordered || !chaptersEnabled, onMove: (from, to) => reorderChapterFile(from, Math.min(to, lastMovable)) });
 
   const sel = selectedChapterIndex;
-  const selected = sel !== null ? chapterFiles[sel] : undefined;
-  const canUp = chaptersEnabled && ordered && sel !== null && sel > 0;
-  const canDown = chaptersEnabled && ordered && sel !== null && sel < chapterFiles.length - 1;
+  const selected = sel !== null && !isPlaceholder(chapterFiles[sel]) ? chapterFiles[sel] : undefined;
+  const canUp = chaptersEnabled && ordered && Boolean(selected) && sel !== null && sel > 0 && sel <= lastMovable;
+  const canDown = chaptersEnabled && ordered && Boolean(selected) && sel !== null && sel < lastMovable;
 
   usePageCommands("chapters", {
     chooseFolder: chaptersEnabled ? () => void chooseFolder() : undefined,
@@ -199,16 +239,21 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
     },
   });
 
-  const linkedByHand = chapterFiles.filter((file) => file.isManuallyLinked).length;
-  const linked = chapterFiles.filter((file) => file.matchedVideoId).length;
+  const linkedByHand = realChapterFiles.filter((file) => file.isManuallyLinked).length;
+  const linked = realChapterFiles.filter((file) => file.matchedVideoId).length;
+  // A chapter file with no video is left out, as it always was; one beside
+  // another episode, or a second for one, stops the mux.
+  const conflicts = pairing.report.conflicts.filter((conflict) => conflict.kind !== "unmatched");
   const lcd: LcdProps = !chaptersEnabled
     ? { l1: "Chapters are off", l2: "The videos keep the chapters they have" }
-    : chapterFiles.length === 0
+    : realChapterFiles.length === 0
       ? { l1: "Drop a folder of chapter files" }
-      : {
-          l1: `${chapterFiles.length} chapter file${chapterFiles.length === 1 ? "" : "s"} · ${linked} linked`,
-          l2: `${linkedByHand ? `${linkedByHand} linked by hand · ` : ""}${discardOldChapters ? "old chapters discarded" : "old chapters kept"}`,
-        };
+      : conflicts.length > 0
+        ? { icon: "warn", l1: `${conflicts.length} chapter file${conflicts.length === 1 ? "" : "s"} to pair`, l2: `Row ${conflicts[0].row + 1}: ${chapterFiles[conflicts[0].row]?.name} ${conflicts[0].message.replace(/\.$/, "")}` }
+        : {
+            l1: `${realChapterFiles.length} chapter file${realChapterFiles.length === 1 ? "" : "s"} · ${linked} linked${pairing.pairBy === "episode" ? " by episode" : ""}`,
+            l2: `${linkedByHand ? `${linkedByHand} linked by hand · ` : ""}${discardOldChapters ? "old chapters discarded" : "old chapters kept"}`,
+          };
   const delayOk = parseDelayInput(chapterDelay).valid;
   const videoOptions = videoFiles.map((video) => ({ value: video.id, label: video.name }));
 
@@ -231,7 +276,7 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
           <Cmd icon={<ChevronDoubleUpRegular />} title={reorderHelp ?? "Move to the top"} disabled={!canUp} onClick={() => reorderChapterFile(sel!, 0)} />
           <Cmd icon={<ChevronUpRegular />} title={reorderHelp ?? "Move up (Alt+↑)"} disabled={!canUp} onClick={() => reorderChapterFile(sel!, sel! - 1)} />
           <Cmd icon={<ChevronDownRegular />} title={reorderHelp ?? "Move down (Alt+↓)"} disabled={!canDown} onClick={() => reorderChapterFile(sel!, sel! + 1)} />
-          <Cmd icon={<ChevronDoubleDownRegular />} title={reorderHelp ?? "Move to the bottom"} disabled={!canDown} onClick={() => reorderChapterFile(sel!, chapterFiles.length - 1)} />
+          <Cmd icon={<ChevronDoubleDownRegular />} title={reorderHelp ?? "Move to the bottom"} disabled={!canDown} onClick={() => reorderChapterFile(sel!, lastMovable)} />
         </>
       }
     >
@@ -240,10 +285,17 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
         left={
           <span className="crumb">
             Chapters
-            {chapterFiles.length > 0 && <span className="t3">{chapterFiles.length} file{chapterFiles.length === 1 ? "" : "s"} · {linked} linked</span>}
+            {realChapterFiles.length > 0 && <span className="t3">{realChapterFiles.length} file{realChapterFiles.length === 1 ? "" : "s"} · {linked} linked</span>}
           </span>
         }
-        end={chapterFiles.length > 0 && <SearchBox value={search} onChange={setSearch} label="Search chapters" w={150} />}
+        end={
+          realChapterFiles.length > 0 && (
+            <>
+              <PairByCombo value={pairing.pairBy} chosen={pairing.chosen} disabled={!chaptersEnabled} onChange={pairing.choose} />
+              <SearchBox value={search} onChange={setSearch} label="Search chapters" w={150} />
+            </>
+          )
+        }
         sheet={
           <>
             <SheetField label="Folder" wide>
@@ -279,10 +331,24 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
           </>
         }
       >
-        {chaptersEnabled && chapterFiles.length > 0 ? (
-          <Table cols="24px minmax(0,1fr) minmax(0,1fr) 64px 72px 88px" head={["#", "Chapter file", "Video", " Size", " Delay", "Linked"]} label="Chapters" bodyRef={bodyRef}>
+        {chaptersEnabled && realChapterFiles.length > 0 ? (
+          <Table cols="24px minmax(0,1fr) minmax(0,1fr) 64px 72px 104px" head={["#", "Chapter file", "Video", " Size", " Delay", "Match"]} label="Chapters" bodyRef={bodyRef}>
             {visibleChapters.map(({ file, index }) => {
               const dragProps = drag.rowProps(index);
+              if (file.placeholder) {
+                // An empty row: this video has no chapter file, and the files after it keep their own.
+                const video = videoFiles.find((entry) => entry.id === file.matchedVideoId);
+                return (
+                  <Tr key={file.id} on={sel === index} onClick={() => selectChapterIndex(index)} label={video?.name ?? "Empty row"}>
+                    <span className="num t3">{index + 1}</span>
+                    <span className="nil" title="No chapter file for this video">—</span>
+                    <span className="t3 truncate" title={video?.name}>{video?.name ?? ""}</span>
+                    <span />
+                    <span />
+                    <span />
+                  </Tr>
+                );
+              }
               return (
                 <Tr
                   key={file.id}
@@ -312,7 +378,7 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
                   </span>
                   <span className="r num t2" style={{ display: "flex" }}>{file.size ? formatFileSize(file.size) : "—"}</span>
                   <span className="r num t2" style={{ display: "flex" }}>{formatDelay(file.delay)}</span>
-                  <span className={file.isManuallyLinked ? "" : "t3"}>{file.isManuallyLinked ? "By hand" : "By order"}</span>
+                  <MatchCell file={file} info={pairing.infoOf(file.id)} conflict={conflicts.find((conflict) => conflict.fileId === file.id)} />
                 </Tr>
               );
             })}
@@ -333,9 +399,11 @@ export function ChaptersPage({ hidden, chapterFiles, videoFiles, onChapterFilesC
           file={selected}
           index={sel}
           videoFiles={videoFiles}
+          paired={pairingLine(pairing.infoOf(selected.id), conflicts.find((conflict) => conflict.fileId === selected.id), selected)}
+          relinkLabel={pairing.pairBy === "episode" ? "Pair by episode again" : "Link by order again"}
           onClose={() => setDetailsOpen(false)}
           onChange={(next) => onChapterFilesChange(chapterFiles.map((f, i) => (i === sel ? next : f)))}
-          onApplyToAll={(delay) => onChapterFilesChange(chapterFiles.map((f) => ({ ...f, delay })))}
+          onApplyToAll={(delay) => onChapterFilesChange(chapterFiles.map((f) => (f.placeholder ? f : { ...f, delay })))}
           onUnlink={() => unlinkChapter(sel)}
         />
       )}
@@ -350,6 +418,8 @@ function ChapterDetails({
   file,
   index,
   videoFiles,
+  paired,
+  relinkLabel,
   onClose,
   onChange,
   onApplyToAll,
@@ -358,6 +428,9 @@ function ChapterDetails({
   file: ExternalFile;
   index: number;
   videoFiles: VideoFile[];
+  /** How the file is paired, in words (pairingLine). */
+  paired: ReactNode;
+  relinkLabel: string;
   onClose: () => void;
   onChange: (file: ExternalFile) => void;
   onApplyToAll: (delay: number) => void;
@@ -394,7 +467,7 @@ function ChapterDetails({
       <DL
         rows={[
           ["Video", video ? <span key="v" className="truncate" title={video.name}>{video.name}</span> : <span key="v" className="warn">None</span>],
-          ["Linked", file.isManuallyLinked ? "By hand" : `By order, row ${index + 1}`],
+          ["Linked", file.isManuallyLinked ? "By hand" : paired === "By order" ? `By order, row ${index + 1}` : paired],
           ["Size", file.size ? formatFileSize(file.size) : "—"],
         ]}
       />
@@ -408,7 +481,7 @@ function ChapterDetails({
       </div>
       <Links>
         <L icon={<BookmarkMultipleRegular />} disabled={!delayInputsAreValid(delay)} onClick={() => onApplyToAll(delaySecondsOrZero(delay))}>Use this delay for every file</L>
-        {file.isManuallyLinked && <L icon={<LinkDismissRegular />} onClick={onUnlink}>Link by order again</L>}
+        {file.isManuallyLinked && <L icon={<LinkDismissRegular />} onClick={onUnlink}>{relinkLabel}</L>}
       </Links>
     </Dialog>
   );

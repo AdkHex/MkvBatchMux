@@ -9,6 +9,7 @@ import { useShell, usePageCommands, useStatus } from "@/app/shell";
 import { useTabState } from "@/features/workspace/store/useTabState";
 import { pickDirectory, pickFiles, scanMedia } from "@/shared/lib/backend";
 import { ATTACHMENT_EXTENSIONS } from "@/shared/lib/extensions";
+import { naturalCompare } from "@/shared/lib/naturalOrder";
 import type { ExternalFile, MuxSettings, Preset } from "@/shared/types";
 import { PageView, Panel, lcdStatus, type LcdProps } from "@/ui/frame";
 import { Btn, Chk, Cmd, Combo, Empty, MidText, SheetField, TBox, Table, Toggle, Tr } from "@/ui/kit";
@@ -34,6 +35,8 @@ const iconFor = (name: string) => {
 const kindOf = (name: string) => {
   const ext = extensionOf(name);
   if (ext === "otf") return "OpenType font";
+  if (ext === "ttf") return "TrueType font";
+  if (ext === "ttc") return "TrueType collection";
   if (FONT.has(ext)) return "Font";
   if (IMAGE.has(ext)) return "Image";
   return ext ? ext.toUpperCase() : "File";
@@ -62,6 +65,12 @@ export function AttachmentsPage({ hidden, attachmentFiles, onAttachmentFilesChan
     if (nextIndex < 0) selectedAttachmentIdRef.current = null;
     setSelectedIndex(nextIndex >= 0 ? nextIndex : null);
   }, [attachmentFiles]);
+  // Cleared when the search changes, as on Videos: a hidden attachment staying
+  // selected would let Remove take a file out of sight.
+  useEffect(() => {
+    selectedAttachmentIdRef.current = null;
+    setSelectedIndex(null);
+  }, [search]);
 
   // Keyed on the folder value, not the preset object, so saving an unrelated
   // option does not discard a folder the user just typed.
@@ -82,8 +91,8 @@ export function AttachmentsPage({ hidden, attachmentFiles, onAttachmentFilesChan
         .map((file, index) => ({ file, index }))
         .filter(({ file }) => matchesSearch(file, search))
         .sort((a, b) => {
-          if (sort === "name-asc") return a.file.name.localeCompare(b.file.name);
-          if (sort === "name-desc") return b.file.name.localeCompare(a.file.name);
+          if (sort === "name-asc") return naturalCompare(a.file.name, b.file.name);
+          if (sort === "name-desc") return naturalCompare(b.file.name, a.file.name);
           if (sort === "size-desc") return (b.file.size || 0) - (a.file.size || 0);
           return a.index - b.index;
         }),

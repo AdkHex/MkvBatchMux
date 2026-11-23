@@ -33,6 +33,7 @@ import { muxOutcome, timeLeftText, tookText } from "@/app/history";
 import { useShell, usePageCommands, useStatus, type PageId } from "@/app/shell";
 import { pickDirectory } from "@/shared/lib/backend";
 import type { MuxJob, MuxPreviewResult, MuxSettings, OutputSettings, VideoFile } from "@/shared/types";
+import { verificationOutcome, verificationProblems, type VerificationCheck } from "@/shared/types/verify";
 import { Dialog, PageView, Panel, Popover, lcdStatus, type LcdProps } from "@/ui/frame";
 import { Btn, Chk, Cmd, Combo, Empty, Fld, InfoBar, LangCombo, MidText, Status, TBox, Table, Toggle, Tr, cx, type St } from "@/ui/kit";
 
@@ -114,6 +115,21 @@ const PARALLEL_OPTIONS = [
   { value: 8, label: "8" },
 ];
 
+/** How far an added audio track may sit from the source's audio and pass. */
+const TOLERANCE_OPTIONS = [20, 40, 80, 120].map((value) => ({ value, label: `${value} ms` }));
+
+/** A job's status in the queue, once it has a verification to show. */
+function verificationStatus(job: Pick<MuxJob, "status" | "stage" | "verification" | "errorMessage">): { s: St; text: string; title?: string } | null {
+  if (job.status === "processing" && job.stage === "verifying") return { s: "run", text: "Verifying" };
+  const outcome = verificationOutcome(job.verification);
+  if (job.status === "completed" && outcome === "verified") return { s: "ok", text: "Verified" };
+  if (job.status === "completed" && outcome === "warnings") {
+    return { s: "warn", text: "Verified with warnings", title: verificationProblems(job.verification).map((check) => `${check.label}: ${check.detail}`).join("\n") };
+  }
+  if (job.status === "error" && outcome === "failed") return { s: "bad", text: "Verification failed", title: job.errorMessage };
+  return null;
+}
+
 function formatEta(seconds?: number) {
   if (seconds === undefined || seconds <= 0 || Number.isNaN(seconds)) return "—";
   const mins = Math.floor(seconds / 60);
@@ -182,6 +198,19 @@ export function MuxPage({
    *  rather than only how many there are. */
   const warnings = useMemo(() => Object.values(previewResults).flatMap((result) => result.warnings), [previewResults]);
   const warnedJobs = useMemo(() => Object.values(previewResults).filter((result) => result.warnings.length > 0).length, [previewResults]);
+  /** The first LISTED_WARNINGS warnings, in queue order, each with the video it is about. */
+  const listedWarnings = useMemo(() => {
+    let room = LISTED_WARNINGS;
+    const listed: { id: string; name: string; warnings: string[] }[] = [];
+    for (const job of jobs) {
+      if (room <= 0) break;
+      const jobWarnings = previewResults[job.id]?.warnings ?? [];
+      if (jobWarnings.length === 0) continue;
+      listed.push({ id: job.id, name: job.videoFile.name, warnings: jobWarnings.slice(0, room) });
+      room -= Math.min(room, jobWarnings.length);
+    }
+    return listed;
+  }, [jobs, previewResults]);
   // Ask only when starting anyway despite validation problems: a long-running
   // batch with overwrite on is not undoable.
   const startNeedsConfirming = warnings.length > 0;
@@ -266,8 +295,10 @@ export function MuxPage({
   // finished batch's result is in the Status column, History and Output.
   const status = own?.icon === "run" ? own : null;
 
-  const statusOf = (job: MuxJob): { s: St; text?: string; pct?: number; title?: string } => {
+  const statusOf = (job: MuxJob): { s: St; text?: string; pct?: number | null; title?: string } => {
     const jobWarnings = previewResults[job.id]?.warnings ?? [];
+    const verified = verificationStatus(job);
+    if (verified) return verified.s === "run" ? { ...verified, pct: null } : verified;
     if (job.status === "processing") return { s: "run", pct: job.progress };
     if (job.status === "completed") return { s: "ok" };
     if (job.status === "error") return { s: "bad", title: job.errorMessage };
@@ -291,6 +322,10 @@ export function MuxPage({
   const willOverwrite = settings.directory.trim() === "" && settings.overwriteExisting;
   const keepAudio = muxSettings.onlyKeepAudiosEnabled && muxSettings.onlyKeepAudioLanguages[0] ? muxSettings.onlyKeepAudioLanguages[0] : "all";
   const keepSubs = muxSettings.onlyKeepSubtitlesEnabled && muxSettings.onlyKeepSubtitleLanguages[0] ? muxSettings.onlyKeepSubtitleLanguages[0] : "all";
+  // Absent in settings saved before verification existed: on, as the backend takes it.
+  const verifyOutput = muxSettings.verifyOutput !== false;
+  const verifySync = muxSettings.verifySync !== false;
+  const tolerance = muxSettings.verifySyncToleranceMs ?? 40;
 
   const saveTo = (
     <span className="destw">
@@ -375,7 +410,8 @@ export function MuxPage({
             {externalLinkIssues.join(" ")}
           </InfoBar>
         )}
-        {hasJobs && !running && !hasExternalLinkIssues && warnings.length > 0 && (
+        {/* Before a run only: once a batch has finished, its outcome is what the queue shows. */}
+        {hasJobs && !running && !finished && !hasExternalLinkIssues && warnings.length > 0 && (
           <InfoBar
             tone="warn"
             actions={
@@ -502,6 +538,30 @@ export function MuxPage({
             <label className="ck"><Toggle name="Remove attachments from the source" on={muxSettings.discardOldAttachments} onChange={(on) => onMuxSettingsChange({ discardOldAttachments: on })} />Attachments</label>
             <label className="ck"><Toggle name="Remove global tags from the source" on={muxSettings.removeGlobalTags} onChange={(on) => onMuxSettingsChange({ removeGlobalTags: on })} />Global tags</label>
           </div>
+          <div className="fh">Check each new file</div>
+          <div className="row" style={{ gap: 28 }}>
+            <label className="ck" title="Read the new file back before it replaces the source: its tracks, languages, length and chapters">
+              <Toggle name="Check each new file" on={verifyOutput} onChange={(on) => onMuxSettingsChange({ verifyOutput: on })} />
+              Tracks and length
+            </label>
+            <label className="ck" title="Measure each added audio track against the source's audio inside the new file">
+              <Toggle name="Check the sync of added audio" on={verifyOutput && verifySync} disabled={!verifyOutput} onChange={(on) => onMuxSettingsChange({ verifySync: on })} />
+              Sync of added audio
+            </label>
+          </div>
+          <div className="fgrid">
+            <Fld label="Sync may be off by">
+              <Combo<number>
+                label="Sync may be off by"
+                value={tolerance}
+                options={TOLERANCE_OPTIONS.some((option) => option.value === tolerance) ? TOLERANCE_OPTIONS : [...TOLERANCE_OPTIONS, { value: tolerance, label: `${tolerance} ms` }]}
+                w="100%"
+                disabled={!verifyOutput || !verifySync}
+                onChange={(verifySyncToleranceMs) => onMuxSettingsChange({ verifySyncToleranceMs })}
+              />
+            </Fld>
+            <span className="sm t3" style={{ alignSelf: "end" }}>A file that fails is kept as .unverified.mkv; its source stays as it was.</span>
+          </div>
           <div className="fh">Run</div>
           <div className="fgrid">
             <Fld label="Jobs at once">
@@ -582,9 +642,15 @@ export function MuxPage({
               ? "Overwrite is on, so muxing anyway will replace the source files. This cannot be undone."
               : "Muxing anyway may give files that are not what you expect."}
           </div>
-          <div className="col sm t2" style={{ gap: 4, padding: "10px 12px", background: "var(--layer)", borderRadius: 4, border: "1px solid var(--divider)" }}>
-            {warnings.slice(0, LISTED_WARNINGS).map((warning, index) => (
-              <span key={`${warning}-${index}`}>{warning}</span>
+          <div className="col sm t2" style={{ gap: 8, padding: "10px 12px", background: "var(--layer)", borderRadius: 4, border: "1px solid var(--divider)" }}>
+            {/* Under the video each is about: "Audio 1 has a delay above 1 s" alone does not say which episode to check. */}
+            {listedWarnings.map(({ id, name, warnings: jobWarnings }) => (
+              <span key={id} className="col" style={{ gap: 2, minWidth: 0 }}>
+                <span className="t3 truncate" title={name}>{name}</span>
+                {jobWarnings.map((warning, index) => (
+                  <span key={`${warning}-${index}`}>{warning}</span>
+                ))}
+              </span>
             ))}
             {warnings.length > LISTED_WARNINGS && <span className="t3">and {warnings.length - LISTED_WARNINGS} more.</span>}
           </div>
@@ -633,7 +699,18 @@ export function JobDetails({
   const kept = tracks.filter((track) => !track.removed);
   const removed = tracks.filter((track) => track.removed);
   const shown = showRemoved ? [...kept, ...removed] : kept;
-  const statusWord = job.status === "processing" ? `Muxing · ${Math.round(job.progress)}%` : job.status === "completed" ? "Done" : job.status === "error" ? "Failed" : job.status === "stopped" ? "Stopped" : "Queued";
+  const verified = verificationStatus(job);
+  const statusWord = verified
+    ? verified.text
+    : job.status === "processing"
+      ? `Muxing · ${Math.round(job.progress)}%`
+      : job.status === "completed"
+        ? "Done"
+        : job.status === "error"
+          ? "Failed"
+          : job.status === "stopped"
+            ? "Stopped"
+            : "Queued";
   return (
     <Dialog
       size="xl"
@@ -646,7 +723,12 @@ export function JobDetails({
     >
       {(preview?.warnings.length || (job.status === "error" && job.errorMessage)) && (
         <div className="col" style={{ gap: 8, padding: "12px 16px 0" }}>
-          {job.status === "error" && job.errorMessage && <InfoBar tone="bad">{job.errorMessage}</InfoBar>}
+          {job.status === "error" && job.errorMessage && (
+            <InfoBar tone="bad">
+              {job.errorMessage}
+              {job.verification?.keptPath && <span className="t2"> · Kept as {job.verification.keptPath}; the source was not touched.</span>}
+            </InfoBar>
+          )}
           {preview && preview.warnings.length > 0 && (
             <InfoBar tone="warn">
               {preview.warnings.length} warning{preview.warnings.length === 1 ? "" : "s"} · {preview.warnings.join(" · ")}
@@ -654,6 +736,7 @@ export function JobDetails({
           )}
         </div>
       )}
+      {job.verification && <VerificationChecks checks={job.verification.checks} />}
       <div className="sect">
         Tracks in the new file <span className="t3">· {kept.length} kept or added</span>
         {removed.length > 0 && (
@@ -697,5 +780,30 @@ export function JobDetails({
       <div className="sect">Command</div>
       {preview?.command ? <pre className="cmdline">{preview.command}</pre> : <div className="t3" style={{ padding: "0 16px 16px" }}>Validate to see the mkvmerge command for this job.</div>}
     </Dialog>
+  );
+}
+
+const CHECK_STATUS: Record<VerificationCheck["status"], { s: St; text: string }> = {
+  pass: { s: "ok", text: "Passed" },
+  warn: { s: "warn", text: "Warning" },
+  fail: { s: "bad", text: "Failed" },
+  skip: { s: "wait", text: "Not checked" },
+};
+
+/** What checking the new file found, one line per check. */
+function VerificationChecks({ checks }: { checks: VerificationCheck[] }) {
+  return (
+    <>
+      <div className="sect">Checks on the new file</div>
+      <Table style={{ flex: "none" }} cols="132px minmax(0,.7fr) minmax(0,2fr)" head={["Result", "Check", "Found"]} label="Checks on the new file">
+        {checks.map((check) => (
+          <Tr key={check.id} label={check.label}>
+            <Status s={CHECK_STATUS[check.status].s} text={CHECK_STATUS[check.status].text} />
+            <span className="truncate" title={check.label}>{check.label}</span>
+            <span className={cx("truncate", check.status === "skip" ? "t3" : "t2")} title={check.detail}>{check.detail}</span>
+          </Tr>
+        ))}
+      </Table>
+    </>
   );
 }

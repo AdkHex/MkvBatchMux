@@ -9,6 +9,7 @@
 import { DismissRegular } from "@fluentui/react-icons";
 import { useRef, useState } from "react";
 
+import { rowFieldMixed, type TrackRowDraft } from "@/features/workspace/lib/modifyTracks";
 import { useRowReorder } from "@/features/workspace/lib/useRowReorder";
 import { Chk, Cmd, Grip, LangCombo, Table, Tr, cx } from "@/ui/kit";
 
@@ -22,6 +23,12 @@ export interface TrackRowView {
   bitrate?: number;
   /** A file added to the video, not one of its own tracks. */
   external?: boolean;
+  /** Shown dim while the name is empty (an unnamed track's codec). */
+  namePlaceholder?: string;
+  /** Modify tracks: the row as first shown, and which fields the videos
+   *  disagree on — shown as mixed until the user sets them. */
+  initial?: TrackRowDraft["initial"];
+  mixed?: TrackRowDraft["mixed"];
 }
 
 export type TrackFlag = "copyTrack" | "setDefault" | "setForced";
@@ -85,12 +92,21 @@ export function TrackRowsTable<R extends TrackRowView>({
             <Tr key={row.id} on={selectedId === row.id} className={dragProps.className} onPointerDown={(event) => {
               onSelect(row.id);
               dragProps.onPointerDown(event);
-            }} onClick={() => onSelect(row.id)} label={row.trackName}>
+            }} onClick={() => onSelect(row.id)} label={row.trackName || row.namePlaceholder}>
               <Grip />
               <span className="num t3">{String(index + 1).padStart(2, "0")}</span>
-              <Chk name={`Copy track ${index + 1}`} on={row.copyTrack} onChange={(on) => onChange(row.id, "copyTrack", on)} />
-              <Chk name={`Default track ${index + 1}`} on={row.setDefault} disabled={!row.copyTrack} onChange={(on) => onChange(row.id, "setDefault", on)} />
-              <Chk name={`Forced track ${index + 1}`} on={row.setForced} disabled={!row.copyTrack} onChange={(on) => onChange(row.id, "setForced", on)} />
+              <span className="cell">
+                <Chk name={`Copy track ${index + 1}`} on={row.copyTrack} onChange={(on) => onChange(row.id, "copyTrack", on)} />
+                {rowFieldMixed(row, "copyTrack") && <Mixed />}
+              </span>
+              <span className="cell">
+                <Chk name={`Default track ${index + 1}`} on={row.setDefault} disabled={!row.copyTrack} onChange={(on) => onChange(row.id, "setDefault", on)} />
+                {rowFieldMixed(row, "setDefault") && <Mixed />}
+              </span>
+              <span className="cell">
+                <Chk name={`Forced track ${index + 1}`} on={row.setForced} disabled={!row.copyTrack} onChange={(on) => onChange(row.id, "setForced", on)} />
+                {rowFieldMixed(row, "setForced") && <Mixed />}
+              </span>
               {audio && <span className="r num t2" style={{ display: "flex" }}>{row.bitrate ? `${Math.round(row.bitrate / 1000)} kb/s` : "—"}</span>}
               {editingId === row.id ? (
                 <label className="tbox" style={{ height: 26 }}>
@@ -119,11 +135,11 @@ export function TrackRowsTable<R extends TrackRowView>({
                     setEditingName(row.trackName);
                   }}
                 >
-                  <span className={cx("truncate", !row.copyTrack && "t3", row.trackName === "Multiple" && "t3")}>{row.trackName}</span>
+                  <span className={cx("truncate", (!row.copyTrack || !row.trackName) && "t3")}>{row.trackName || row.namePlaceholder}</span>
                   {row.external && <span className="t3 sm">Added</span>}
                 </span>
               )}
-              <LangCombo sm ghost w="100%" label={`Language of track ${index + 1}`} value={row.language} onChange={(language) => onChange(row.id, "language", language)} />
+              <LangCombo sm ghost w="100%" label={`Language of track ${index + 1}`} value={row.language} placeholder={rowFieldMixed(row, "language") ? "Multiple" : undefined} onChange={(language) => onChange(row.id, "language", language)} />
               {onDelete ? (
                 <span className="rx">
                   <Cmd sm icon={<DismissRegular />} title="Remove from the list" onClick={() => onDelete(row.id)} />
@@ -137,4 +153,10 @@ export function TrackRowsTable<R extends TrackRowView>({
       )}
     </Table>
   );
+}
+
+/** Beside a checkbox whose value differs between the videos: left alone, each
+ *  video keeps its own. */
+function Mixed() {
+  return <span className="t3 sm" title="Differs between the videos; left as is unless you change it">Mixed</span>;
 }

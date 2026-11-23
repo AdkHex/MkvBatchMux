@@ -41,10 +41,14 @@ export function useRowReorder({
       const body = bodyRef.current;
       if (!body) return;
       const rect = body.getBoundingClientRect();
+      // The rows' real height: the same table is 32 px a row on a page and
+      // 40 px in the Edit and Modify tracks dialogs (ui.css), and a guess
+      // that is off lands the drop rows away from the pointer.
+      const measured = body.querySelector<HTMLElement>(":scope > .tr")?.offsetHeight;
       const index = getReorderIndexFromPointer({
         containerRect: { top: rect.top + BODY_PADDING, bottom: rect.bottom },
         scrollTop: body.scrollTop,
-        rowHeight,
+        rowHeight: measured || rowHeight,
         rowCount,
         pointerY: y,
       });
@@ -107,14 +111,17 @@ export function useRowReorder({
   }, [bodyRef, target]);
 
   /** Spread on a row: starts a drag from a press anywhere on it except its
-   *  own controls. */
+   *  own controls. The drop line goes where the row will land: moving down,
+   *  the dragged row is placed after the one under the pointer ("after"),
+   *  moving up, before it. */
   const rowProps = (index: number) => ({
     onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
       if (disabled || event.button !== 0) return;
       if ((event.target as HTMLElement).closest("button, input, select, textarea, a")) return;
       pending.current = { index, x: event.clientX, y: event.clientY, pointerId: event.pointerId, row: event.currentTarget };
     },
-    className: dragIndex === index ? "dragging" : overIndex === index && dragIndex !== null && dragIndex !== index ? "drop" : undefined,
+    className:
+      dragIndex === index ? "dragging" : overIndex === index && dragIndex !== null && dragIndex !== index ? (index > dragIndex ? "drop after" : "drop") : undefined,
   });
 
   return { dragIndex, overIndex, rowProps };

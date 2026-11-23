@@ -5,7 +5,7 @@
  *  original name, language and flags are kept so the report can show them. */
 
 import { AddRegular, ArrowDownRegular, ArrowImportRegular, ArrowUpRegular, CheckmarkRegular, DeleteRegular } from "@fluentui/react-icons";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { moveTrackRow } from "@/features/workspace/lib/modifyTracks";
 import { DelayField, delayInputsAreValid } from "@/shared/components/DelayField";
@@ -46,6 +46,7 @@ interface TrackRow {
   setDefault: boolean;
   setForced: boolean;
   trackName: string;
+  namePlaceholder?: string;
   language: string;
   source: "internal" | "external";
   originalTrack?: Track;
@@ -69,7 +70,10 @@ const toTrackRows = (tracks: Track[], type: Track["type"]): TrackRow[] =>
       copyTrack: t.action !== "remove",
       setDefault: t.isDefault || false,
       setForced: t.isForced || false,
-      trackName: t.name || t.codec || `Track ${idx + 1}`,
+      // An unnamed track keeps an empty name: the codec is only shown dim in
+      // its place, since a name written back reaches mkvmerge as --track-name.
+      trackName: t.name || "",
+      namePlaceholder: t.codec || `Track ${idx + 1}`,
       language: t.language || "und",
       source: "internal",
       originalTrack: t,
@@ -117,11 +121,17 @@ export function VideoFileEditDialog({
   const [importOverrides, setImportOverrides] = useState<Record<number, ImportTrackOverride>>({});
   const [importEditingId, setImportEditingId] = useState<number | null>(null);
 
+  // The added files the rows were last built from, so a later change to the
+  // lists can tell a file just added from one the user took out here.
+  const loadedExternalIds = useRef<Record<"audio" | "subtitle", Set<string>>>({ audio: new Set(), subtitle: new Set() });
+  const matchedExternal = (files: ExternalFile[] | undefined) => (files || []).filter((file) => file.matchedVideoId === videoFile?.id);
+
   const load = () => {
     if (!videoFile) return;
     const fileTracks = videoFile.tracks || [];
-    const externalAudio = (externalAudioFiles || []).filter((file) => file.matchedVideoId === videoFile.id);
-    const externalSubtitle = (externalSubtitleFiles || []).filter((file) => file.matchedVideoId === videoFile.id);
+    const externalAudio = matchedExternal(externalAudioFiles);
+    const externalSubtitle = matchedExternal(externalSubtitleFiles);
+    loadedExternalIds.current = { audio: new Set(externalAudio.map((file) => file.id)), subtitle: new Set(externalSubtitle.map((file) => file.id)) };
     setVideoTracks(toTrackRows(fileTracks, "video"));
     setSubtitleTracks([...toTrackRows(fileTracks, "subtitle"), ...toExternalRows(externalSubtitle)]);
     setAudioTracks([...toTrackRows(fileTracks, "audio"), ...toExternalRows(externalAudio)]);
@@ -129,9 +139,30 @@ export function VideoFileEditDialog({
 
   useEffect(() => {
     if (videoFile && open) load();
-    // Re-read whenever the video or its added files change while open.
+    // Re-read whenever the video changes or the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoFile, open, externalAudioFiles, externalSubtitleFiles]);
+  }, [videoFile, open]);
+
+  // A file added from this dialog ("Add an audio file…") changes only the
+  // added-file lists: add its row, and drop the rows of files gone from them,
+  // rather than re-reading everything, which would throw away every edit
+  // not yet applied.
+  useEffect(() => {
+    if (!videoFile || !open) return;
+    const sync = (kind: "audio" | "subtitle", files: ExternalFile[], setRows: (update: (rows: TrackRow[]) => TrackRow[]) => void) => {
+      const seen = loadedExternalIds.current[kind];
+      const ids = new Set(files.map((file) => file.id));
+      const added = files.filter((file) => !seen.has(file.id));
+      const gone = new Set([...seen].filter((id) => !ids.has(id)));
+      loadedExternalIds.current[kind] = ids;
+      if (added.length === 0 && gone.size === 0) return;
+      setRows((rows) => [...rows.filter((row) => !(row.source === "external" && gone.has(row.id))), ...toExternalRows(added)]);
+    };
+    sync("audio", matchedExternal(externalAudioFiles), setAudioTracks);
+    sync("subtitle", matchedExternal(externalSubtitleFiles), setSubtitleTracks);
+    // Only the lists: opening the dialog or another video is a full load above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalAudioFiles, externalSubtitleFiles]);
 
   useEffect(() => {
     if (!open) {
@@ -197,18 +228,20 @@ export function VideoFileEditDialog({
           const originalLanguage = original.originalLanguage ?? original.language ?? "";
           const originalDefault = original.originalDefault !== undefined ? original.originalDefault : (original.isDefault ?? false);
           const originalForced = original.originalForced !== undefined ? original.originalForced : (original.isForced ?? false);
-          const nameChanged = row.trackName !== (original.name || original.codec || row.trackName);
-          const languageChanged = (row.language || "") !== (original.language || "");
+          // Compared with what the row first showed, so a field left alone is
+          // written back exactly as it was (no name, no language, no flag).
+          const nameChanged = row.trackName !== (original.name || "");
+          const languageChanged = row.language !== (original.language || "und");
           const defaultChanged = row.setDefault !== (original.isDefault ?? false);
           const forcedChanged = row.setForced !== (original.isForced ?? false);
           const isRemoved = !row.copyTrack;
           const hasChanges = !isRemoved && (nameChanged || languageChanged || defaultChanged || forcedChanged);
           return {
             ...original,
-            name: row.trackName,
-            language: row.language,
-            isDefault: row.setDefault,
-            isForced: row.setForced,
+            name: nameChanged ? row.trackName : original.name,
+            language: languageChanged ? row.language : original.language,
+            isDefault: defaultChanged ? row.setDefault : original.isDefault,
+            isForced: forcedChanged ? row.setForced : original.isForced,
             action: isRemoved ? ("remove" as const) : hasChanges ? ("modify" as const) : ("keep" as const),
             originalName,
             originalLanguage,

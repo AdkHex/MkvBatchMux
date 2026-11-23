@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, cleanup, within, fireEvent } from "@testing-library/react";
 import type { ReactNode } from "react";
 import type { MuxJob, MuxPreviewResult, MuxSettings, OutputSettings, VideoFile } from "@/shared/types";
+import type { VerificationReport } from "@/shared/types/verify";
 import { ShellContext, type Shell } from "@/app/shell";
 
 // The page reaches for the backend when picking a folder; nothing here clicks
@@ -76,6 +77,9 @@ function renderPage(overrides: {
   overwriteExisting?: boolean;
   shell?: Partial<Shell>;
   getJobReport?: (jobId: string) => JobReport | null;
+  jobs?: MuxJob[];
+  muxSettings?: Partial<MuxSettings>;
+  onMuxSettingsChange?: (settings: Partial<MuxSettings>) => void;
 }) {
   const onStartMuxing = overrides.onStartMuxing ?? vi.fn();
   const onClearQueue = vi.fn();
@@ -85,13 +89,13 @@ function renderPage(overrides: {
         hidden={false}
         settings={{ ...outputSettings, overwriteExisting: overrides.overwriteExisting ?? false }}
         onSettingsChange={onSettingsChange}
-        muxSettings={muxSettings}
-        onMuxSettingsChange={vi.fn()}
+        muxSettings={{ ...muxSettings, ...overrides.muxSettings }}
+        onMuxSettingsChange={overrides.onMuxSettingsChange ?? vi.fn()}
         fastMuxAvailable={false}
         externalLinkIssues={[]}
         unlinkedPage={null}
-        jobs={[job]}
-        videoFiles={[video]}
+        jobs={overrides.jobs ?? [job]}
+        videoFiles={(overrides.jobs ?? [job]).map((each) => each.videoFile)}
         onClearQueue={onClearQueue}
         onStartMuxing={onStartMuxing}
         onPauseMuxing={vi.fn()}
@@ -243,5 +247,97 @@ describe("MuxPage Overwrite", () => {
     expect(screen.queryByRole("dialog", { name: "Save to" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: "Overwrite" }));
     expect(onSettingsChange).toHaveBeenCalledWith({ overwriteExisting: true });
+  });
+});
+
+describe("MuxPage verification", () => {
+  beforeEach(cleanup);
+
+  const checked = (overrides: Partial<VerificationReport>): VerificationReport => ({
+    ok: true,
+    checks: [
+      { id: "tracks", label: "Tracks", status: "pass", detail: "1 video, 2 audio, 1 subtitle tracks" },
+      { id: "chapters", label: "Chapters", status: "skip", detail: "None added" },
+      { id: "sync", label: "Sync: Episode 01.hin.eac3", status: "pass", detail: "In sync: 5 ms late, within 40 ms (100 % confidence)" },
+    ],
+    residualMs: 5.3,
+    syncConfidence: 0.99,
+    ...overrides,
+  });
+  const episode = (n: number, rest: Partial<MuxJob>): MuxJob => ({
+    id: `j${n}`,
+    videoFile: { ...video, id: `v${n}`, name: `Episode 0${n}.mkv`, path: `/videos/Episode 0${n}.mkv` },
+    status: "completed",
+    progress: 100,
+    ...rest,
+  });
+  const failed = checked({
+    ok: false,
+    checks: [{ id: "sync", label: "Sync: Episode 03.hin.eac3", status: "fail", detail: "Episode 03.hin.eac3 plays 1317 ms late, more than the 40 ms allowed (100 % confidence)" }],
+    residualMs: 1317.3,
+    keptPath: "/out/Episode 03.unverified.mkv",
+  });
+  const jobs = [
+    episode(1, { verification: checked({}) }),
+    episode(2, { verification: checked({ checks: [{ id: "flags", label: "Names and flags", status: "warn", detail: "Audio 2 is not default" }] }) }),
+    episode(3, { status: "error", errorMessage: "Verification failed: Episode 03.hin.eac3 plays 1317 ms late", verification: failed }),
+    episode(4, { status: "processing", stage: "verifying" }),
+    episode(5, {}),
+  ];
+
+  it("shows each job's verification in the queue's Status", () => {
+    renderPage({ jobs });
+
+    expect(within(screen.getByRole("row", { name: "Episode 01.mkv" })).getByText("Verified")).toBeInTheDocument();
+    const warned = within(screen.getByRole("row", { name: "Episode 02.mkv" })).getByText("Verified with warnings");
+    expect(warned.closest("[title]")).toHaveAttribute("title", "Names and flags: Audio 2 is not default");
+    expect(within(screen.getByRole("row", { name: "Episode 03.mkv" })).getByText("Verification failed")).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: "Episode 04.mkv" })).getByText("Verifying")).toBeInTheDocument();
+    // Checking turned off: done, as before.
+    expect(within(screen.getByRole("row", { name: "Episode 05.mkv" })).getByText("Done")).toBeInTheDocument();
+  });
+
+  it("lists the checks in the job's details, and where a failed file was kept", () => {
+    renderPage({ jobs });
+
+    fireEvent.doubleClick(screen.getByRole("row", { name: "Episode 01.mkv" }));
+    let dialog = screen.getByRole("dialog", { name: "Episode 01.mkv" });
+    const checks = within(dialog).getByRole("table", { name: "Checks on the new file" });
+    expect(within(checks).getByRole("row", { name: "Tracks" })).toHaveTextContent("Passed");
+    expect(within(checks).getByRole("row", { name: "Chapters" })).toHaveTextContent("Not checked");
+    expect(within(checks).getByText(/In sync: 5 ms late/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getAllByRole("button", { name: /^close$/i })[0]);
+
+    fireEvent.doubleClick(screen.getByRole("row", { name: "Episode 03.mkv" }));
+    dialog = screen.getByRole("dialog", { name: "Episode 03.mkv" });
+    expect(within(dialog).getByText(/Kept as \/out\/Episode 03\.unverified\.mkv; the source was not touched/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("row", { name: "Sync: Episode 03.hin.eac3" })).toHaveTextContent("Failed");
+  });
+
+  it("turns the checks on and off in Options, sync only while checking is on", () => {
+    const onMuxSettingsChange = vi.fn();
+    renderPage({ onMuxSettingsChange });
+
+    fireEvent.click(screen.getByRole("button", { name: /^options$/i }));
+    const options = screen.getByRole("dialog", { name: "Mux options" });
+    // Absent from older settings: on.
+    const check = within(options).getByRole("switch", { name: "Check each new file" });
+    expect(check).toHaveAttribute("aria-checked", "true");
+    expect(within(options).getByRole("switch", { name: "Check the sync of added audio" })).toBeEnabled();
+    fireEvent.click(check);
+    expect(onMuxSettingsChange).toHaveBeenCalledWith({ verifyOutput: false });
+    fireEvent.change(within(options).getByRole("combobox", { name: "Sync may be off by" }), { target: { value: "80" } });
+    expect(onMuxSettingsChange).toHaveBeenCalledWith({ verifySyncToleranceMs: 80 });
+  });
+
+  it("leaves sync off while checking is off", () => {
+    renderPage({ muxSettings: { verifyOutput: false, verifySync: true } });
+
+    fireEvent.click(screen.getByRole("button", { name: /^options$/i }));
+    const options = screen.getByRole("dialog", { name: "Mux options" });
+    const sync = within(options).getByRole("switch", { name: "Check the sync of added audio" });
+    expect(sync).toBeDisabled();
+    expect(sync).toHaveAttribute("aria-checked", "false");
+    expect(within(options).getByRole("combobox", { name: "Sync may be off by" })).toBeDisabled();
   });
 });

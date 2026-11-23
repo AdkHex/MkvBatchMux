@@ -5,6 +5,7 @@
 
 import type { St } from "@/ui/kit";
 import type { MuxJob } from "@/shared/types";
+import { verificationOutcome, verificationProblems } from "@/shared/types/verify";
 
 export type HistoryPage = "mux" | "audio";
 
@@ -76,22 +77,44 @@ export function runName(names: string[]): string {
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** What a mux batch did, as the status display and History say it. `parts`
- *  are joined with " · " on the display and ", " in History. */
-export function muxOutcome(jobs: Pick<MuxJob, "status">[]): { tone: St; parts: string[] } {
+ *  are joined with " · " on the display and ", " in History. Jobs whose
+ *  output was checked add how that went. */
+export function muxOutcome(jobs: Pick<MuxJob, "status" | "verification">[]): { tone: St; parts: string[] } {
   const count = (status: MuxJob["status"]) => jobs.filter((job) => job.status === status).length;
   const done = count("completed");
   const failed = count("error");
   const stopped = count("stopped");
   const waiting = count("queued") + count("processing");
+  const outcomes = jobs.map((job) => verificationOutcome(job.verification));
+  const verified = outcomes.filter((outcome) => outcome === "verified" || outcome === "warnings").length;
+  const warned = outcomes.filter((outcome) => outcome === "warnings").length;
+  const unverified = outcomes.filter((outcome) => outcome === "failed").length;
+  // Said as a verification failure only when that is what every failure was.
+  const failedText = failed && unverified === failed ? `${failed} failed verification` : `${failed} failed`;
+  const checked = [...(verified ? [`${verified} verified`] : []), ...(warned ? [`${warned} with warnings`] : [])];
   if (stopped > 0) {
     const parts = ["Stopped", `${done} muxed`];
-    if (failed) parts.push(`${failed} failed`);
-    return { tone: "warn", parts };
+    if (failed) parts.push(failedText);
+    return { tone: "warn", parts: [...parts, ...checked] };
   }
   const parts = [`${done} muxed`];
-  if (failed) parts.push(`${failed} failed`);
+  if (failed) parts.push(failedText);
   if (waiting) parts.push(`${waiting} not finished`);
-  return { tone: failed === 0 && waiting === 0 ? "ok" : done === 0 ? "bad" : "warn", parts };
+  const tone: St = failed === 0 && waiting === 0 ? (warned ? "warn" : "ok") : done === 0 ? "bad" : "warn";
+  return { tone, parts: [...parts, ...checked] };
+}
+
+/** One job's line in a run's History report. */
+export function muxFileLine(job: Pick<MuxJob, "status" | "errorMessage" | "verification">): { tone: St; text: string } {
+  if (job.status === "error") return { tone: "bad", text: job.errorMessage ?? "Failed" };
+  if (job.status !== "completed") return { tone: "warn", text: "Stopped" };
+  const outcome = verificationOutcome(job.verification);
+  if (outcome === "verified") return { tone: "ok", text: "Muxed and verified" };
+  if (outcome === "warnings") {
+    const first = verificationProblems(job.verification)[0];
+    return { tone: "warn", text: `Muxed, verified with warnings: ${first.label}: ${first.detail}` };
+  }
+  return { tone: "ok", text: "Muxed" };
 }
 
 /** When a run finished, as the dock writes it: "Today 11:05",

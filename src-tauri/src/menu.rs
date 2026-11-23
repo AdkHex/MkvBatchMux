@@ -17,6 +17,11 @@ pub const MENU_IDS: &[&str] = &[
     "add-files",
     "import-from-video",
     "open-log",
+    "open-session",
+    "save-session",
+    "apply-recipe",
+    "recipes",
+    "watch-folders",
     "remove",
     "clear",
     "move-up",
@@ -74,6 +79,13 @@ pub fn app_menu() -> Menu {
             .add_item(item("choose-folder", "Choose Folder…", Some("CmdOrCtrl+O")))
             .add_item(item("add-files", "Add Files…", None))
             .add_item(item("import-from-video", "Import from a Video…", None))
+            .add_native_item(MenuItem::Separator)
+            .add_item(item("open-session", "Open Session…", None))
+            .add_item(item("save-session", "Save Session…", None))
+            .add_native_item(MenuItem::Separator)
+            .add_item(item("apply-recipe", "Apply Recipe…", None))
+            .add_item(item("recipes", "Recipes…", None))
+            .add_item(item("watch-folders", "Watch Folders…", None))
             .add_native_item(MenuItem::Separator)
             .add_item(item("open-log", "Open Log File", None))
             .add_native_item(MenuItem::Separator)

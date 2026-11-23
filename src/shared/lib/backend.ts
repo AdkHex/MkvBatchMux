@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/tauri";
 import { open } from "@tauri-apps/api/dialog";
 import { listen } from "@tauri-apps/api/event";
 import type { OptionsData, VideoFile, ExternalFile, MuxSettings } from "@/shared/types";
+import type { VerificationReport } from "@/shared/types/verify";
+import { naturalSortByPath } from "@/shared/lib/naturalOrder";
 import type {
   EngineStatus,
   MeasureDoneEvent,
@@ -39,6 +41,10 @@ export interface MuxJobRequest {
   subtitles: ExternalFile[];
   chapters: ExternalFile[];
   attachments: ExternalFile[];
+  /** The output's file name without ".mkv", resolved here because the naming
+   *  pattern uses tokens only the frontend can read ({show} {season}
+   *  {episode}). Absent: main.rs renders the pattern itself. */
+  outputName?: string;
 }
 
 export interface MuxStartRequest {
@@ -100,6 +106,10 @@ export interface MuxProgressEvent {
   message?: string;
   size_after?: number;
   error_message?: string;
+  /** "verifying" while the finished output is checked. */
+  stage?: "verifying";
+  /** What checking the output found, sent with the final status. */
+  verification?: VerificationReport;
 }
 
 export async function getAppPaths() {
@@ -114,8 +124,10 @@ export async function saveOptions(options: OptionsData) {
   return invoke<void>("save_options", { options });
 }
 
+/** A folder's files in Explorer's order, whatever order the file system
+ *  lists them in: rows pair by position across pages. */
 export async function scanMedia(request: ScanRequest) {
-  return invoke<(VideoFile | ExternalFile)[]>("scan_media", { request });
+  return naturalSortByPath(await invoke<(VideoFile | ExternalFile)[]>("scan_media", { request }));
 }
 
 export async function inspectPaths(request: InspectRequest) {
