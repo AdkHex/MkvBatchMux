@@ -25,6 +25,7 @@ export function clampMeasurement(measurement: MeasurementSettings): MeasurementS
     windowSeconds: clampWindowSeconds(measurement.windowSeconds),
     maxOffsetMs: clampMaxOffsetSeconds(measurement.maxOffsetMs / 1000) * 1000,
     fullTimeline: measurement.fullTimeline ?? false,
+    cutCheck: measurement.cutCheck ?? true,
   };
 }
 

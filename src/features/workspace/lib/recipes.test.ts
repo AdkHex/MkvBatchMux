@@ -266,6 +266,12 @@ describe("recipes file", () => {
     expect(validateRecipe(recipe)).toEqual([]);
   });
 
+  it("leaves checking every new file off when a version that had it on by default saved it", () => {
+    const recipe: Recipe = { ...createRecipe("Show"), muxOptions: { verifyOutput: true, addCrc: true } };
+    expect(parseRecipesFile({ version: 1, recipes: [recipe] }).recipes[0].muxOptions).toEqual({ addCrc: true });
+    expect(parseRecipesFile(JSON.parse(JSON.stringify(serializeRecipes([recipe])))).recipes[0].muxOptions).toEqual({ verifyOutput: true, addCrc: true });
+  });
+
   it("tolerates old and broken entries", () => {
     const { recipes, skipped } = parseRecipesFile([{ name: "Bare" }, { nope: 1 }, "x", { name: "Bad conf", measurement: { autoApplyMinConfidence: 7 } }]);
     expect(skipped).toBe(2);

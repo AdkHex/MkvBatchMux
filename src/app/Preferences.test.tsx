@@ -72,6 +72,7 @@ describe("Preferences › Measurement › Conforming", () => {
       windowCount: 6,
       maxOffsetMs: 60000,
       fullTimeline: true,
+      cutCheck: true,
       conformMode: "lossless",
       conformCodec: "flac",
       conformOutputDir: "E:\\Conformed",

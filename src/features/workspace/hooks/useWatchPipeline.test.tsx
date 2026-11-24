@@ -323,7 +323,7 @@ describe("measuring for a watch folder", () => {
     const done = measureWithEngine([video(1)], files);
     await waitFor(() => expect(measureDelaysStart).toHaveBeenCalled());
     const request = measureDelaysStart.mock.calls[0][0] as { runId: string; pairs: { key: string }[]; fast: boolean; timeline: boolean };
-    expect(request).toMatchObject({ fast: false, timeline: false });
+    expect(request).toMatchObject({ fast: false, timeline: false, findCuts: true });
     // Another run's events are not this one's.
     handlers.result({ runId: "measure-1", key: request.pairs[0].key, result: result({ delayMs: 5000 }) });
     handlers.result({ runId: request.runId, key: request.pairs[0].key, result: result() });

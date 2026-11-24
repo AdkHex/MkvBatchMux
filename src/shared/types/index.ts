@@ -203,6 +203,9 @@ export interface MeasurementSettings {
    *  end to end, minutes per film, so absent means off. Replaces `scanTimeline`, whose saved
    *  `true` would otherwise keep the slow route on for everyone who ever pressed Save. */
   fullTimeline?: boolean;
+  /** Call a step between the sample windows a different cut, and hold its delay back
+   *  (AudioSyncMaster's Cut check, which is off there by default). Absent: on. */
+  cutCheck?: boolean;
   /** Conforming a dub to another cut: "render" re-encodes it to the sample
    *  (the default), "lossless" cuts its own frames. Absent: render. */
   conformMode?: ConformMode;
@@ -244,7 +247,8 @@ export interface MuxSettings {
   makeSubtitleDefaultLanguage?: string;
   useMkvpropedit: boolean;
   /** Check every output before it replaces the source or counts as done
-   *  (src-tauri/src/verify.rs). Absent in settings saved before it: on. */
+   *  (src-tauri/src/verify.rs). Absent: off. Measuring the added audio again reads
+   *  minutes of a film, so it is only done when asked for. */
   verifyOutput?: boolean;
   /** Also measure each added audio track against the source's audio inside the output. */
   verifySync?: boolean;

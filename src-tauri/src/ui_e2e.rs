@@ -303,7 +303,7 @@ fn measurement_settings_load_old_files_and_keep_the_new_fields() {
     let written = serde_json::to_value(&old).unwrap();
     assert_eq!(written["Measurement"], serde_json::json!({ "windowSeconds": 45.0, "windowCount": 6, "maxOffsetMs": 60000.0 }));
 
-    let saved = serde_json::json!({ "windowSeconds": 45.0, "windowCount": 6, "maxOffsetMs": 60000.0, "fullTimeline": true, "conformMode": "lossless", "conformCodec": "flac", "conformOutputDir": "E:\\Conformed" });
+    let saved = serde_json::json!({ "windowSeconds": 45.0, "windowCount": 6, "maxOffsetMs": 60000.0, "fullTimeline": true, "cutCheck": false, "conformMode": "lossless", "conformCodec": "flac", "conformOutputDir": "E:\\Conformed" });
     let read: crate::MeasurementSettings = serde_json::from_value(saved.clone()).unwrap();
     assert_eq!(serde_json::to_value(&read).unwrap(), saved);
     // The frontend writes no folder as null: read as absent, and left out again.

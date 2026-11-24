@@ -1,7 +1,7 @@
 /** Drives watch folders: new videos reported by the watcher are queued, and
  *  when the app is idle each watch's arrivals run through its recipe — read,
  *  paired with their dubs, subtitles and chapters, measured, dubs of another
- *  cut conformed when the recipe says so, muxed (and so verified) — then
+ *  cut conformed when the recipe says so, muxed — then
  *  reported in History and a toast.
  *
  *  The state machine and the workspace steps are in `lib/watchPipeline.ts`;
@@ -44,7 +44,7 @@ import {
 import { conformDubsStart, listenConformDone, listenConformResult } from "@/shared/lib/engineFeatures";
 import { listenWatchFiles, pathsExist } from "@/shared/lib/workspaceStore";
 import type { ExternalFile, MeasurementSettings, MuxJob, VideoFile } from "@/shared/types";
-import { ENGINE_DEFAULTS } from "@/shared/types/audiosync";
+import { ENGINE_DEFAULTS, engineWindowCount } from "@/shared/types/audiosync";
 import type { ConformResultEvent } from "@/shared/types/engineFeatures";
 import type { Recipe, WatchFolderConfig } from "@/shared/types/recipes";
 
@@ -334,9 +334,10 @@ export async function measureWithEngine(videos: VideoFile[], files: ExternalFile
           runId,
           pairs,
           windowSeconds: measurement?.windowSeconds ?? ENGINE_DEFAULTS.windowSeconds,
-          windowCount: measurement?.windowCount ?? ENGINE_DEFAULTS.windowCount,
+          windowCount: engineWindowCount(measurement?.windowCount),
           maxOffsetMs: measurement?.maxOffsetMs ?? ENGINE_DEFAULTS.maxOffsetMs,
           maxWorkers: ENGINE_DEFAULTS.maxWorkers,
+          findCuts: measurement?.cutCheck ?? true,
           fast: false,
           timeline: false,
         });

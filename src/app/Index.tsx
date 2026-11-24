@@ -265,7 +265,7 @@ export default function Index() {
     makeAudioDefaultLanguage: undefined,
     makeSubtitleDefaultLanguage: undefined,
     useMkvpropedit: false,
-    verifyOutput: true,
+    verifyOutput: false,
     verifySync: true,
     verifySyncToleranceMs: 40,
   });

@@ -115,6 +115,9 @@ struct MeasurementSettings {
     /// Lay every pair along its whole timeline (Preferences › Measurement).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     full_timeline: Option<bool>,
+    /// Call a step between the windows a different cut. Absent: on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cut_check: Option<bool>,
     /// Conforming a dub to another cut: "render" or "lossless".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     conform_mode: Option<String>,
@@ -131,8 +134,11 @@ impl Default for MeasurementSettings {
         Self {
             window_seconds: 45.0,
             window_count: 6,
-            max_offset_ms: 300000.0,
+            // AudioSyncMaster's own (ENGINE_DEFAULTS in src/shared/types/audiosync.ts);
+            // a pair further out than this is searched again wider.
+            max_offset_ms: 60000.0,
             full_timeline: None,
+            cut_check: None,
             conform_mode: None,
             conform_codec: None,
             conform_output_dir: None,
@@ -405,8 +411,8 @@ struct MuxSettings {
     make_subtitle_default_language: Option<String>,
     use_mkvpropedit: bool,
     /// Check every output before it replaces the source or counts as done
-    /// (src/verify.rs). Absent from requests older frontends send: on.
-    #[serde(default = "default_on")]
+    /// (src/verify.rs). Off unless asked for.
+    #[serde(default)]
     verify_output: bool,
     /// Also measure each added audio track against the source's audio in the output.
     #[serde(default = "default_on")]
@@ -416,7 +422,7 @@ struct MuxSettings {
     verify_sync_tolerance_ms: f64,
 }
 
-fn default_on() -> bool {
+pub(crate) fn default_on() -> bool {
     true
 }
 

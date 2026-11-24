@@ -60,7 +60,7 @@ once, and let it run through the queue with MKVToolNix.
 | **Conform a different cut** | A dub with scenes missing or added is cut to the video's edit, re-rendered or frame-cut without re-encoding, and checked |
 | **Subtitle sync** | Measure each subtitle's offset and frame-rate drift against the video's own subtitle track or its dialogue, Blu-ray picture (PGS) subtitles included |
 | **Episode pairing** | Files pair with their video by season and episode, not by row; gaps, extras and mismatches are shown before muxing |
-| **Verified output** | Every new file is checked against what was asked, and each added dub is re-measured inside it, before it replaces anything |
+| **Verified output** | Turn it on and every new file is checked against what was asked, and each added dub re-measured inside it, before it replaces anything |
 | **Recipes, sessions, watch folders** | Save a show's rules and reuse them, save and reopen a whole workspace, and mux new episodes as they arrive |
 | **Safe queue** | Validation, change reports, progress tracking, pause and resume |
 | **Advanced mux settings** | Chapters, attachments, tags, safety checks |
@@ -102,7 +102,7 @@ the same analysis engine as
 [AudioSyncMaster](https://github.com/AdkHex/AudioSyncMaster), and is built to
 report the **same number** for the same files:
 
-- The engine is pinned to an AudioSyncMaster **release** (`v2.23.0`), never to
+- The engine is pinned to an AudioSyncMaster **release** (`v2.24.0`), never to
   its `main` branch. Settings → *Audio analysis engine* shows the stamp.
 - The measurement parameters (sample windows, window length, maximum offset)
   default to AudioSyncMaster's (6 × 45 s, 60 s) and are editable in Settings →
@@ -110,6 +110,9 @@ report the **same number** for the same files:
   AudioSyncMaster, set the same values here — a different window count samples
   different points in the film and gives a different number. The request is
   the one AudioSyncMaster sends: no fast pass, whatever the search range.
+- The **cut check** is on here and off there by default. It decides whether a
+  jump in the offset is called a different cut and held back, or filled in
+  with a note; the delay is the same either way.
 - The reference track defaults to the video's **first audio stream**, as in
   AudioSyncMaster. Choose another in the *Reference audio track* panel.
 - FFmpeg decodes the audio. Older builds (6.1, Ubuntu 24.04's) decode the
@@ -238,8 +241,9 @@ against the unpaired videos. Dragging a file to another row pairs it by hand.
 
 ### Verification after muxing
 
-Each new file is read back before it counts as done and before it replaces a
-source (Mux → Options, on by default):
+Off unless you turn it on (Mux → Options → *Check each new file*): measuring
+the added audio again reads minutes of a large film. On, each new file is read
+back before it counts as done and before it replaces a source:
 
 - **Structure**: the tracks of each type, the added tracks and their
   languages, the order, names and flags asked for, chapters, and a length that
@@ -268,7 +272,7 @@ check, and the job's details list every check.
   checked every few seconds, also on a network share; once a new episode has
   stopped growing, and nothing else is running, it is loaded, paired with the
   files in its dub, subtitle and chapter folders, measured, conformed if its
-  recipe says so, muxed and verified, and the result goes to History. An
+  recipe says so, muxed, and the result goes to History. An
   episode that needs a look is held back with the reason.
 
 ---
@@ -335,7 +339,7 @@ Both are build artifacts and are not committed.
 `package.json` names the AudioSyncMaster release the engine is built from:
 
 ```json
-"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.23.0" }
+"audiosyncEngine": { "repository": "AdkHex/AudioSyncMaster", "ref": "v2.24.0" }
 ```
 
 CI checks that tag out, `fetch-engine` refuses a checkout at any other commit

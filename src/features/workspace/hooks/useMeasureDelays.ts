@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/ui/toast";
 import type { ExternalFile, MeasurementSettings, VideoFile } from "@/shared/types";
 import type { EngineStatus, MeasureStartRequest, SyncResult, TimelineScan } from "@/shared/types/audiosync";
-import { ENGINE_DEFAULTS, WIDE_SEARCH_MS } from "@/shared/types/audiosync";
+import { ENGINE_DEFAULTS, engineWindowCount, WIDE_SEARCH_MS } from "@/shared/types/audiosync";
 import {
   audiosyncEngineStatus,
   listenMeasureDelaysDone,
@@ -424,9 +424,10 @@ export function useMeasureDelays({
       // Built field by field: settings saved by older versions carry keys the engine must not see.
       const settings = {
         windowSeconds: measurement?.windowSeconds ?? ENGINE_DEFAULTS.windowSeconds,
-        windowCount: measurement?.windowCount ?? ENGINE_DEFAULTS.windowCount,
+        windowCount: engineWindowCount(measurement?.windowCount),
         maxOffsetMs: measurement?.maxOffsetMs ?? ENGINE_DEFAULTS.maxOffsetMs,
         maxWorkers: ENGINE_DEFAULTS.maxWorkers,
+        findCuts: measurement?.cutCheck ?? true,
       };
       settingsRef.current = settings;
       maxWorkersRef.current = settings.maxWorkers;

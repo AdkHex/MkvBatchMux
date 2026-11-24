@@ -314,18 +314,28 @@ describe("MuxPage verification", () => {
     expect(within(dialog).getByRole("row", { name: "Sync: Episode 03.hin.eac3" })).toHaveTextContent("Failed");
   });
 
-  it("turns the checks on and off in Options, sync only while checking is on", () => {
+  it("leaves a new file unchecked until checking is turned on in Options", () => {
     const onMuxSettingsChange = vi.fn();
     renderPage({ onMuxSettingsChange });
 
     fireEvent.click(screen.getByRole("button", { name: /^options$/i }));
     const options = screen.getByRole("dialog", { name: "Mux options" });
-    // Absent from older settings: on.
+    // Off unless asked for, absent from the settings included.
     const check = within(options).getByRole("switch", { name: "Check each new file" });
-    expect(check).toHaveAttribute("aria-checked", "true");
-    expect(within(options).getByRole("switch", { name: "Check the sync of added audio" })).toBeEnabled();
+    expect(check).toHaveAttribute("aria-checked", "false");
+    expect(within(options).getByRole("switch", { name: "Check the sync of added audio" })).toBeDisabled();
     fireEvent.click(check);
-    expect(onMuxSettingsChange).toHaveBeenCalledWith({ verifyOutput: false });
+    expect(onMuxSettingsChange).toHaveBeenCalledWith({ verifyOutput: true });
+  });
+
+  it("sets how far sync may be off while checking is on", () => {
+    const onMuxSettingsChange = vi.fn();
+    renderPage({ onMuxSettingsChange, muxSettings: { verifyOutput: true } });
+
+    fireEvent.click(screen.getByRole("button", { name: /^options$/i }));
+    const options = screen.getByRole("dialog", { name: "Mux options" });
+    expect(within(options).getByRole("switch", { name: "Check each new file" })).toHaveAttribute("aria-checked", "true");
+    expect(within(options).getByRole("switch", { name: "Check the sync of added audio" })).toBeEnabled();
     fireEvent.change(within(options).getByRole("combobox", { name: "Sync may be off by" }), { target: { value: "80" } });
     expect(onMuxSettingsChange).toHaveBeenCalledWith({ verifySyncToleranceMs: 80 });
   });

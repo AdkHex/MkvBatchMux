@@ -22,10 +22,12 @@ const preset: Preset = {
 
 describe("measurement limits", () => {
   it("clamps to the engine's limits and falls back on nonsense", () => {
-    expect(clampWindowCount(0)).toBe(1);
-    expect(clampWindowCount(50)).toBe(20);
+    expect(clampWindowCount(0)).toBe(2);
+    // Where AudioSyncMaster stops: a count it cannot be set to measures other places in the film.
+    expect(clampWindowCount(20)).toBe(12);
     expect(clampWindowCount("abc")).toBe(6);
-    expect(clampMeasurement({ windowCount: 6, windowSeconds: 1000, maxOffsetMs: 900_000 })).toEqual({ windowCount: 6, windowSeconds: 600, maxOffsetMs: 600_000, fullTimeline: false });
+    expect(clampMeasurement({ windowCount: 6, windowSeconds: 1000, maxOffsetMs: 900_000 })).toEqual({ windowCount: 6, windowSeconds: 600, maxOffsetMs: 600_000, fullTimeline: false, cutCheck: true });
+    expect(clampMeasurement({ windowCount: 6, windowSeconds: 45, maxOffsetMs: 60_000, cutCheck: false }).cutCheck).toBe(false);
   });
 
   it("notices a difference from AudioSyncMaster's defaults", () => {

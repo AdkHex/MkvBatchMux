@@ -12,9 +12,9 @@
  *    /?demo=measured   ready, then every dub measured (one different cut, one
  *                      frame-rate change, one weak match, one broken file)
  *    /?demo=muxing     ready and queued, muxing under way
- *    /?demo=done       muxed and verified: E03 with a warning, E05 failing
- *                      verification (its dub went in without its delay), E07
- *                      unreadable
+ *    /?demo=done       muxed, E07 unreadable. Muxed again with Options ›
+ *                      "Check each new file" on: verified, E03 with a warning,
+ *                      E05 failing (its dub went in without its delay)
  *    /?demo=unlinked   ready, with a 17th dub that has no video
  *    /?demo=engine     ready, the audio analysis engine missing
  *
@@ -332,7 +332,7 @@ async function mux(request: MuxStartRequest) {
     }
     emitEvent("mux-log", { job_id: job.id, line: `Multiplexing took ${20 + (episodeOf(job.video.name) % 9)} seconds.` });
     const size_after = Math.round(job.video.size * 1.07);
-    if (request.settings.verifyOutput === false) {
+    if (!request.settings.verifyOutput) {
       emitEvent("mux-progress", { job_id: job.id, status: "completed", progress: 100, size_after });
       return;
     }

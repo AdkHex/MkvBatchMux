@@ -639,9 +639,11 @@ fn run_plan_collects_each_jobs_plan_and_cancels_when_interrupted() {
 // ------------------------------------------------------------------- report
 
 #[test]
-fn settings_from_older_frontends_verify_by_default() {
+fn an_output_is_checked_only_when_asked_for() {
     let parsed = settings(serde_json::json!({}));
-    assert!(parsed.verify_output);
+    assert!(!parsed.verify_output);
+    assert!(settings(serde_json::json!({ "verifyOutput": true })).verify_output);
+    // What a check does once it is on.
     assert!(parsed.verify_sync);
     assert_eq!(parsed.verify_sync_tolerance_ms, 40.0);
 }

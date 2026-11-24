@@ -27,8 +27,9 @@ import { fileConformBlocker } from "./conform";
 import { isBlockingCut } from "./delayConversion";
 import { includedAudioTrackIndices } from "./measurePairs";
 import { applyTrackRowsToVideo, type TrackRowDraft } from "./modifyTracks";
+import { withoutOldVerify } from "./session";
 
-export const RECIPES_VERSION = 1;
+export const RECIPES_VERSION = 2;
 
 export const DEFAULT_MEASUREMENT_POLICY: MeasurementPolicy = {
   autoMeasure: true,
@@ -187,11 +188,14 @@ export function parseRecipesFile(raw: unknown): { recipes: Recipe[]; skipped: nu
   // Version 0: a bare list.
   const list = Array.isArray(raw) ? raw : isObj(raw) && Array.isArray(raw.recipes) ? raw.recipes : null;
   if (!list) return { recipes: [], skipped: 0, error: "The saved recipes are damaged and couldn't be read." };
+  const version = isObj(raw) && typeof raw.version === "number" ? raw.version : 0;
   const recipes: Recipe[] = [];
   const ids = new Set<string>();
   let skipped = 0;
   list.forEach((item, index) => {
     const recipe = readRecipe(item, index);
+    // Saved while checking every new file was on by default.
+    if (recipe?.muxOptions && version < 2) recipe.muxOptions = withoutOldVerify(recipe.muxOptions);
     if (!recipe) {
       skipped += 1;
       return;

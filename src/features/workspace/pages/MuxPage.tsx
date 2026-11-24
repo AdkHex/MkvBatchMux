@@ -322,8 +322,8 @@ export function MuxPage({
   const willOverwrite = settings.directory.trim() === "" && settings.overwriteExisting;
   const keepAudio = muxSettings.onlyKeepAudiosEnabled && muxSettings.onlyKeepAudioLanguages[0] ? muxSettings.onlyKeepAudioLanguages[0] : "all";
   const keepSubs = muxSettings.onlyKeepSubtitlesEnabled && muxSettings.onlyKeepSubtitleLanguages[0] ? muxSettings.onlyKeepSubtitleLanguages[0] : "all";
-  // Absent in settings saved before verification existed: on, as the backend takes it.
-  const verifyOutput = muxSettings.verifyOutput !== false;
+  // Off unless asked for, as the backend takes it.
+  const verifyOutput = muxSettings.verifyOutput === true;
   const verifySync = muxSettings.verifySync !== false;
   const tolerance = muxSettings.verifySyncToleranceMs ?? 40;
 

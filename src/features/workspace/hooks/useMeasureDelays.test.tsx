@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 
-import type { ExternalFile, VideoFile } from "@/shared/types";
+import type { ExternalFile, MeasurementSettings, VideoFile } from "@/shared/types";
+import type { MeasureStartRequest } from "@/shared/types/audiosync";
 
 // The engine is not here: every backend call is a mock, and the event
 // listeners hand back their handlers so a test can play the engine.
@@ -36,12 +37,12 @@ const audioTrack = { id: "1", type: "audio" as const, codec: "DTS", language: "e
 const video = (id: string, path: string): VideoFile => ({ id, name: path.split("\\").pop()!, path, size: 1, status: "pending", fps: 23.976, tracks: [audioTrack] });
 const dub = (id: string, path: string, videoId: string): ExternalFile => ({ id, name: path.split("\\").pop()!, path, type: "audio", matchedVideoId: videoId, tracks: [audioTrack] });
 
-function setup(videos: VideoFile[], files: ExternalFile[]) {
+function setup(videos: VideoFile[], files: ExternalFile[], measurement?: MeasurementSettings) {
   let current = files;
   const onAudioFilesChange = vi.fn((next: ExternalFile[]) => {
     current = next;
   });
-  const hook = renderHook(() => useMeasureDelays({ videoFiles: videos, audioFiles: current, onAudioFilesChange, referenceTrackByVideoId: {} }));
+  const hook = renderHook(() => useMeasureDelays({ videoFiles: videos, audioFiles: current, onAudioFilesChange, referenceTrackByVideoId: {}, measurement }));
   return { hook, onAudioFilesChange, files: () => current };
 }
 
@@ -57,6 +58,20 @@ describe("useMeasureDelays", () => {
     await act(() => hook.result.current.start({ force: true }));
     const request = measureDelaysStart.mock.calls[0][0] as { pairs: { key: string; secondaryPath: string }[] };
     expect(request.pairs.map((pair) => [pair.key, pair.secondaryPath])).toEqual([["a2", "H:\\Dubs\\E02.hin.mka"]]);
+  });
+
+  it("sends the cut check, and no more windows than AudioSyncMaster can be set to", async () => {
+    const start = async (measurement?: MeasurementSettings) => {
+      measureDelaysStart.mockClear();
+      const { hook } = setup([video("v1", "H:\\Shows\\E01.mkv")], [dub("a1", "H:\\Dubs\\E01.hin.mka", "v1")], measurement);
+      await waitFor(() => expect(hook.result.current.engine?.engineAvailable).toBe(true));
+      await act(() => hook.result.current.start({ force: true }));
+      return measureDelaysStart.mock.calls[0][0] as MeasureStartRequest;
+    };
+    expect(await start()).toMatchObject({ windowCount: 6, findCuts: true });
+    // 20 was the most until the limit followed AudioSyncMaster's, and is still in setting.json.
+    expect(await start({ windowSeconds: 45, windowCount: 20, maxOffsetMs: 60000 })).toMatchObject({ windowCount: 12, findCuts: true });
+    expect(await start({ windowSeconds: 45, windowCount: 12, maxOffsetMs: 60000, cutCheck: false })).toMatchObject({ windowCount: 12, findCuts: false });
   });
 
   it("answers an audio file that is the video itself without asking the engine", async () => {

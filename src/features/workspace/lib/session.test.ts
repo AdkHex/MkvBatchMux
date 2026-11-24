@@ -166,6 +166,14 @@ describe("reading older and damaged sessions", () => {
     ]);
   });
 
+  it("leaves checking every new file off when a version that had it on by default saved it", () => {
+    const saved = { ...buildSessionFile(snapshot()), muxSettings: { verifyOutput: true, verifySync: true, addCrc: true } };
+    expect(loaded({ ...saved, version: 1 }).session.muxSettings).toEqual({ verifySync: true, addCrc: true });
+    // Saved since, it was turned on; saved off, it stays off.
+    expect(loaded(saved).session.muxSettings).toMatchObject({ verifyOutput: true });
+    expect(loaded({ ...saved, version: 1, muxSettings: { verifyOutput: false } }).session.muxSettings).toEqual({ verifyOutput: false });
+  });
+
   it("loads a newer version with a warning", () => {
     const parsed = loaded({ ...buildSessionFile(snapshot()), version: SESSION_VERSION + 1 });
     expect(parsed.ok && parsed.warnings[0]).toMatch(/newer version/);

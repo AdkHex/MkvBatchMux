@@ -233,12 +233,22 @@ export const ENGINE_DEFAULTS = {
   maxWorkers: 4,
 } as const;
 
-/** AudioSyncMaster's Settings limits for the same three fields, so any value set there can be set here. */
+/** What the three fields may be set to. `windowCount` is AudioSyncMaster's own range: where the windows
+ *  sit follows from how many there are, so a count it cannot be set to (20, where it stops at 12) samples
+ *  other places in the film and measures another delay, and the two apps could not be made to agree. */
 export const ENGINE_LIMITS = {
-  windowCount: { min: 1, max: 20 },
+  windowCount: { min: 2, max: 12 },
   windowSeconds: { min: 5, max: 600 },
   maxOffsetSeconds: { min: 1, max: 600 },
 } as const;
+
+/** The window count a run uses: the saved one inside ENGINE_LIMITS. Clamped where a run starts as well as in
+ *  Preferences, because a count saved while the limit was higher is still in setting.json. */
+export function engineWindowCount(saved: number | null | undefined): number {
+  const count = Math.round(Number(saved ?? ENGINE_DEFAULTS.windowCount));
+  if (!Number.isFinite(count)) return ENGINE_DEFAULTS.windowCount;
+  return Math.min(ENGINE_LIMITS.windowCount.max, Math.max(ENGINE_LIMITS.windowCount.min, count));
+}
 
 /** The second look for a pair the survey could not place, typically a dub without the video's
  *  recap (+92 s is common). The engine's fast route decodes one long window and an end check
@@ -257,6 +267,9 @@ export interface MeasureStartRequest {
   /** Re-measure a pair the survey does not settle along its whole timeline: reads both files
    *  end to end, the slowest thing the engine does. */
   timeline: boolean;
+  /** Report a step between the windows as a cut, probing for where it is (AudioSyncMaster's Cut check).
+   *  Off, the same delay comes back with a note instead. Absent: on. */
+  findCuts?: boolean;
 }
 
 export interface EngineStatus {

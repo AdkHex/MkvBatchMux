@@ -51,7 +51,7 @@ describe("recipes, sessions and watch folders in the app", () => {
     // Name, lines and outcome together: when the run goes wrong, the lines say why.
     expect({ name: history.name, files: history.files, outcome: history.outcome.text }).toEqual({
       name: "Watch Season 1: Goblin.S01E17.1080p.WEB-DL.x264-HDEX",
-      files: [{ name: "Goblin.S01E17.1080p.WEB-DL.x264-HDEX.mkv", tone: "ok", text: "Muxed and verified" }],
+      files: [{ name: "Goblin.S01E17.1080p.WEB-DL.x264-HDEX.mkv", tone: "ok", text: "Muxed" }],
       outcome: expect.stringMatching(/1 muxed/),
     });
 

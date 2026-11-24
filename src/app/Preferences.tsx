@@ -18,7 +18,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { installDependency, pickDirectory, type DependencyStatus } from "@/shared/lib/backend";
 import type { MeasurementSettings, OptionsData } from "@/shared/types";
-import { ENGINE_DEFAULTS, ENGINE_LIMITS } from "@/shared/types/audiosync";
+import { ENGINE_DEFAULTS, ENGINE_LIMITS, engineWindowCount } from "@/shared/types/audiosync";
 import { CONFORMED_FOLDER } from "@/shared/types/engineFeatures";
 import { Modal } from "@/ui/frame";
 import { Btn, Cmd, Combo, InfoBar, LangCombo, Seg, Slider, TBox, Toggle, cx } from "@/ui/kit";
@@ -125,7 +125,7 @@ export function PreferencesWindow(props: PreferencesProps) {
     setPresetIndex(index);
     setAskForPreset(Boolean(options.Choose_Preset_On_Startup));
     setDarkMode(Boolean(options.Dark_Mode));
-    setMeasurement({ ...ENGINE_DEFAULTS, ...options.Measurement });
+    setMeasurement({ ...ENGINE_DEFAULTS, ...options.Measurement, windowCount: engineWindowCount(options.Measurement?.windowCount) });
     setForm(formFromPreset(options.Presets[index] || options.Presets[0]));
   }, [options]);
 
@@ -357,6 +357,9 @@ function MeasurementTab({ measurement, onChange }: { measurement: MeasurementSet
       )}
       <div className="group-h">Checks</div>
       <div className="group">
+        <Row h="Cut check" d="Calls a jump in the offset a different cut and holds its delay back. Off, as AudioSyncMaster is by default, the delay before the jump is filled in with a note.">
+          <Toggle name="Cut check" on={measurement.cutCheck ?? true} onChange={(cutCheck) => set({ cutCheck })} />
+        </Row>
         <Row h="Whole-timeline scan" d="Finds every cut and frame-rate change. Reads both files end to end: minutes per film.">
           <Toggle name="Whole-timeline scan" on={measurement.fullTimeline ?? false} onChange={(fullTimeline) => set({ fullTimeline })} />
         </Row>

@@ -259,6 +259,10 @@ pub struct MeasureStartRequest {
     /// does not settle by reading both files end to end, minutes per film.
     #[serde(default)]
     pub timeline: bool,
+    /// Report a step between the windows as a cut (Preferences › Cut check).
+    /// Sent to the engine either way, so what it does never rests on its default.
+    #[serde(default = "crate::default_on")]
+    pub find_cuts: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1044,6 +1048,7 @@ fn run_measure(app: AppHandle, handle: EngineHandle, request: MeasureStartReques
         "maxWorkers": request.max_workers,
         "fast": request.fast,
         "timeline": request.timeline,
+        "findCuts": request.find_cuts,
     });
 
     let app_for_run = app;
@@ -1597,6 +1602,10 @@ mod tests {
         // An older frontend sends neither flag: that must not turn the slow route on.
         assert!(!parsed.fast);
         assert!(!parsed.timeline);
+        // The cut check is on unless turned off.
+        assert!(parsed.find_cuts);
+        let off: MeasureStartRequest = serde_json::from_str(&json.replacen("\"maxWorkers\": 3", "\"maxWorkers\": 3, \"findCuts\": false", 1)).unwrap();
+        assert!(!off.find_cuts);
     }
 
     fn dub_track(key: &str, secondary_track: i64) -> MeasurePair {

@@ -15,7 +15,7 @@ import type { LoadedSession, MissingFile, SessionFile, SessionTabState, SlotTemp
 
 export const SESSION_FORMAT = "mkvbatchmux-session";
 /** Bump when the shape changes, and add a step to `migrate`. */
-export const SESSION_VERSION = 1;
+export const SESSION_VERSION = 2;
 /** Far above a real session (thousands of episodes with all their tracks is a few MB). */
 export const MAX_SESSION_CHARS = 64 * 1024 * 1024;
 export const MAX_SESSION_FILES = 50_000;
@@ -139,14 +139,26 @@ export function parseSession(input: unknown): ParsedSession {
 
 /** Older shapes to the current one. Version 0 is a bare workspace without the
  *  format header, which may carry a flat `audioFiles` / `subtitleFiles` list
- *  (one slot) instead of files by slot. */
+ *  (one slot) instead of files by slot. Version 1 had checking every new file
+ *  on by default. */
 function migrate(raw: Obj, version: number): Obj {
   let out: Obj = { ...raw };
   if (version < 1) {
     if (!isObj(out.audioFilesByTrack) && Array.isArray(out.audioFiles)) out = { ...out, audioFilesByTrack: { "1": out.audioFiles } };
     if (!isObj(out.subtitleFilesByTrack) && Array.isArray(out.subtitleFiles)) out = { ...out, subtitleFilesByTrack: { "1": out.subtitleFiles } };
   }
+  if (version < 2 && isObj(out.muxSettings)) out = { ...out, muxSettings: withoutOldVerify(out.muxSettings) };
   return out;
+}
+
+/** Mux options as a version before 2 saved them, without `verifyOutput: true`: checking every new file
+ *  was on by default then, so it being on says nothing about what the user chose, and it now is off
+ *  unless asked for. Recipes of their version 1 hold it for the same reason. */
+export function withoutOldVerify<T extends object>(options: T): T {
+  if ((options as { verifyOutput?: unknown }).verifyOutput !== true) return options;
+  const { verifyOutput: _on, ...rest } = options as T & { verifyOutput?: unknown };
+  void _on;
+  return rest as T;
 }
 
 /** A session has at least one of its lists; a random JSON file has none. */
